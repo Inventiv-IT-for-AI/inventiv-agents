@@ -1,7 +1,7 @@
 members = [
-    "common",
-    "orchestrator",
-    "router",
-    "backend"
+    "inventiv-common",
+    "inventiv-orchestrator",
+    "inventiv-router",
+    "inventiv-backend"
 ]
 resolver = "2"
