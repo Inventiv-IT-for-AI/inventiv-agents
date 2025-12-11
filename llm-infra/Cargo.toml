@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "common",
+    "orchestrator",
+    "router",
+    "backend"
+]
+resolver = "2"

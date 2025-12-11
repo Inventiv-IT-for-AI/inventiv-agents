@@ -1,0 +1,19 @@
+FROM rust:1.75 as builder
+
+WORKDIR /usr/src/llm-infra
+COPY . .
+
+# Build specific member
+ARG SERVICE_NAME
+RUN cargo build --release -p ${SERVICE_NAME}
+
+FROM debian:bookworm-slim
+ARG SERVICE_NAME
+
+# Install OpenSSL (needed for dependencies usually)
+RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder /usr/src/llm-infra/target/release/${SERVICE_NAME} ./service
+
+CMD ["./service"]
