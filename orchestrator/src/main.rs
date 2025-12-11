@@ -8,7 +8,7 @@ use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
-use common::{CloudInstance, InstanceStatus, GPUProfile};
+use inventiv_common::{CloudInstance, InstanceStatus, GPUProfile};
 use std::collections::HashMap;
 use tokio::sync::Mutex;
 

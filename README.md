@@ -52,8 +52,12 @@ Support multi-provider intégré via le pattern "Adapters".
 *   Provider par défaut : `Mock` (Simulation locale).
 *   Provider supporté : `Scaleway` (Instances GPU).
 
-Pour changer de provider :
-```bash
-export PROVIDER=scaleway
-make up
-```
+
+## 🤝 Contribution
+
+Les contributions sont les bienvenues !
+Veuillez consulter [CONTRIBUTING.md](../CONTRIBUTING.md) pour les guidelines de développement et [SECURITY.md](../SECURITY.md) pour les reports de sécurité.
+
+## 📄 Licence
+
+Ce projet est sous licence **AGPL v3**. Voir le fichier [LICENSE](../LICENSE) pour plus de détails.

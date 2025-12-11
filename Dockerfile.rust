@@ -5,6 +5,8 @@ COPY . .
 
 # Build specific member
 ARG SERVICE_NAME
+# Note: SERVICE_NAME arg in docker-compose should match package name in Cargo.toml
+# e.g. inventiv-orchestrator
 RUN cargo build --release -p ${SERVICE_NAME}
 
 FROM debian:bookworm-slim

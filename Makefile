@@ -1,6 +1,6 @@
 VERSION := $(shell cat VERSION)
 COMPOSE_FILE := docker-compose.yml
-PROJECT_NAME := llm-infra
+PROJECT_NAME := inventiv-agents
 
 .PHONY: all build up down logs clean test context-dev context-stg context-prod
 

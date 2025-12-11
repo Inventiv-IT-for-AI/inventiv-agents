@@ -26,7 +26,7 @@ services:
       context: .
       dockerfile: Dockerfile.rust
       args:
-        SERVICE_NAME: orchestrator
+        SERVICE_NAME: inventiv-orchestrator
     command: ./service
     ports:
       - "8001:8001"
@@ -43,7 +43,7 @@ services:
       context: .
       dockerfile: Dockerfile.rust
       args:
-        SERVICE_NAME: router
+        SERVICE_NAME: inventiv-router
     command: ./service
     ports:
       - "8002:8002"
@@ -57,7 +57,7 @@ services:
       context: .
       dockerfile: Dockerfile.rust
       args:
-        SERVICE_NAME: backend
+        SERVICE_NAME: inventiv-backend
     command: ./service
     ports:
       - "8003:8003"
