@@ -2,7 +2,7 @@ VERSION := $(shell cat VERSION)
 COMPOSE_FILE := docker-compose.yml
 PROJECT_NAME := inventiv-agents
 
-.PHONY: all build up down logs clean test context-dev context-stg context-prod
+.PHONY: all build up down logs clean test test-architecture test-provision env-dev env-stg env-prod deploy-stg deploy-prod
 
 # --- General ---
 all: build

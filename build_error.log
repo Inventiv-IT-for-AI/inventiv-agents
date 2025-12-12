@@ -1,0 +1,177 @@
+time="2025-12-12T05:37:20+01:00" level=warning msg="/Users/sidimohammedramdani/GitDevProjects/inventiv-agents/docker-compose.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+#1 [internal] load local bake definitions
+#1 reading from stdin 660B done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile.rust
+#2 transferring dockerfile: 724B 0.0s done
+#2 WARN: FromAsCasing: 'as' and 'FROM' keywords' casing do not match (line 1)
+#2 DONE 0.0s
+
+#3 [internal] load metadata for docker.io/library/rust:latest
+#3 DONE 0.5s
+
+#4 [internal] load metadata for docker.io/library/debian:bookworm-slim
+#4 DONE 0.6s
+
+#5 [internal] load .dockerignore
+#5 transferring context: 198B done
+#5 DONE 0.0s
+
+#6 [chef 1/3] FROM docker.io/library/rust:latest@sha256:af030eadc07fd0e0e36b54b56eda8d6217b57c67f58d39a31838220be4a2d5e6
+#6 DONE 0.0s
+
+#7 [stage-3 1/4] FROM docker.io/library/debian:bookworm-slim@sha256:e899040a73d36e2b36fa33216943539d9957cba8172b858097c2cabcdb20a3e2
+#7 DONE 0.0s
+
+#8 [internal] load build context
+#8 transferring context: 3.00MB 1.2s done
+#8 DONE 1.3s
+
+#9 [chef 2/3] RUN cargo install cargo-chef
+#9 CACHED
+
+#10 [chef 3/3] WORKDIR /app
+#10 CACHED
+
+#11 [planner 1/2] COPY . .
+#11 DONE 5.1s
+
+#12 [planner 2/2] RUN cargo chef prepare --recipe-path recipe.json
+#12 DONE 0.3s
+
+#13 [builder 1/4] COPY --from=planner /app/recipe.json recipe.json
+#13 CACHED
+
+#14 [builder 2/4] RUN cargo chef cook --release --recipe-path recipe.json
+#14 CACHED
+
+#15 [builder 3/4] COPY . .
+#15 DONE 7.9s
+
+#16 [builder 4/4] RUN cargo build --release -p inventiv-backend
+#16 0.322     Updating crates.io index
+#16 1.493      Locking 29 packages to latest compatible versions
+#16 1.493       Adding adler2 v2.0.1
+#16 1.494       Adding aho-corasick v1.1.4
+#16 1.494       Adding crc32fast v1.5.0
+#16 1.495       Adding deranged v0.5.5
+#16 1.497       Adding flate2 v1.1.5
+#16 1.497       Adding mime_guess v2.0.5
+#16 1.498       Adding miniz_oxide v0.8.9
+#16 1.498       Adding num-conv v0.1.0
+#16 1.498       Adding powerfmt v0.2.0
+#16 1.499       Adding proc-macro-error v1.0.4
+#16 1.499       Adding proc-macro-error-attr v1.0.4
+#16 1.501       Adding regex v1.12.2
+#16 1.503       Adding regex-automata v0.4.13
+#16 1.504       Adding regex-syntax v0.8.8
+#16 1.505       Adding rust-embed v8.9.0
+#16 1.506       Adding rust-embed-impl v8.9.0
+#16 1.506       Adding rust-embed-utils v8.9.0
+#16 1.506       Adding same-file v1.0.6
+#16 1.506       Adding simd-adler32 v0.3.8
+#16 1.508       Adding time v0.3.44
+#16 1.508       Adding time-core v0.1.6
+#16 1.509       Adding time-macros v0.2.24
+#16 1.509       Adding unicase v2.8.1
+#16 1.511       Adding utoipa v4.2.3 (available: v5.4.0)
+#16 1.513       Adding utoipa-gen v4.3.1
+#16 1.514       Adding utoipa-swagger-ui v6.0.0 (available: v9.0.2)
+#16 1.514       Adding walkdir v2.5.0
+#16 1.514       Adding winapi-util v0.1.11
+#16 1.518       Adding zip v0.6.6
+#16 3.994    Compiling futures-util v0.3.31
+#16 4.021    Compiling num-traits v0.2.19
+#16 4.034    Compiling sqlx-core v0.7.4
+#16 4.041    Compiling base64 v0.21.7
+#16 4.049    Compiling either v1.15.0
+#16 4.057    Compiling sync_wrapper v1.0.2
+#16 4.058    Compiling hyper v1.8.1
+#16 4.794    Compiling chrono v0.4.42
+#16 4.794    Compiling atoi v2.0.0
+#16 4.923    Compiling hyper-util v0.1.19
+#16 5.886    Compiling sqlx-postgres v0.7.4
+#16 6.451    Compiling tower v0.5.2
+#16 6.452    Compiling axum-core v0.4.5
+#16 6.452    Compiling redis v0.24.0
+#16 8.156    Compiling axum v0.7.9
+#16 9.234    Compiling sqlx-macros-core v0.7.4
+#16 11.35    Compiling sqlx-macros v0.7.4
+#16 13.29    Compiling sqlx v0.7.4
+#16 13.51    Compiling inventiv-common v0.1.0 (/app/inventiv-common)
+#16 13.73    Compiling utoipa-swagger-ui v6.0.0
+#16 15.34    Compiling inventiv-backend v0.1.0 (/app/inventiv-backend)
+#16 15.48 error[E0433]: failed to resolve: use of unresolved module or unlinked crate `api_docs`
+#16 15.48   --> inventiv-backend/src/main.rs:56:76
+#16 15.48    |
+#16 15.48 56 |         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", api_docs::ApiDoc::openapi()))
+#16 15.48    |                                                                            ^^^^^^^^ use of unresolved module or unlinked crate `api_docs`
+#16 15.48    |
+#16 15.48 help: to make use of source file inventiv-backend/src/api_docs.rs, use `mod api_docs` in this file to declare the module
+#16 15.48    |
+#16 15.48  1 + mod api_docs;
+#16 15.48    |
+#16 15.48 
+#16 15.48 warning: unused import: `OpenApi`
+#16 15.48   --> inventiv-backend/src/main.rs:15:14
+#16 15.48    |
+#16 15.48 15 | use utoipa::{OpenApi, IntoParams};
+#16 15.48    |              ^^^^^^^
+#16 15.48    |
+#16 15.48    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+#16 15.48 
+#16 15.48 warning: unused imports: `Response`, `get`, and `put`
+#16 15.48  --> inventiv-backend/src/settings.rs:3:15
+#16 15.48   |
+#16 15.48 3 |     routing::{get, put},
+#16 15.48   |               ^^^  ^^^
+#16 15.48 ...
+#16 15.48 6 |     response::{IntoResponse, Response},
+#16 15.48   |                              ^^^^^^^^
+#16 15.48 
+#16 15.48 warning: unused import: `Serialize`
+#16 15.48  --> inventiv-backend/src/settings.rs:8:26
+#16 15.48   |
+#16 15.48 8 | use serde::{Deserialize, Serialize};
+#16 15.48   |                          ^^^^^^^^^
+#16 15.48 
+#16 15.62 For more information about this error, try `rustc --explain E0433`.
+#16 15.63 warning: `inventiv-backend` (bin "inventiv-backend") generated 3 warnings
+#16 15.63 error: could not compile `inventiv-backend` (bin "inventiv-backend") due to 1 previous error; 3 warnings emitted
+#16 ERROR: process "/bin/sh -c cargo build --release -p ${SERVICE_NAME}" did not complete successfully: exit code: 101
+------
+ > [builder 4/4] RUN cargo build --release -p inventiv-backend:
+15.48 
+15.48 warning: unused import: `Serialize`
+15.48  --> inventiv-backend/src/settings.rs:8:26
+15.48   |
+15.48 8 | use serde::{Deserialize, Serialize};
+15.48   |                          ^^^^^^^^^
+15.48 
+15.62 For more information about this error, try `rustc --explain E0433`.
+15.63 warning: `inventiv-backend` (bin "inventiv-backend") generated 3 warnings
+15.63 error: could not compile `inventiv-backend` (bin "inventiv-backend") due to 1 previous error; 3 warnings emitted
+------
+Dockerfile.rust:17
+
+--------------------
+
+  15 |     COPY . .
+
+  16 |     ARG SERVICE_NAME
+
+  17 | >>> RUN cargo build --release -p ${SERVICE_NAME}
+
+  18 |     
+
+  19 |     FROM debian:bookworm-slim
+
+--------------------
+
+failed to solve: process "/bin/sh -c cargo build --release -p ${SERVICE_NAME}" did not complete successfully: exit code: 101
+
+
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/e616tpkwhomox2l1cb4rlpdac
+

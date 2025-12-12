@@ -33,7 +33,10 @@ services:
     environment:
       - DATABASE_URL=postgresql://postgres:password@db:5432/llminfra
       - REDIS_URL=redis://redis:6379
-      - PROVIDER=mock
+      - PROVIDER=scaleway
+      - SCALEWAY_PROJECT_ID=${SCALEWAY_PROJECT_ID}
+      - SCALEWAY_ACCESS_KEY=${SCALEWAY_ACCESS_KEY}
+      - SCALEWAY_SECRET_KEY=${SCALEWAY_SECRET_KEY}
     depends_on:
       - db
       - redis
@@ -61,6 +64,12 @@ services:
     command: ./service
     ports:
       - "8003:8003"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:password@db:5432/llminfra
+      - RUST_LOG=info
+    depends_on:
+      - redis
 
 volumes:
   redis_data:

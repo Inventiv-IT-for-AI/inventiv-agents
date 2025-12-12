@@ -1,20 +1,32 @@
-# Roadmap & TODOs
+# Roadmap & TODOs (Event-Driven Architecture)
 
-## 🚨 Priorités Immédiates (v0.1.0 - MVP)
-- [ ] **Orchestrator** : Connecter à une vraie DB (Postgres) via SQLx (actuellement In-Memory).
-- [ ] **Router** : Implémenter la découverte des instances via Redis (actuellement hardcodé/mock).
-- [ ] **Worker** : Finaliser le script `agent.py` pour qu'il envoie son IP à l'Orchestrateur au démarrage.
+## 🚨 Priorités Immédiates (v0.1.0 - Foundation)
+- [x] **Infrastructure Core** : Relier `Backend` et `Orchestrator` via Redis Pub/Sub (Events).
+- [x] **Inventiv Backend** :
+    - [x] Initialiser le projet Rust (Axum + Sqlx).
+    - [ ] Implémenter Auth (JWT) & gestion des `API Keys`.
+    - [x] Créer l' endpoint `POST /deployments` qui publie l'événement `CMD:PROVISION`.
+- [/] **Inventiv Orchestrator** :
+    - [x] Implémenter le `EventListener` (Redis Subscriber).
+    - [ ] Traiter l'événement `CMD:PROVISION` de manière asynchrone (Provisioning Scaleway).
+    - [ ] Publier `EVENT:INSTANCE_READY` une fois terminé.
+- [ ] **Inventiv Frontend** :
+    - [ ] Initialiser le projet (Next.js/React ou autre).
+    - [ ] Dashboard simple : Login + Bouton "Deploy" + Log WebSocket.
 
-## 🚧 Court Terme (v0.2.0 - Stability)
-- [ ] **Auth** : Ajouter une vérification de Token API (Middleware Axum) sur le Router.
-- [ ] **Scaleway** : Tester et valider l'Adapter Scaleway avec de vraies crédentials.
+## 🚧 Court Terme (v0.2.0 - Stability & MVP)
+- [ ] **Worker Agent** :
+    - [ ] Finaliser `agent.py` pour qu'il reporte ses métriques à l'Orchestrateur.
+- [ ] **Router** :
+    - [ ] Connecter au Backend pour valider les API Keys.
+    - [ ] Lire la table de routage dynamique depuis Redis.
 - [ ] **Monitoring** : Exposer des métriques Prometheus (`/metrics`) sur chaque service.
 
-## 🔮 Moyen Terme (v0.3.0 - Features)
-- [ ] **Billing** : Compter les tokens passés dans le Router et les stocker en DB asynchrone (TimescaleDB).
-- [ ] **Queue** : Implémenter une file d'attente globale Redis pour lisser les pics de charge.
-- [ ] **Failover** : Si un worker ne répond pas, le Router doit rejouer la requête sur un autre nœud.
+## 🔮 Moyen Terme (v0.3.0 - SaaS Features)
+- [ ] **Billing** : Compter les tokens passés dans le Router et les stocker en DB asynchrone.
+- [ ] **Scaling Engine** : Auto-scale basé sur la queue latency (métriques Router).
+- [ ] **Failover** : Si un worker ne répond pas, le Router rejoue sur un autre nœud.
 
 ## 🧊 Long Terme / Optimisations
-- [ ] **Rust Agent** : Réécrire l'agent Python du worker en Rust pour réduire l'empreinte mémoire.
-- [ ] **Pingora** : Migrer le Router de Axum vers Pingora pour des perfs extrêmes.
+- [ ] **Rust Agent** : Réécrire l'agent Python du worker en Rust.
+- [ ] **Pingora** : Migrer le Router vers Pingora pour la performance.

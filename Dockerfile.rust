@@ -1,21 +1,25 @@
-FROM rust:1.75 as builder
+FROM rust:latest as chef
+USER root
+RUN cargo install cargo-chef
+WORKDIR /app
 
-WORKDIR /usr/src/llm-infra
+FROM chef AS planner
 COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Build specific member
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+# Build dependencies - this is the caching layer!
+RUN cargo chef cook --release --recipe-path recipe.json
+# Build application
+COPY . .
 ARG SERVICE_NAME
-# Note: SERVICE_NAME arg in docker-compose should match package name in Cargo.toml
-# e.g. inventiv-orchestrator
 RUN cargo build --release -p ${SERVICE_NAME}
 
 FROM debian:bookworm-slim
 ARG SERVICE_NAME
-
-# Install OpenSSL (needed for dependencies usually)
+# Install OpenSSL
 RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
-COPY --from=builder /usr/src/llm-infra/target/release/${SERVICE_NAME} ./service
-
+COPY --from=builder /app/target/release/${SERVICE_NAME} ./service
 CMD ["./service"]

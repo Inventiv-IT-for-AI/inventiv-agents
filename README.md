@@ -4,6 +4,11 @@ Une infrastructure d'inférence LLM scalable, modulaire et performante, écrite 
 
 ## 🏗 Architecture
 
+> 📘 **Documentation Détaillée** : 
+> *   [Spécifications Générales](docs/specification_generale.md)
+> *   [Domain Design & CQRS](docs/domain_design.md)
+> *   [Architecture History](docs/architecture.md)
+
 Le système est composé de 4 micro-services principaux structurés dans un Cargo Workspace :
 
 *   **`orchestrator`** (Control Plane) : Gère le cycle de vie des instances GPU et l'état du cluster.

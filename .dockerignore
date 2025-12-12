@@ -1,0 +1,14 @@
+target/
+.git/
+.env
+.env.example
+README.md
+LICENSE
+docs/
+scripts/
+images_response.json
+images_response.json
+TODO.md
+CONTRIBUTING.md
+inventory/
+test-results/

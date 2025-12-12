@@ -1,0 +1,38 @@
+use utoipa::OpenApi;
+use inventiv_common::{Instance, InstanceStatus, Region, Zone, InstanceType};
+use crate::settings;
+
+#[derive(OpenApi)]
+#[openapi(
+    paths(
+        crate::list_instances,
+        crate::create_deployment,
+        crate::terminate_instance,
+        // Settings
+        settings::list_regions,
+        settings::update_region,
+        settings::list_zones,
+        settings::update_zone,
+        settings::list_instance_types,
+        settings::update_instance_type
+    ),
+    components(
+        schemas(
+            crate::DeploymentRequest, 
+            crate::DeploymentResponse,
+            Instance,
+            InstanceStatus,
+            // Settings
+            Region,
+            Zone,
+            InstanceType,
+            settings::UpdateRegionRequest,
+            settings::UpdateZoneRequest,
+            settings::UpdateInstanceTypeRequest
+        )
+    ),
+    tags(
+        (name = "inventiv-backend", description = "Inventiv Infrastructure API")
+    )
+)]
+pub struct ApiDoc;
