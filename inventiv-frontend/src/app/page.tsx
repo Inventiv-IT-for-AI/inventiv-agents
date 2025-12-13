@@ -59,6 +59,7 @@ export default function Dashboard() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [regions, setRegions] = useState<Region[]>([]);
   const [zones, setZones] = useState<Zone[]>([]);
+  const [allZones, setAllZones] = useState<Zone[]>([]); // Keep all zones for filtering
   const [instanceTypes, setInstanceTypes] = useState<InstanceType[]>([]);
 
   // Selected Values
@@ -123,7 +124,9 @@ export default function Dashboard() {
         }
         if (zonesRes.ok) {
           const data: Zone[] = await zonesRes.json();
-          setZones(data.filter(z => z.is_active));
+          const activeZones = data.filter(z => z.is_active);
+          setAllZones(activeZones); // Store all zones
+          setZones(activeZones); // Display all zones initially
         }
         if (typesRes.ok) {
           const data: InstanceType[] = await typesRes.json();
@@ -142,12 +145,62 @@ export default function Dashboard() {
   }, [isDeployOpen]);
 
   // Filter zones by selected region
-  const availableZones = selectedRegionId
-    ? zones.filter(z => {
-      const region = regions.find(r => r.id === selectedRegionId);
-      return region && z.name.startsWith(region.code); // Simple heuristic
-    })
-    : [];
+  useEffect(() => {
+    if (!selectedRegionId) {
+      setZones(allZones);
+      return;
+    }
+
+    const region = regions.find(r => r.id === selectedRegionId);
+    if (region) {
+      // Filter zones that belong to the selected region
+      const filteredZones = allZones.filter(z => z.code.startsWith(region.code));
+      setZones(filteredZones);
+
+      // Reset zone and type selections when region changes
+      setSelectedZoneId("");
+      setSelectedTypeId("");
+    }
+  }, [selectedRegionId, regions, allZones]);
+
+  // Filter instance types by selected zone
+  useEffect(() => {
+    if (!selectedZoneId) {
+      // If no zone selected, fetch all instance types
+      const fetchAllTypes = async () => {
+        try {
+          const res = await fetch(apiUrl("instance_types"));
+          if (res.ok) {
+            const data: InstanceType[] = await res.json();
+            setInstanceTypes(data.filter(t => t.is_active));
+          }
+        } catch (err) {
+          console.error("Failed to fetch instance types", err);
+        }
+      };
+      fetchAllTypes();
+      return;
+    }
+
+    // Fetch instance types available for the selected zone
+    const fetchTypesForZone = async () => {
+      try {
+        const res = await fetch(apiUrl(`zones/${selectedZoneId}/instance_types`));
+        if (res.ok) {
+          const data: InstanceType[] = await res.json();
+          setInstanceTypes(data);
+          // Reset instance type selection when zone changes
+          setSelectedTypeId("");
+        } else {
+          // Fallback to all types if endpoint fails
+          console.warn("Failed to fetch zone-specific types, showing all");
+        }
+      } catch (err) {
+        console.error("Failed to fetch instance types for zone", err);
+      }
+    };
+    fetchTypesForZone();
+  }, [selectedZoneId]);
 
   const handleDeploy = async () => {
     if (!selectedZoneId || !selectedTypeId) {
@@ -445,7 +498,7 @@ export default function Dashboard() {
                         <SelectValue placeholder="Select zone" />
                       </SelectTrigger>
                       <SelectContent>
-                        {availableZones.map(z => (
+                        {zones.map(z => (
                           <SelectItem key={z.id} value={z.id}>{z.name}</SelectItem>
                         ))}
                       </SelectContent>
