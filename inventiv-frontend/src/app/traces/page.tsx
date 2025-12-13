@@ -95,7 +95,7 @@ export default function Traces() {
                                     <TableCell>{instance.zone}</TableCell>
                                     <TableCell>{instance.instance_type}</TableCell>
                                     <TableCell className="font-mono">
-                                        {instance.total_cost !== undefined ? `$${instance.total_cost.toFixed(4)}` : '-'}
+                                        {instance.total_cost != null ? `$${instance.total_cost.toFixed(4)}` : '-'}
                                     </TableCell>
                                     <TableCell>
                                         <Badge variant="secondary">
@@ -151,8 +151,8 @@ export default function Traces() {
                                     <div className="space-y-1 text-sm">
                                         <div className="flex justify-between border-b pb-1"><span>Type</span> <span className="font-medium">{selectedInstance.instance_type}</span></div>
                                         <div className="flex justify-between border-b pb-1"><span>VRAM</span> <span>{selectedInstance.gpu_vram ? `${selectedInstance.gpu_vram} GB` : '-'}</span></div>
-                                        <div className="flex justify-between border-b pb-1"><span>Rate</span> <span>${selectedInstance.cost_per_hour}/hr</span></div>
-                                        <div className="flex justify-between border-b pb-1"><span>Total Cost</span> <span className="font-bold text-green-600">${selectedInstance.total_cost?.toFixed(4)}</span></div>
+                                        <div className="flex justify-between border-b pb-1"><span>Rate</span> <span>{selectedInstance.cost_per_hour != null ? `$${selectedInstance.cost_per_hour}/hr` : '-'}</span></div>
+                                        <div className="flex justify-between border-b pb-1"><span>Total Cost</span> <span className="font-bold text-green-600">{selectedInstance.total_cost != null ? `$${selectedInstance.total_cost.toFixed(4)}` : '-'}</span></div>
                                         <div className="flex justify-between border-b pb-1"><span>Status</span> <Badge variant="secondary">{selectedInstance.status}</Badge></div>
                                         <div className="flex justify-between border-b pb-1"><span>Created</span> <span>{formatDistanceToNow(parseISO(selectedInstance.created_at), { addSuffix: true })}</span></div>
                                     </div>

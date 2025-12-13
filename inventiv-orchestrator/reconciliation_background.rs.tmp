@@ -1,0 +1,44 @@
+// Add this to orchestrator/src/main.rs after the app starts
+
+// Background reconciliation task - runs every 10 seconds
+// but only checks instances not reconciled in last 60 seconds
+let pool_reconcile = state.db.clone();
+tokio::spawn(async move {
+    let mut interval = tokio::time::interval(
+        tokio::time::Duration::from_secs(10) // Every 10 seconds
+    );
+
+    loop {
+        interval.tick().await;
+        
+        let project_id = match std::env::var("SCALEWAY_PROJECT_ID") {
+            Ok(id) => id,
+            Err(_) => {
+                eprintln!("⚠️  SCALEWAY_PROJECT_ID not set, skipping reconciliation");
+                continue;
+            }
+        };
+        
+        let secret_key = match std::env::var("SCALEWAY_SECRET_KEY") {
+            Ok(key) => key,
+            Err(_) => {
+                eprintln!("⚠️  SCALEWAY_SECRET_KEY not set, skipping reconciliation");
+                continue;
+            }
+        };
+        
+        let provider = crate::provider::ScalewayProvider::new(project_id, secret_key);
+
+        match crate::reconciliation::reconcile_instances(&pool_reconcile, &provider).await {
+            Ok(count) if count > 0 => {
+                println!("🔴 [Auto-Reconciliation] Detected {} orphaned instances", count);
+            }
+            Ok(_) => {
+                // Normal case - no orphans
+            }
+            Err(e) => {
+                eprintln!("❌ [Auto-Reconciliation] Error: {:?}", e);
+            }
+        }
+    }
+});

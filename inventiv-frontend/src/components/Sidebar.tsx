@@ -1,8 +1,39 @@
+"use client";
+
 import Link from "next/link";
-import { LayoutDashboard, Server, Box, Settings, Activity, Archive } from "lucide-react";
+import { usePathname } from "next/navigation";
+import { LayoutDashboard, Box, Settings, Activity, Archive, BarChart3 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
+interface SidebarLinkProps {
+    href: string;
+    icon: React.ElementType;
+    label: string;
+    disabled?: boolean;
+}
+
+function SidebarLink({ href, icon: Icon, label, disabled }: SidebarLinkProps) {
+    const pathname = usePathname();
+    const isActive = pathname === href;
+
+    return (
+        <Button
+            variant={isActive ? "secondary" : "ghost"}
+            className="w-full justify-start"
+            asChild
+            disabled={disabled}
+        >
+            <Link href={href}>
+                <Icon className="mr-2 h-4 w-4" />
+                {label}
+            </Link>
+        </Button>
+    );
+}
+
 export function Sidebar() {
+    const pathname = usePathname();
+
     return (
         <div className="pb-12 w-64 border-r min-h-screen bg-background text-foreground hidden md:block">
             <div className="space-y-4 py-4">
@@ -11,24 +42,10 @@ export function Sidebar() {
                         Inventiv Agents
                     </h2>
                     <div className="space-y-1">
-                        <Button variant="secondary" className="w-full justify-start" asChild>
-                            <Link href="/">
-                                <LayoutDashboard className="mr-2 h-4 w-4" />
-                                Dashboard
-                            </Link>
-                        </Button>
-                        <Button variant="ghost" className="w-full justify-start" asChild>
-                            <Link href="/models">
-                                <Box className="mr-2 h-4 w-4" />
-                                Models
-                            </Link>
-                        </Button>
-                        <Button variant="ghost" className="w-full justify-start" asChild>
-                            <Link href="/settings">
-                                <Settings className="mr-2 h-4 w-4" />
-                                Settings
-                            </Link>
-                        </Button>
+                        <SidebarLink href="/" icon={LayoutDashboard} label="Dashboard" />
+                        <SidebarLink href="/monitoring" icon={BarChart3} label="Monitoring" />
+                        <SidebarLink href="/models" icon={Box} label="Models" />
+                        <SidebarLink href="/settings" icon={Settings} label="Settings" />
                     </div>
                 </div>
                 <div className="px-3 py-2">
@@ -36,12 +53,7 @@ export function Sidebar() {
                         History
                     </h2>
                     <div className="space-y-1">
-                        <Button variant="ghost" className="w-full justify-start" asChild>
-                            <Link href="/traces">
-                                <Archive className="mr-2 h-4 w-4" />
-                                Traces
-                            </Link>
-                        </Button>
+                        <SidebarLink href="/traces" icon={Archive} label="Traces" />
                     </div>
                 </div>
                 <div className="px-3 py-2">

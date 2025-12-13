@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { apiUrl } from "@/lib/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
@@ -10,7 +11,8 @@ import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Pencil, Check } from "lucide-react";
+import { Pencil, Check, Settings2 } from "lucide-react";
+import { ManageZonesModal } from "@/components/ManageZonesModal";
 
 // --- Types ---
 
@@ -45,9 +47,9 @@ export default function SettingsPage() {
     const fetchData = async () => {
         try {
             const [resRegions, resZones, resTypes] = await Promise.all([
-                fetch("/api/backend/regions"),
-                fetch("/api/backend/zones"),
-                fetch("/api/backend/instance_types")
+                fetch(apiUrl("regions")),
+                fetch(apiUrl("zones")),
+                fetch(apiUrl("instance_types"))
             ]);
 
             if (resRegions.ok) setRegions(await resRegions.json());
@@ -78,7 +80,7 @@ export default function SettingsPage() {
     const handleSave = async () => {
         if (!editingEntity || !entityType) return;
 
-        const url = `/api/backend/${entityType === 'type' ? 'instance_types' : entityType + 's'}/${editingEntity.id}`;
+        const url = apiUrl(`${entityType === 'type' ? 'instance_types' : entityType + 's'}/${editingEntity.id}`);
 
         const payload: any = {
             code: formData.code,
@@ -110,7 +112,7 @@ export default function SettingsPage() {
 
     const toggleActive = async (entity: any, type: 'region' | 'zone' | 'type') => {
         // Quick toggle without modal
-        const url = `/api/backend/${type === 'type' ? 'instance_types' : type + 's'}/${entity.id}`;
+        const url = apiUrl(`${type === 'type' ? 'instance_types' : type + 's'}/${entity.id}`);
         try {
             await fetch(url, {
                 method: "PUT",

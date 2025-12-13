@@ -1,0 +1,29 @@
+// Add this near the end of main.rs, before the router setup
+
+/// POST /reconcile - Trigger manual reconciliation of instances
+async fn trigger_reconciliation(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    println!("🔍 Manual reconciliation triggered via API");
+
+    // Publish Redis event for orchestrator
+    let event_payload = serde_json::json!({
+        "type": "CMD:RECONCILE"
+    }).to_string();
+
+    match state.redis.publish("orchestrator-commands", &event_payload).await {
+        Ok(_) => {
+            Json(json!({
+                "status": "triggered",
+                "message": "Reconciliation task has been triggered"
+            }))
+        }
+        Err(e) => {
+            eprintln!("Failed to publish reconciliation event: {:?}", e);
+            Json(json!({
+                "status": "error",
+                "message": format!("Failed to trigger reconciliation: {:?}", e)
+            }))
+        }
+    }
+}

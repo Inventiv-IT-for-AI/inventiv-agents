@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { formatDistanceToNow, parseISO } from "date-fns";
 import { Badge } from "@/components/ui/badge";
+import { apiUrl } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -91,7 +92,7 @@ export default function Dashboard() {
 
   const handleArchive = async (id: string) => {
     try {
-      const res = await fetch(`/api/backend/instances/${id}/archive`, { method: "PUT" });
+      const res = await fetch(apiUrl(`instances/${id}/archive`), { method: "PUT" });
       if (res.ok) {
         setInstances(prev => prev.filter(i => i.id !== id));
       } else {
@@ -111,9 +112,9 @@ export default function Dashboard() {
       try {
         // Fetch all catalog data
         const [regionsRes, zonesRes, typesRes] = await Promise.all([
-          fetch("/api/backend/regions"),
-          fetch("/api/backend/zones"),
-          fetch("/api/backend/instance_types")
+          fetch(apiUrl("regions")),
+          fetch(apiUrl("zones")),
+          fetch(apiUrl("instance_types"))
         ]);
 
         if (regionsRes.ok) {
@@ -159,7 +160,7 @@ export default function Dashboard() {
       const selectedZone = zones.find(z => z.id === selectedZoneId);
       const selectedType = instanceTypes.find(t => t.id === selectedTypeId);
 
-      const res = await fetch("/api/backend/deployments", {
+      const res = await fetch(apiUrl("deployments"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -197,7 +198,7 @@ export default function Dashboard() {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const res = await fetch("/api/backend/instances");
+        const res = await fetch(apiUrl("instances"));
         if (res.ok) {
           const data = await res.json();
           setInstances(data);
@@ -224,7 +225,7 @@ export default function Dashboard() {
     setTerminateStep('submitting');
 
     try {
-      const res = await fetch(`/api/backend/instances/${instanceToTerminate}`, { method: "DELETE" });
+      const res = await fetch(apiUrl(`instances/${instanceToTerminate}`), { method: "DELETE" });
       if (res.ok) {
         setTerminateStep('success');
         // Auto close after 1.5s

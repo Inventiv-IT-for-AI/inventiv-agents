@@ -1,25 +1,29 @@
-FROM rust:latest as chef
-USER root
-RUN cargo install cargo-chef
+FROM rust:latest
 WORKDIR /app
 
-FROM chef AS planner
-COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
+# Install cargo-watch for hot reload
+RUN cargo install cargo-watch
 
-FROM chef AS builder
-COPY --from=planner /app/recipe.json recipe.json
-# Build dependencies - this is the caching layer!
-RUN cargo chef cook --release --recipe-path recipe.json
-# Build application
-COPY . .
-ARG SERVICE_NAME
-RUN cargo build --release -p ${SERVICE_NAME}
+# Copy only dependency files first (for caching)
+COPY Cargo.toml Cargo.lock ./
+COPY inventiv-api/Cargo.toml ./inventiv-api/
+COPY inventiv-common/Cargo.toml ./inventiv-common/
+COPY inventiv-orchestrator/Cargo.toml ./inventiv-orchestrator/
 
-FROM debian:bookworm-slim
+# Create dummy source files and build dependencies (caching layer)
+RUN mkdir -p inventiv-api/src inventiv-common/src inventiv-orchestrator/src && \
+    echo "fn main() {}" > inventiv-api/src/main.rs && \
+    echo "fn main() {}" > inventiv-orchestrator/src/main.rs && \
+    echo "" > inventiv-common/src/lib.rs && \
+    cargo build --release && \
+    rm -rf inventiv-*/src
+
+# Copy actual source (will be mounted via volume in dev)
+COPY . .
+
+# Service name passed as build arg
 ARG SERVICE_NAME
-# Install OpenSSL
-RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
-WORKDIR /app
-COPY --from=builder /app/target/release/${SERVICE_NAME} ./service
-CMD ["./service"]
+ENV SERVICE_NAME=${SERVICE_NAME}
+
+# Hot reload with cargo-watch
+CMD cargo watch -x "run --release -p ${SERVICE_NAME}"

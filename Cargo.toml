@@ -1,8 +1,7 @@
 [workspace]
 members = [
-    "inventiv-common",
+    "inventiv-api",
     "inventiv-orchestrator",
-    "inventiv-router",
-    "inventiv-backend"
+    "inventiv-common",
 ]
 resolver = "2"

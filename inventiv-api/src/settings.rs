@@ -8,7 +8,7 @@ use axum::{
 use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
-use inventiv_common::{Region, Zone, InstanceType};
+use inventiv_common::{Provider, Region, Zone, InstanceType};
 use crate::AppState;
 
 // --- DTOs ---
@@ -180,6 +180,7 @@ pub async fn list_instance_types(State(state): State<Arc<AppState>>) -> Json<Vec
         r#"SELECT 
             id, provider_id, name, code, 
             gpu_count, vram_per_gpu_gb, 
+            cpu_count, ram_gb, n_gpu, bandwidth_bps,
             is_active, 
             CAST(cost_per_hour AS DOUBLE PRECISION) as "cost_per_hour"
            FROM instance_types ORDER BY name"#
@@ -232,6 +233,81 @@ pub async fn update_instance_type(
         },
         Err(e) => {
             eprintln!("Error updating instance type: {:?}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct UpdateProviderRequest {
+    pub name: Option<String>,
+    pub code: Option<String>,
+    pub description: Option<String>,
+    pub is_active: Option<bool>,
+}
+
+// Providers Handlers
+
+#[utoipa::path(
+    get,
+    path = "/providers",
+    tag = "Settings",
+    responses(
+        (status = 200, description = "List all providers", body = Vec<Provider>)
+    )
+)]
+pub async fn list_providers(State(state): State<Arc<AppState>>) -> Json<Vec<Provider>> {
+    let providers = sqlx::query_as::<_, Provider>(
+        "SELECT id, name, code, description, is_active FROM providers ORDER BY name"
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or(vec![]);
+
+    Json(providers)
+}
+
+#[utoipa::path(
+    put,
+    path = "/providers/{id}",
+    tag = "Settings",
+    request_body = UpdateProviderRequest,
+    responses(
+        (status = 200, description = "Provider updated"),
+        (status = 404, description = "Provider not found")
+    )
+)]
+pub async fn update_provider(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<UpdateProviderRequest>,
+) -> impl IntoResponse {
+    let result = sqlx::query(
+        "UPDATE providers SET 
+            name = COALESCE($1, name), 
+            code = COALESCE($2, code),
+            description = COALESCE($3, description), 
+            is_active = COALESCE($4, is_active)
+         WHERE id = $5"
+    )
+    .bind(req.name)
+    .bind(req.code)
+    .bind(req.description)
+    .bind(req.is_active)
+    .bind(id)
+    .execute(&state.db)
+    .await;
+
+    match result {
+        Ok(res) => {
+            if res.rows_affected() > 0 {
+                StatusCode::OK
+            } else {
+                StatusCode::NOT_FOUND
+            }
+        },
+        Err(e) => {
+            eprintln!("Error updating provider: {:?}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         }
     }

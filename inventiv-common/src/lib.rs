@@ -27,11 +27,13 @@ pub struct User {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Provider {
     pub id: Uuid,
     pub name: String,
+    pub code: Option<String>,
     pub description: Option<String>,
+    pub is_active: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow, utoipa::ToSchema)]
@@ -63,6 +65,14 @@ pub struct InstanceType {
     pub is_active: bool,
     #[sqlx(default)] 
     pub cost_per_hour: Option<f64>, // Using f64 for simplicity, mapped from numeric
+    #[sqlx(default)]
+    pub cpu_count: i32,
+    #[sqlx(default)]
+    pub ram_gb: i32,
+    #[sqlx(default)]
+    pub n_gpu: i32,     // New column
+    #[sqlx(default)]
+    pub bandwidth_bps: i64, // Bigint
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
@@ -92,4 +102,9 @@ pub struct Instance {
     pub created_at: DateTime<Utc>,
     pub terminated_at: Option<DateTime<Utc>>,
     pub gpu_profile: sqlx::types::Json<InstanceType>, // Snapshot using InstanceType struct
+    
+    // Deletion tracking fields for orphaned instance detection
+    pub deletion_reason: Option<String>,
+    pub deleted_by_provider: Option<bool>,
+    pub last_reconciliation: Option<DateTime<Utc>>,  // Updated on every reconciliation check
 }

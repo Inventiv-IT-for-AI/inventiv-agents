@@ -8,12 +8,21 @@ use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::Arc;
 mod provider;
-use crate::provider::CloudProvider; // TOP LEVEL IMPORT
+mod provider_manager; // NEW
+use crate::provider::CloudProvider;
+use crate::provider_manager::ProviderManager; // NEW
+mod providers; // NEW
 mod models;
+mod logger;
+mod reconciliation;
+mod services; // NEW
 use tokio::time::{sleep, Duration};
 use inventiv_common::{Instance, InstanceStatus}; // Keep imports
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres};
+
+mod health_check;
+use health_check::{check_and_transition_instance};
 
 struct AppState {
     db: Pool<Postgres>,
@@ -21,10 +30,12 @@ struct AppState {
 
 #[derive(serde::Deserialize, Debug)]
 struct CommandProvision {
-    deployment_id: String,
+    instance_id: String,
     zone: String,
     instance_type: String,
 }
+
+mod migrations; // NEW
 
 #[tokio::main]
 async fn main() {
@@ -43,92 +54,14 @@ async fn main() {
     sqlx::query("SELECT 1").execute(&pool).await.unwrap();
     println!("✅ Connected to Database");
 
-    // Run Migrations Manually (Inline Fallback)
-    println!("📦 Running Migrations (Inline Schema)...");
-    
-    // Minimal Schema for Orchestrator to work (Instances Table)
-    let schema_sql = r#"
-        CREATE TYPE instance_status AS ENUM (
-            'provisioning', 'booting', 'ready', 'draining', 'terminated', 'failed'
-        );
-        CREATE TABLE IF NOT EXISTS providers (
-            id UUID PRIMARY KEY,
-            name VARCHAR(50) UNIQUE NOT NULL,
-            description TEXT,
-            created_at TIMESTAMPTZ DEFAULT NOW()
-        );
-        CREATE TABLE IF NOT EXISTS regions (
-            id UUID PRIMARY KEY,
-            provider_id UUID NOT NULL,
-            name VARCHAR(50) NOT NULL,
-            UNIQUE(provider_id, name)
-        );
-        CREATE TABLE IF NOT EXISTS zones (
-            id UUID PRIMARY KEY,
-            region_id UUID NOT NULL,
-            name VARCHAR(50) NOT NULL,
-            UNIQUE(region_id, name)
-        );
-        CREATE TABLE IF NOT EXISTS instance_types (
-            id UUID PRIMARY KEY,
-            provider_id UUID NOT NULL,
-            name VARCHAR(50) NOT NULL,
-            gpu_count INTEGER NOT NULL,
-            vram_per_gpu_gb INTEGER NOT NULL,
-            UNIQUE(provider_id, name)
-        );
-        CREATE TABLE IF NOT EXISTS instances (
-            id UUID PRIMARY KEY,
-            provider_id UUID NOT NULL,
-            zone_id UUID NOT NULL,
-            instance_type_id UUID NOT NULL,
-            model_id UUID,
-            provider_instance_id VARCHAR(255),
-            ip_address INET,
-            api_key VARCHAR(255),
-            status instance_status NOT NULL DEFAULT 'provisioning',
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            terminated_at TIMESTAMPTZ,
-            gpu_profile JSONB NOT NULL
-        );
-    "#;
-
-    // Execute schema (ignoring errors if types already exist)
-    // We split by ; explicitly because simple query protocol might not be used by sqlx pool execute
-    // Actually, letting sqlx execute the block might fail if multiple statements.
-    // We'll execute creating the enum separately as it cannot be IF NOT EXISTS easily in Postgres < 12 without blocks.
-    // Simplified: Just try to execute the whole block. If it fails, we assume it exists.
-    
-    // Note: sqlx::query might not support multiple statements.
-    // We'll try. If it fails, I'll recommend user to use the CLI or I'll split it.
-    // Splitting by ; is safer.
-    for statement in schema_sql.split(';') {
-        let stmt = statement.trim();
-        if !stmt.is_empty() {
-             let _ = sqlx::query(stmt).execute(&pool).await;
-        }
-    }
-    
-    // Run Seeds needed for FK
-    let seeds_sql = r#"
-        INSERT INTO providers (id, name, description) VALUES ('00000000-0000-0000-0000-000000000001', 'scaleway', 'Scaleway GPU Cloud') ON CONFLICT DO NOTHING;
-        INSERT INTO regions (id, provider_id, name) VALUES ('00000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000001', 'fr-par') ON CONFLICT DO NOTHING;
-        INSERT INTO zones (id, region_id, name) VALUES ('00000000-0000-0000-0000-000000000020', '00000000-0000-0000-0000-000000000010', 'fr-par-2') ON CONFLICT DO NOTHING;
-        INSERT INTO instance_types (id, provider_id, name, gpu_count, vram_per_gpu_gb) VALUES ('00000000-0000-0000-0000-000000000030', '00000000-0000-0000-0000-000000000001', 'RENDER-S', 1, 24) ON CONFLICT DO NOTHING;
-    "#;
-    
-    for statement in seeds_sql.split(';') {
-        let stmt = statement.trim();
-        if !stmt.is_empty() {
-             let _ = sqlx::query(stmt).execute(&pool).await;
-        }
-    }
-
-    println!("✅ Migrations (Inline) Applied");
+    // Run Migrations
+    migrations::run_inline_migrations(&pool).await;
 
     let state = Arc::new(AppState {
         db: pool,
     });
+
+
 
     // 3. Start Scaling Engine Loop (Background Task)
     let state_clone = state.clone();
@@ -151,22 +84,114 @@ async fn main() {
         let mut stream = pubsub.on_message();
         
         while let Some(msg) = stream.next().await {
-            // SAFETY: Explicit typing to help inference
             let payload: String = msg.get_payload().unwrap();
-            println!("⚡️ Event Received: {}", payload);
+            println!("📩 Received Event: {}", payload);
+
+            if let Ok(event_json) = serde_json::from_str::<serde_json::Value>(&payload) {
+                let event_type = event_json["type"].as_str().unwrap_or("");
+
+                match event_type {
+                    "CMD:PROVISION" => {
+                        if let Ok(cmd) = serde_json::from_value::<CommandProvision>(event_json.clone()) {
+                            let pool = state_redis.db.clone();
+                            tokio::spawn(async move {
+                                services::process_provisioning(pool, cmd.instance_id, cmd.zone, cmd.instance_type).await;
+                            });
+                        }
+                    }
+                    "CMD:TERMINATE" => {
+                        if let Ok(cmd) = serde_json::from_value::<CommandTerminate>(event_json.clone()) {
+                            let pool = state_redis.db.clone();
+                            tokio::spawn(async move {
+                                services::process_termination(pool, cmd.instance_id).await;
+                            });
+                        }
+                    }
+                    "CMD:SYNC_CATALOG" => {
+                        println!("📥 Received Sync Catalog Command");
+                        let pool = state_redis.db.clone();
+                        tokio::spawn(async move {
+                            services::process_catalog_sync(pool).await;
+                        });
+                    }
+                    "CMD:RECONCILE" => {
+                         println!("📥 Received Manual Reconciliation Command");
+                         let pool = state_redis.db.clone();
+                         tokio::spawn(async move {
+                             services::process_full_reconciliation(pool).await;
+                         });
+                    }
+                    _ => eprintln!("⚠️  Unknown event type: {}", event_type),
+                }
+            }
+        }
+    });
+
+    // Background reconciliation task - runs every 10 seconds
+    // but only checks instances not reconciled in last 60 seconds (smart filtering)
+    let pool_reconcile = state.db.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
+
+        loop {
+            interval.tick().await;
             
-            let state_clone = state_redis.clone();
-            if let Ok(cmd) = serde_json::from_str::<CommandProvision>(&payload) {
-                tokio::spawn(async move {
-                    process_provisioning(state_clone, cmd).await;
-                });
-            } else if let Ok(cmd) = serde_json::from_str::<CommandTerminate>(&payload) {
-                 println!("🛑 Termination Command: {}", cmd.instance_id);
-                 tokio::spawn(async move {
-                    process_termination(state_clone, cmd).await;
-                });
+            // Check Scaleway Provider
+            if let Some(provider) = ProviderManager::get_provider("scaleway") {
+                match crate::reconciliation::reconcile_instances(&pool_reconcile, provider.as_ref()).await {
+                    Ok(count) if count > 0 => {
+                        println!("🔴 [Auto-Reconciliation] {} orphaned instances detected", count);
+                    }
+                    Ok(_) => {}, // Normal
+                    Err(e) => eprintln!("❌ [Auto-Reconciliation] {:?}", e),
+                }
             } else {
-                 println!("⚠️ Ignored/Invalid Event Payload: {}", payload);
+                // Provider not configured, skipping
+            }
+        }
+    });
+
+    // 4. Spawn Health Check Monitor (Background Task)
+    let db_health = state.db.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
+        println!("🏥 Health Check Monitor Started (checking every 10s)");
+        
+        loop {
+            interval.tick().await;
+            
+            // Find all instances in 'booting' state with IP addresses
+            let booting_instances: Result<Vec<_>, _> = sqlx::query!(
+                "SELECT id, ip_address::text as ip, created_at, health_check_failures 
+                 FROM instances 
+                 WHERE status = 'booting' AND ip_address IS NOT NULL"
+            )
+            .fetch_all(&db_health)
+            .await;
+            
+            match booting_instances {
+                Ok(instances) if !instances.is_empty() => {
+                    println!("🔍 Checking {} booting instance(s)...", instances.len());
+                    
+                    for instance in instances {
+                        let db_clone = db_health.clone();
+                        tokio::spawn(async move {
+                            check_and_transition_instance(
+                    instance.id,
+                    instance.ip,
+                    instance.created_at.unwrap_or_else(|| sqlx::types::chrono::Utc::now()),
+                    instance.health_check_failures.unwrap_or(0),
+                    db_clone
+                ).await;
+                        });
+                    }
+                }
+                Ok(_) => {
+                    // No booting instances, silent
+                }
+                Err(e) => {
+                    println!("⚠️  Health check query error: {:?}", e);
+                }
             }
         }
     });
@@ -195,108 +220,7 @@ struct CommandTerminate {
     instance_id: String,
 }
 
-async fn process_termination(state: Arc<AppState>, cmd: CommandTerminate) {
-    let id_uuid = uuid::Uuid::parse_str(&cmd.instance_id).unwrap_or_default();
-    println!("⚙️ Processing Termination Async: {}", id_uuid);
-
-     // 1. Fetch from DB
-    let instance = sqlx::query_as::<Postgres, Instance>("SELECT * FROM instances WHERE id = $1")
-        .bind(id_uuid)
-        .fetch_optional(&state.db)
-        .await
-        .unwrap_or(None);
-
-    if let Some(mut inst) = instance {
-        if inst.status == InstanceStatus::Terminated {
-             println!("⚠️ Instance {} already terminated.", id_uuid);
-             return;
-        }
-
-        // 2. Call Scaleway API
-        let project_id = std::env::var("SCALEWAY_PROJECT_ID").unwrap_or_default();
-        let secret_key = std::env::var("SCALEWAY_SECRET_KEY").unwrap_or_default();
-        
-        let provider: crate::provider::ScalewayProvider = crate::provider::ScalewayProvider::new(project_id, secret_key);
-        
-        if let Some(remote_id) = &inst.provider_instance_id {
-            match provider.terminate_instance("fr-par-2", remote_id).await {
-                Ok(_) => println!("✅ Remote Instance Terminated: {}", remote_id),
-                Err(e) => println!("⚠️ Failed to terminate remote: {}", e),
-            }
-        }
-
-        // 3. Mark in DB
-        let _ = sqlx::query("UPDATE instances SET status = 'terminated'::instance_status, terminated_at = NOW() WHERE id = $1")
-            .bind(id_uuid)
-            .execute(&state.db)
-            .await;
-            
-        println!("✅ Instance {} marked as terminated in DB.", id_uuid);
-    } else {
-        println!("⚠️ Instance {} not found for termination.", id_uuid);
-    }
-}
-
-// ASYNC CORE SERVICE
-async fn process_provisioning(state: Arc<AppState>, cmd: CommandProvision) {
-    println!("⚙️ Processing Provisioning Async: {:?}", cmd);
-    
-    // 1. Init Provider
-    let project_id = std::env::var("SCALEWAY_PROJECT_ID").unwrap_or_default();
-    let secret_key = std::env::var("SCALEWAY_SECRET_KEY").unwrap_or_default();
-    
-    if project_id.is_empty() || secret_key.is_empty() {
-         println!("❌ Error: Missing Credentials");
-         return;
-    }
-    
-    // Explicit type
-    let provider: crate::provider::ScalewayProvider = crate::provider::ScalewayProvider::new(project_id, secret_key);
-
-    // Ubuntu 24.04 Noble Numbat (x86_64, fr-par-2) fetched dynamically
-    let image_id = "8e0da557-5d75-40ba-b928-5984075aa255"; 
-    
-    // Call via Trait explicitly? No, provider implements it.
-    match provider.create_instance(&cmd.zone, &cmd.instance_type, image_id).await {
-        Ok(server_id) => {
-             println!("✅ Server Created: {}", server_id);
-             
-             // 3. Power On
-             let _ = provider.start_instance(&cmd.zone, &server_id).await;
-             
-             // 4. Record in DB
-             let instance_id = uuid::Uuid::parse_str(&cmd.deployment_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
-             println!("💾 Persisting Instance {} ({}) to DB...", instance_id, server_id);
-             
-             // UNCOMMENTED & FIXED
-             let result = sqlx::query::<Postgres>(
-                "INSERT INTO instances (id, provider_id, zone_id, instance_type_id, provider_instance_id, status, gpu_profile)
-                 VALUES ($1, $2, $3, $4, $5, 'booting', 
-                 '{\"id\": \"00000000-0000-0000-0000-000000000000\", \"provider_id\": \"00000000-0000-0000-0000-000000000000\", \"name\": \"L4\", \"gpu_count\": 1, \"vram_per_gpu_gb\": 24}'::jsonb)"
-             )
-             .bind(instance_id) // ID from Backend
-             .bind(uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap()) // Provider Scaleway
-             .bind(uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000020").unwrap()) // Zone fr-par-2
-             .bind(uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000030").unwrap()) // Type RENDER-S
-             .bind(&server_id)
-             .execute(&state.db)
-             .await;
-             
-             if let Err(e) = result {
-                 println!("❌ Database Insert Error: {:?}", e);
-             } else {
-                 println!("✅ Database Insert Success");
-             }
-        }
-        Err(e) => {
-            println!("❌ Provision Error: {}", e);
-        }
-    }
-}
-
-// DELETED HANDLERS (Moved to Backend)
-// async fn list_instances(...)
-// async fn delete_instance_handler(...)
+// DELETED HANDLERS (Moved to services.rs)
 
 async fn get_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM instances WHERE status != 'terminated'")
@@ -321,3 +245,5 @@ async fn scaling_engine_loop(state: Arc<AppState>) {
         println!("Scaler Heartbeat: {} total instances managed.", count);
     }
 }
+
+

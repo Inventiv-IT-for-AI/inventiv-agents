@@ -27,9 +27,13 @@ services:
       dockerfile: Dockerfile.rust
       args:
         SERVICE_NAME: inventiv-orchestrator
-    command: ./service
+    command: cargo watch -x "run --release -p inventiv-orchestrator"
     ports:
       - "8001:8001"
+    volumes:
+      - .:/app # Source code mount for hot reload
+      - cargo_cache:/usr/local/cargo/registry # Cache dependencies
+      - target_cache:/app/target # Cache compiled artifacts
     environment:
       - DATABASE_URL=postgresql://postgres:password@db:5432/llminfra
       - REDIS_URL=redis://redis:6379
@@ -37,40 +41,34 @@ services:
       - SCALEWAY_PROJECT_ID=${SCALEWAY_PROJECT_ID}
       - SCALEWAY_ACCESS_KEY=${SCALEWAY_ACCESS_KEY}
       - SCALEWAY_SECRET_KEY=${SCALEWAY_SECRET_KEY}
+      - RUST_LOG=debug
     depends_on:
       - db
       - redis
 
-  router:
+  api:
     build:
       context: .
       dockerfile: Dockerfile.rust
       args:
-        SERVICE_NAME: inventiv-router
-    command: ./service
-    ports:
-      - "8002:8002"
-    environment:
-      - ORCHESTRATOR_URL=http://orchestrator:8001
-    depends_on:
-      - orchestrator
-
-  backend:
-    build:
-      context: .
-      dockerfile: Dockerfile.rust
-      args:
-        SERVICE_NAME: inventiv-backend
-    command: ./service
+        SERVICE_NAME: inventiv-api
+    command: cargo watch -x "run --release -p inventiv-api"
     ports:
       - "8003:8003"
+    volumes:
+      - .:/app # Source code mount for hot reload
+      - cargo_cache:/usr/local/cargo/registry # Cache dependencies
+      - target_cache:/app/target # Cache compiled artifacts
     environment:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://postgres:password@db:5432/llminfra
-      - RUST_LOG=info
+      - RUST_LOG=debug
     depends_on:
       - redis
+      - db
 
 volumes:
   redis_data:
   db_data:
+  cargo_cache: # NEW: Cache Cargo dependencies
+  target_cache: # NEW: Cache compilation artifacts
