@@ -37,6 +37,10 @@ export default function SettingsPage() {
     const [entityType, setEntityType] = useState<'region' | 'zone' | 'type' | null>(null);
     const [isEditOpen, setIsEditOpen] = useState(false);
 
+    // Manage Zones Modal State
+    const [isManageZonesOpen, setIsManageZonesOpen] = useState(false);
+    const [selectedInstanceType, setSelectedInstanceType] = useState<InstanceType | null>(null);
+
     const [formData, setFormData] = useState({
         code: "",
         name: "",
@@ -236,9 +240,23 @@ export default function SettingsPage() {
                                                 <Switch checked={t.is_active} onCheckedChange={() => toggleActive(t, 'type')} />
                                             </TableCell>
                                             <TableCell className="text-right">
-                                                <Button variant="ghost" size="icon" onClick={() => handleEdit(t, 'type')}>
-                                                    <Pencil className="h-4 w-4" />
-                                                </Button>
+                                                <div className="flex justify-end gap-2">
+                                                    <Button
+                                                        variant="outline"
+                                                        size="sm"
+                                                        onClick={() => {
+                                                            setSelectedInstanceType(t);
+                                                            setIsManageZonesOpen(true);
+                                                        }}
+                                                        title="Manage Zones"
+                                                    >
+                                                        <Settings2 className="h-4 w-4 mr-1" />
+                                                        Manage Zones
+                                                    </Button>
+                                                    <Button variant="ghost" size="icon" onClick={() => handleEdit(t, 'type')}>
+                                                        <Pencil className="h-4 w-4" />
+                                                    </Button>
+                                                </div>
                                             </TableCell>
                                         </TableRow>
                                     ))}
@@ -279,6 +297,16 @@ export default function SettingsPage() {
                     </DialogFooter>
                 </DialogContent>
             </Dialog>
+
+            {/* Manage Zones Modal */}
+            <ManageZonesModal
+                open={isManageZonesOpen}
+                onClose={() => {
+                    setIsManageZonesOpen(false);
+                    setSelectedInstanceType(null);
+                }}
+                instanceType={selectedInstanceType}
+            />
         </div>
     );
 }

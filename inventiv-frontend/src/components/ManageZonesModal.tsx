@@ -20,7 +20,7 @@ type ManageZonesModalProps = {
     instanceType: {
         id: string;
         name: string;
-        code: string;
+        code: string | null;
     } | null;
 };
 
@@ -139,8 +139,8 @@ export function ManageZonesModal({ open, onClose, instanceType }: ManageZonesMod
                                             <div className="flex items-center gap-3">
                                                 <div
                                                     className={`w-5 h-5 rounded-full flex items-center justify-center transition-colors ${isLinked
-                                                            ? "bg-green-500 text-white"
-                                                            : "bg-muted border-2 border-muted-foreground/30"
+                                                        ? "bg-green-500 text-white"
+                                                        : "bg-muted border-2 border-muted-foreground/30"
                                                         }`}
                                                 >
                                                     {isLinked && <Check className="h-3 w-3" />}
