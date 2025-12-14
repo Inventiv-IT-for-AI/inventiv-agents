@@ -25,7 +25,7 @@ pub mod inventory {
         pub cost_per_hour: f64,
         pub cpu_count: i32,
         pub ram_gb: i32,
-        pub n_gpu: i32,
+        pub gpu_count: i32,
         pub vram_per_gpu_gb: i32,
         pub bandwidth_bps: i64,
     }

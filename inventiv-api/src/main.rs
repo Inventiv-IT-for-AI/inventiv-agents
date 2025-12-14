@@ -21,6 +21,7 @@ mod action_logs_search;
 mod api_docs;
 mod simple_logger;
 mod instance_type_zones; // Module for zone associations
+mod finops;
  // Simple logger without sqlx macros
 
 // use audit_log::AuditLogger; // Commented out due to DATABASE_URL build issues
@@ -79,17 +80,26 @@ async fn main() {
         .route("/catalog/sync", post(manual_catalog_sync_trigger))
         // SETTINGS ENDPOINTS
         .route("/providers", get(settings::list_providers))
+        .route("/providers/search", get(settings::search_providers))
         .route("/providers/:id", axum::routing::put(settings::update_provider))
         .route("/regions", get(settings::list_regions))
+        .route("/regions/search", get(settings::search_regions))
         .route("/regions/:id", axum::routing::put(settings::update_region))
         .route("/zones", get(settings::list_zones))
+        .route("/zones/search", get(settings::search_zones))
         .route("/zones/:id", axum::routing::put(settings::update_zone))
         .route("/instance_types", get(settings::list_instance_types))
+        .route("/instance_types/search", get(settings::search_instance_types))
         .route("/instance_types/:id", axum::routing::put(settings::update_instance_type))
         // INSTANCE TYPE ZONE ASSOCIATIONS
         .route("/instance_types/:id/zones", get(instance_type_zones::list_instance_type_zones))
         .route("/instance_types/:id/zones", axum::routing::put(instance_type_zones::associate_zones_to_instance_type))
         .route("/zones/:zone_id/instance_types", get(instance_type_zones::list_instance_types_for_zone))
+        // FINOPS (dashboard)
+        .route("/finops/cost/current", get(finops::get_cost_current))
+        .route("/finops/cost/forecast/minute", get(finops::get_cost_forecast_series))
+        .route("/finops/cost/actual/minute", get(finops::get_cost_actual_series))
+        .route("/finops/cost/cumulative/minute", get(finops::get_cost_cumulative_series))
         .layer(cors)  // Apply CORS to ALL routes
         .with_state(state);
 
@@ -143,6 +153,9 @@ async fn root() -> &'static str {
 
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
 struct DeploymentRequest {
+    /// Preferred way to select provider (stable): e.g. "scaleway", "mock"
+    provider_code: Option<String>,
+    /// Backward-compat (deprecated): provider UUID
     provider_id: Option<uuid::Uuid>,
     zone: String,
     instance_type: String,
@@ -172,10 +185,32 @@ async fn create_deployment(
     let instance_id_uuid = uuid::Uuid::new_v4();  // Create UUID first
     let instance_id = instance_id_uuid.to_string();
 
-    // If provider_id isn't sent (older clients), default to Scaleway.
     let default_provider_id =
         uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(); // scaleway
-    let provider_id = payload.provider_id.unwrap_or(default_provider_id);
+
+    let requested_provider_code: Option<String> = payload
+        .provider_code
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_ascii_lowercase());
+
+    // Resolve provider UUID from provider_code if provided (preferred).
+    // If resolution fails we still insert an instance row (traceability), but validation will fail.
+    let provider_id_resolved: Option<uuid::Uuid> = if let Some(pid) = payload.provider_id {
+        Some(pid)
+    } else if let Some(code) = requested_provider_code.as_deref() {
+        sqlx::query_scalar("SELECT id FROM providers WHERE code = $1 LIMIT 1")
+            .bind(code)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None)
+    } else {
+        // No provider specified -> default to scaleway (by ID; stable in our seeds)
+        Some(default_provider_id)
+    };
+
+    let provider_id = provider_id_resolved.unwrap_or(default_provider_id);
 
     // We want a durable instance_id from the very first request, even when validation fails.
     // So we insert the instance row first (zone/type can be NULL), then all errors can be logged with instance_id.
@@ -219,6 +254,7 @@ async fn create_deployment(
         None,
         Some(serde_json::json!({
             "provider_id": provider_id.to_string(),
+            "provider_code": requested_provider_code,
             "zone": payload.zone,
             "instance_type": payload.instance_type,
         })),
@@ -264,13 +300,18 @@ async fn create_deployment(
             .into_response();
     }
 
-    // Provider must exist and be active
-    let provider_active: bool = sqlx::query_scalar("SELECT COALESCE(is_active, false) FROM providers WHERE id = $1")
-        .bind(provider_id)
-        .fetch_optional(&state.db)
-        .await
-        .unwrap_or(None)
-        .unwrap_or(false);
+    // Provider must exist and be active.
+    // If a provider_code was provided but did not resolve, treat as invalid.
+    let provider_active: bool = if requested_provider_code.is_some() && payload.provider_id.is_none() && provider_id_resolved.is_none() {
+        false
+    } else {
+        sqlx::query_scalar("SELECT COALESCE(is_active, false) FROM providers WHERE id = $1")
+            .bind(provider_id)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None)
+            .unwrap_or(false)
+    };
 
     if !provider_active {
         let msg = "Invalid provider (not found or inactive)";
@@ -625,7 +666,7 @@ async fn list_instances(
             COALESCE(r.name, 'Unknown Region') as region,
             COALESCE(it.name, 'Unknown Type') as instance_type,
             it.vram_per_gpu_gb as gpu_vram,
-            COALESCE(it.gpu_count, it.n_gpu) as gpu_count,
+            it.gpu_count as gpu_count,
             cast(it.cost_per_hour as float8) as cost_per_hour,
             (EXTRACT(EPOCH FROM (COALESCE(i.terminated_at, NOW()) - i.created_at)) / 3600.0) * cast(it.cost_per_hour as float8) as total_cost
         FROM instances i
@@ -682,7 +723,7 @@ async fn get_instance(
             COALESCE(r.name, 'Unknown Region') as region,
             COALESCE(it.name, 'Unknown Type') as instance_type,
             it.vram_per_gpu_gb as gpu_vram,
-            COALESCE(it.gpu_count, it.n_gpu) as gpu_count,
+            it.gpu_count as gpu_count,
             cast(it.cost_per_hour as float8) as cost_per_hour,
             (EXTRACT(EPOCH FROM (COALESCE(i.terminated_at, NOW()) - i.created_at)) / 3600.0) * cast(it.cost_per_hour as float8) as total_cost
         FROM instances i

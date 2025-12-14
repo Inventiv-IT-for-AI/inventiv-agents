@@ -76,37 +76,40 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et les 
 
 ## 🚧 Ce qui manque encore (produit & plateforme)
 
-## 🧭 Phase 0.2.0 — Workers + Data plane (objectif)
+## 🧭 Phase 0.2.1 — Worker ready (priorité)
 
 ### Worker (vLLM + agent sidecar)
-- [ ] Définir un **contrat minimal** Worker:
+- [ ] Finaliser un **contrat minimal** Worker:
   - `/healthz` (liveness)
   - `/readyz` (readiness: modèle chargé / vLLM prêt)
   - `/metrics` (prometheus)
-- [ ] Clarifier le **protocole d’enrôlement** (worker → API/orchestrator):
+- [ ] Implémenter le **protocole d’enrôlement** (worker → control-plane):
   - registration (instance_id, ip, model, gpu specs)
   - heartbeat (status, queue depth, gpu utilization)
-- [ ] Décider comment le worker est démarré:
-  - cloud-init + systemd
-  - docker run via SSH (provisoire)
-  - k3s / nomad (plus tard)
+- [ ] Déploiement “simple” multi-machines:
+  - Docker Compose par machine + réseau privé (Tailscale/WireGuard)
+  - volume cache modèles
+- [ ] Health-check côté Orchestrator:
+  - remplacer progressivement “SSH:22” par `GET http://<worker-ip>:<port>/readyz`
+  - garder un fallback SSH tant que le worker n’est pas déployé partout
 
-### Routing / Load Balancing (data plane)
+## 🧭 Phase 0.2.2 — Router MVP (data plane)
+
+### Routing / Load Balancing
 - [ ] Réintroduire un **router** (OpenAI-compatible):
   - `POST /v1/chat/completions` (proxy vers workers)
   - auth API keys + rate limiting
   - load balancing (LOR / queue depth)
   - failover (retry + circuit breaker)
-- [ ] Source of truth routing:
-  - Redis (pub/sub + cache)
-  - ou DB + watcher
+- [ ] Source de vérité routing:
+  - Redis (pub/sub + cache) pour discovery + stats temps réel
 
 ### Observabilité / Scalabilité
-- [ ] Exposer `metrics` sur API/orchestrator/worker/router
-- [ ] Ajout d’un scaler loop basé sur:
-  - `queue_depth`
-  - `ttft / p95 latency`
-  - `gpu_util`
+- [ ] Exposer `metrics` sur API/orchestrator/worker (+ router quand présent)
+- [ ] Autoscaler (Orchestrator):
+  - signaux: queue depth / ttft / gpu util / erreurs
+  - politiques par pool (ex: `h100_8x80`, `l40s_4x48`)
+  - drain → terminate + cooldowns
 
 ### Auth / API Keys
 - [ ] Auth (JWT) + gestion des API keys (backend + router/gateway).

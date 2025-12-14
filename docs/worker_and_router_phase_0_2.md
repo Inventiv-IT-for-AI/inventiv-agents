@@ -1,7 +1,11 @@
-# Phase 0.2.0 — Workers + Router (Data Plane)
+# Phase 0.2.x — Worker + Router (Data Plane)
 
-Ce document décrit le **MVP** visé pour rendre des instances GPU réellement utilisables pour l’inférence:
-un **Worker** (vLLM + agent sidecar) + un **Router** (OpenAI-compatible) avec load balancing.
+Ce document décrit le **plan 0.2.x** pour rendre des instances GPU réellement utilisables pour l’inférence:
+un **Worker** (vLLM + agent sidecar) puis un **Router** (OpenAI-compatible) avec load balancing.
+
+Découpage proposé:
+- **0.2.1 — Worker ready** (priorité): readiness fiable + heartbeats/capacity + health-check HTTP côté orchestrator.
+- **0.2.2 — Router MVP**: OpenAI-compatible + load balancing + failover.
 
 ---
 
@@ -27,8 +31,8 @@ Sur chaque VM GPU provisionnée par l’orchestrator, un conteneur Worker doit:
   - `WORKER_ID` (uuid worker/agent)
   - `PROVIDER_INSTANCE_ID` (uuid provider)
 - **Control plane**
-  - `INVENTIV_API_URL` (ex: `http://api:8003`)
-  - `INVENTIV_API_KEY` (clé d’agent, rotation possible)
+  - `CONTROL_PLANE_URL` (ex: `http://inventiv-orchestrator:8001` ou IP privée tailnet)
+  - `WORKER_AUTH_TOKEN` (clé d’agent, rotation possible)
 - **Model runtime**
   - `MODEL_ID` (ex: `meta-llama/Llama-3.1-8B-Instruct`)
   - `TENSOR_PARALLEL_SIZE`
@@ -36,12 +40,18 @@ Sur chaque VM GPU provisionnée par l’orchestrator, un conteneur Worker doit:
 
 ### Enrôlement (MVP)
 1. Worker démarre vLLM + agent.
-2. Une fois `readyz` OK, l’agent POST un `register`.
+2. Une fois `readyz` OK, l’agent POST un `register` au control plane.
 3. Heartbeat périodique (10s) avec:
    - status: `starting|ready|draining`
    - queue_depth
    - gpu_util
    - model_id
+
+### Déploiement multi-machines (Docker Compose)
+Pour le scénario “simple” (quelques machines), Docker Compose est utilisé **par machine**.
+Comme Compose ne gère pas l’overlay multi-host, on utilise un réseau privé type **Tailscale/WireGuard** afin que:
+- le control-plane contacte les workers,
+- et/ou que les workers envoient heartbeats/metrics au control-plane.
 
 ---
 

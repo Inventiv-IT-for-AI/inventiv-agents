@@ -78,7 +78,6 @@ pub async fn run_inline_migrations(pool: &Pool<Postgres>) {
         r#"ALTER TABLE instance_types ADD COLUMN IF NOT EXISTS cost_per_hour NUMERIC(10,4)"#,
         r#"ALTER TABLE instance_types ADD COLUMN IF NOT EXISTS cpu_count INTEGER"#,
         r#"ALTER TABLE instance_types ADD COLUMN IF NOT EXISTS ram_gb INTEGER"#,
-        r#"ALTER TABLE instance_types ADD COLUMN IF NOT EXISTS n_gpu INTEGER"#,
         r#"ALTER TABLE instance_types ADD COLUMN IF NOT EXISTS bandwidth_bps BIGINT"#,
     ];
 
@@ -86,21 +85,5 @@ pub async fn run_inline_migrations(pool: &Pool<Postgres>) {
         // "ADD COLUMN IF NOT EXISTS" works in Postgres 9.6+. Assuming user has modern PG.
         let _ = sqlx::query(stmt).execute(pool).await;
     }
-    
-    // Run Seeds needed for FK
-    let seeds_sql = r#"
-        INSERT INTO providers (id, name, description) VALUES ('00000000-0000-0000-0000-000000000001', 'scaleway', 'Scaleway GPU Cloud') ON CONFLICT DO NOTHING;
-        INSERT INTO regions (id, provider_id, name) VALUES ('00000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000001', 'fr-par') ON CONFLICT DO NOTHING;
-        INSERT INTO zones (id, region_id, name) VALUES ('00000000-0000-0000-0000-000000000020', '00000000-0000-0000-0000-000000000010', 'fr-par-2') ON CONFLICT DO NOTHING;
-        INSERT INTO instance_types (id, provider_id, name, gpu_count, vram_per_gpu_gb) VALUES ('00000000-0000-0000-0000-000000000030', '00000000-0000-0000-0000-000000000001', 'RENDER-S', 1, 24) ON CONFLICT DO NOTHING;
-    "#;
-    
-    for statement in seeds_sql.split(';') {
-        let stmt = statement.trim();
-        if !stmt.is_empty() {
-             let _ = sqlx::query(stmt).execute(pool).await;
-        }
-    }
-
     println!("✅ Migrations (Inline) Applied");
 }

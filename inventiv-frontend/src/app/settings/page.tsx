@@ -1,27 +1,50 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { apiUrl } from "@/lib/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Pencil, Settings2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Pencil, Settings2, Power } from "lucide-react";
 import { ManageZonesModal } from "@/components/settings/ManageZonesModal";
 import type { Provider, Region, Zone, InstanceType } from "@/lib/types";
+import { VirtualizedDataTable, type DataTableColumn } from "@/components/shared/VirtualizedDataTable";
+import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
+import { formatEur } from "@/lib/utils";
 
 export default function SettingsPage() {
-    const [providers, setProviders] = useState<Provider[]>([]);
-    const [regions, setRegions] = useState<Region[]>([]);
-    const [zones, setZones] = useState<Zone[]>([]);
-    const [types, setTypes] = useState<InstanceType[]>([]);
+    const [activeTab, setActiveTab] = useState<"providers" | "regions" | "zones" | "types">("regions");
+    const [refreshTick, setRefreshTick] = useState({ providers: 0, regions: 0, zones: 0, types: 0 });
+
+    type EntityType = "provider" | "region" | "zone" | "type";
+    type RefreshKey = "providers" | "regions" | "zones" | "types";
+    const refreshKeyFor = (t: EntityType): RefreshKey => {
+        switch (t) {
+            case "provider":
+                return "providers";
+            case "region":
+                return "regions";
+            case "zone":
+                return "zones";
+            case "type":
+                return "types";
+        }
+    };
+
+    const [confirmToggle, setConfirmToggle] = useState<{
+        type: EntityType;
+        id: string;
+        name: string;
+        nextActive: boolean;
+    } | null>(null);
 
     const [editingEntity, setEditingEntity] = useState<Provider | Region | Zone | InstanceType | null>(null);
-    const [entityType, setEntityType] = useState<'provider' | 'region' | 'zone' | 'type' | null>(null);
+    const [entityType, setEntityType] = useState<EntityType | null>(null);
     const [isEditOpen, setIsEditOpen] = useState(false);
 
     // Manage Zones Modal State
@@ -36,29 +59,13 @@ export default function SettingsPage() {
         cost_per_hour: ""
     });
 
-    const fetchData = async () => {
-        try {
-            const [resProviders, resRegions, resZones, resTypes] = await Promise.all([
-                fetch(apiUrl("providers")),
-                fetch(apiUrl("regions")),
-                fetch(apiUrl("zones")),
-                fetch(apiUrl("instance_types"))
-            ]);
-
-            if (resProviders.ok) setProviders(await resProviders.json());
-            if (resRegions.ok) setRegions(await resRegions.json());
-            if (resZones.ok) setZones(await resZones.json());
-            if (resTypes.ok) setTypes(await resTypes.json());
-
-        } catch (err) {
-            console.error("Failed to fetch settings data", err);
-        }
+    type SearchResponse<T> = {
+        offset: number;
+        limit: number;
+        total_count: number;
+        filtered_count: number;
+        rows: T[];
     };
-
-    useEffect(() => {
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        fetchData();
-    }, []);
 
     const handleEdit = (entity: Provider | Region | Zone | InstanceType, type: 'provider' | 'region' | 'zone' | 'type') => {
         setEditingEntity(entity);
@@ -104,7 +111,8 @@ export default function SettingsPage() {
 
             if (res.ok) {
                 setIsEditOpen(false);
-                fetchData(); // Refresh
+                const k = refreshKeyFor(entityType);
+                setRefreshTick((s) => ({ ...s, [k]: s[k] + 1 }));
             } else {
                 alert("Failed to save");
             }
@@ -113,19 +121,214 @@ export default function SettingsPage() {
         }
     };
 
-    const toggleActive = async (entity: Provider | Region | Zone | InstanceType, type: 'provider' | 'region' | 'zone' | 'type') => {
-        // Quick toggle without modal
-        const url = apiUrl(`${type === 'type' ? 'instance_types' : type + 's'}/${entity.id}`);
+    const toggleActive = async (entityId: string, type: 'provider' | 'region' | 'zone' | 'type', nextActive: boolean) => {
+        const url = apiUrl(`${type === 'type' ? 'instance_types' : type + 's'}/${entityId}`);
         try {
             await fetch(url, {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ is_active: !(entity.is_active ?? false) })
+                body: JSON.stringify({ is_active: nextActive })
             });
-            fetchData();
+            const k = refreshKeyFor(type);
+            setRefreshTick((s) => ({ ...s, [k]: s[k] + 1 }));
         } catch (err) {
             console.error("Toggle failed", err);
         }
+    };
+
+    const renderStatusChip = (isActive?: boolean | null) => {
+        const active = !!isActive;
+        return (
+            <Badge className={active ? "bg-green-600 hover:bg-green-700 text-white" : "bg-gray-200 hover:bg-gray-300 text-gray-700"}>
+                {active ? "active" : "inactive"}
+            </Badge>
+        );
+    };
+
+    const providerColumns: DataTableColumn<Provider>[] = [
+        { id: "name", label: "Name", width: 220, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
+        { id: "code", label: "Code", width: 160, cell: ({ row }) => <span className="font-mono text-xs">{row.code}</span> },
+        {
+            id: "description",
+            label: "Description",
+            width: 420,
+            cellClassName: "truncate",
+            cell: ({ row }) => <span className="text-sm text-muted-foreground">{row.description ?? ""}</span>,
+        },
+        {
+            id: "active",
+            label: "Status",
+            width: 120,
+            cell: ({ row }) => renderStatusChip(row.is_active),
+        },
+        {
+            id: "actions",
+            label: "Actions",
+            width: 240,
+            align: "right",
+            disableReorder: true,
+            cell: ({ row }) => (
+                <div className="flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setConfirmToggle({ type: "provider", id: row.id, name: row.name, nextActive: !row.is_active })}
+                    >
+                        <Power className="h-4 w-4 mr-1" />
+                        {row.is_active ? "Désactiver" : "Activer"}
+                    </Button>
+                    <Button variant="ghost" size="icon" onClick={() => handleEdit(row, 'provider')}>
+                        <Pencil className="h-4 w-4" />
+                    </Button>
+                </div>
+            ),
+        },
+    ];
+
+    const regionColumns: DataTableColumn<Region>[] = [
+        { id: "name", label: "Name", width: 260, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
+        { id: "code", label: "Code", width: 180, cell: ({ row }) => <span className="font-mono text-xs">{row.code}</span> },
+        {
+            id: "active",
+            label: "Status",
+            width: 120,
+            cell: ({ row }) => renderStatusChip(row.is_active),
+        },
+        {
+            id: "actions",
+            label: "Actions",
+            width: 240,
+            align: "right",
+            disableReorder: true,
+            cell: ({ row }) => (
+                <div className="flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setConfirmToggle({ type: "region", id: row.id, name: row.name, nextActive: !row.is_active })}
+                    >
+                        <Power className="h-4 w-4 mr-1" />
+                        {row.is_active ? "Désactiver" : "Activer"}
+                    </Button>
+                    <Button variant="ghost" size="icon" onClick={() => handleEdit(row, 'region')}>
+                        <Pencil className="h-4 w-4" />
+                    </Button>
+                </div>
+            ),
+        },
+    ];
+
+    const zoneColumns: DataTableColumn<Zone>[] = [
+        { id: "name", label: "Name", width: 260, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
+        { id: "code", label: "Code", width: 180, cell: ({ row }) => <span className="font-mono text-xs">{row.code}</span> },
+        {
+            id: "active",
+            label: "Status",
+            width: 120,
+            cell: ({ row }) => renderStatusChip(row.is_active),
+        },
+        {
+            id: "actions",
+            label: "Actions",
+            width: 240,
+            align: "right",
+            disableReorder: true,
+            cell: ({ row }) => (
+                <div className="flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setConfirmToggle({ type: "zone", id: row.id, name: row.name, nextActive: !row.is_active })}
+                    >
+                        <Power className="h-4 w-4 mr-1" />
+                        {row.is_active ? "Désactiver" : "Activer"}
+                    </Button>
+                    <Button variant="ghost" size="icon" onClick={() => handleEdit(row, 'zone')}>
+                        <Pencil className="h-4 w-4" />
+                    </Button>
+                </div>
+            ),
+        },
+    ];
+
+    const typeColumns: DataTableColumn<InstanceType>[] = [
+        { id: "name", label: "Name", width: 260, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
+        { id: "code", label: "Code", width: 180, cell: ({ row }) => <span className="font-mono text-xs">{row.code}</span> },
+        {
+            id: "specs",
+            label: "Specs",
+            width: 260,
+            cell: ({ row }) => (
+                <span className="text-xs text-muted-foreground">
+                    {row.gpu_count ?? 0}x GPU, {row.vram_per_gpu_gb ?? "-"}GB VRAM
+                </span>
+            ),
+        },
+        { id: "cost", label: "Cost/Hr", width: 120, align: "right", cell: ({ row }) => <span>{row.cost_per_hour != null ? `${formatEur(row.cost_per_hour, { minFrac: 4, maxFrac: 4 })}/h` : "-"}</span> },
+        {
+            id: "active",
+            label: "Status",
+            width: 120,
+            cell: ({ row }) => renderStatusChip(row.is_active),
+        },
+        {
+            id: "actions",
+            label: "Actions",
+            width: 340,
+            align: "right",
+            disableReorder: true,
+            cell: ({ row }) => (
+                <div className="flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                            setSelectedInstanceType(row);
+                            setIsManageZonesOpen(true);
+                        }}
+                        title="Manage Zones"
+                    >
+                        <Settings2 className="h-4 w-4 mr-1" />
+                        Manage Zones
+                    </Button>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setConfirmToggle({ type: "type", id: row.id, name: row.name, nextActive: !row.is_active })}
+                    >
+                        <Power className="h-4 w-4 mr-1" />
+                        {row.is_active ? "Désactiver" : "Activer"}
+                    </Button>
+                    <Button variant="ghost" size="icon" onClick={() => handleEdit(row, 'type')}>
+                        <Pencil className="h-4 w-4" />
+                    </Button>
+                </div>
+            ),
+        },
+    ];
+
+    const loadProviders = async (offset: number, limit: number): Promise<LoadRangeResult<Provider>> => {
+        const res = await fetch(apiUrl(`providers/search?offset=${offset}&limit=${limit}`));
+        const data: SearchResponse<Provider> = await res.json();
+        return { offset: data.offset, items: data.rows, totalCount: data.total_count, filteredCount: data.filtered_count };
+    };
+
+    const loadRegions = async (offset: number, limit: number): Promise<LoadRangeResult<Region>> => {
+        const res = await fetch(apiUrl(`regions/search?offset=${offset}&limit=${limit}`));
+        const data: SearchResponse<Region> = await res.json();
+        return { offset: data.offset, items: data.rows, totalCount: data.total_count, filteredCount: data.filtered_count };
+    };
+
+    const loadZones = async (offset: number, limit: number): Promise<LoadRangeResult<Zone>> => {
+        const res = await fetch(apiUrl(`zones/search?offset=${offset}&limit=${limit}`));
+        const data: SearchResponse<Zone> = await res.json();
+        return { offset: data.offset, items: data.rows, totalCount: data.total_count, filteredCount: data.filtered_count };
+    };
+
+    const loadTypes = async (offset: number, limit: number): Promise<LoadRangeResult<InstanceType>> => {
+        const res = await fetch(apiUrl(`instance_types/search?offset=${offset}&limit=${limit}`));
+        const data: SearchResponse<InstanceType> = await res.json();
+        return { offset: data.offset, items: data.rows, totalCount: data.total_count, filteredCount: data.filtered_count };
     };
 
     return (
@@ -135,7 +338,7 @@ export default function SettingsPage() {
                 <p className="text-muted-foreground">Manage catalog and configuration.</p>
             </div>
 
-            <Tabs defaultValue="regions" className="w-full">
+            <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)} className="w-full">
                 <TabsList>
                     <TabsTrigger value="providers">Providers</TabsTrigger>
                     <TabsTrigger value="regions">Regions</TabsTrigger>
@@ -146,36 +349,16 @@ export default function SettingsPage() {
                 {/* PROVIDERS */}
                 <TabsContent value="providers">
                     <Card>
-                        <CardHeader><CardTitle>Providers</CardTitle></CardHeader>
                         <CardContent>
-                            <Table>
-                                <TableHeader>
-                                    <TableRow>
-                                        <TableHead>Name</TableHead>
-                                        <TableHead>Code</TableHead>
-                                        <TableHead>Description</TableHead>
-                                        <TableHead>Status</TableHead>
-                                        <TableHead className="text-right">Actions</TableHead>
-                                    </TableRow>
-                                </TableHeader>
-                                <TableBody>
-                                    {providers.map(p => (
-                                        <TableRow key={p.id}>
-                                            <TableCell className="font-medium">{p.name}</TableCell>
-                                            <TableCell className="font-mono text-xs">{p.code}</TableCell>
-                                            <TableCell className="text-sm text-muted-foreground">{p.description}</TableCell>
-                                            <TableCell>
-                                                <Switch checked={!!p.is_active} onCheckedChange={() => toggleActive(p, 'provider')} />
-                                            </TableCell>
-                                            <TableCell className="text-right">
-                                                <Button variant="ghost" size="icon" onClick={() => handleEdit(p, 'provider')}>
-                                                    <Pencil className="h-4 w-4" />
-                                                </Button>
-                                            </TableCell>
-                                        </TableRow>
-                                    ))}
-                                </TableBody>
-                            </Table>
+                            <VirtualizedDataTable<Provider>
+                                listId="settings:providers"
+                                title="Providers"
+                                dataKey={String(refreshTick.providers)}
+                                height={420}
+                                rowHeight={52}
+                                columns={providerColumns}
+                                loadRange={loadProviders}
+                            />
                         </CardContent>
                     </Card>
                 </TabsContent>
@@ -183,34 +366,16 @@ export default function SettingsPage() {
                 {/* REGIONS */}
                 <TabsContent value="regions">
                     <Card>
-                        <CardHeader><CardTitle>Regions</CardTitle></CardHeader>
                         <CardContent>
-                            <Table>
-                                <TableHeader>
-                                    <TableRow>
-                                        <TableHead>Name</TableHead>
-                                        <TableHead>Code</TableHead>
-                                        <TableHead>Status</TableHead>
-                                        <TableHead className="text-right">Actions</TableHead>
-                                    </TableRow>
-                                </TableHeader>
-                                <TableBody>
-                                    {regions.map(r => (
-                                        <TableRow key={r.id}>
-                                            <TableCell className="font-medium">{r.name}</TableCell>
-                                            <TableCell className="font-mono text-xs">{r.code}</TableCell>
-                                            <TableCell>
-                                                <Switch checked={r.is_active} onCheckedChange={() => toggleActive(r, 'region')} />
-                                            </TableCell>
-                                            <TableCell className="text-right">
-                                                <Button variant="ghost" size="icon" onClick={() => handleEdit(r, 'region')}>
-                                                    <Pencil className="h-4 w-4" />
-                                                </Button>
-                                            </TableCell>
-                                        </TableRow>
-                                    ))}
-                                </TableBody>
-                            </Table>
+                            <VirtualizedDataTable<Region>
+                                listId="settings:regions"
+                                title="Regions"
+                                dataKey={String(refreshTick.regions)}
+                                height={420}
+                                rowHeight={52}
+                                columns={regionColumns}
+                                loadRange={loadRegions}
+                            />
                         </CardContent>
                     </Card>
                 </TabsContent>
@@ -218,34 +383,16 @@ export default function SettingsPage() {
                 {/* ZONES */}
                 <TabsContent value="zones">
                     <Card>
-                        <CardHeader><CardTitle>Zones</CardTitle></CardHeader>
                         <CardContent>
-                            <Table>
-                                <TableHeader>
-                                    <TableRow>
-                                        <TableHead>Name</TableHead>
-                                        <TableHead>Code</TableHead>
-                                        <TableHead>Status</TableHead>
-                                        <TableHead className="text-right">Actions</TableHead>
-                                    </TableRow>
-                                </TableHeader>
-                                <TableBody>
-                                    {zones.map(z => (
-                                        <TableRow key={z.id}>
-                                            <TableCell className="font-medium">{z.name}</TableCell>
-                                            <TableCell className="font-mono text-xs">{z.code}</TableCell>
-                                            <TableCell>
-                                                <Switch checked={z.is_active} onCheckedChange={() => toggleActive(z, 'zone')} />
-                                            </TableCell>
-                                            <TableCell className="text-right">
-                                                <Button variant="ghost" size="icon" onClick={() => handleEdit(z, 'zone')}>
-                                                    <Pencil className="h-4 w-4" />
-                                                </Button>
-                                            </TableCell>
-                                        </TableRow>
-                                    ))}
-                                </TableBody>
-                            </Table>
+                            <VirtualizedDataTable<Zone>
+                                listId="settings:zones"
+                                title="Zones"
+                                dataKey={String(refreshTick.zones)}
+                                height={420}
+                                rowHeight={52}
+                                columns={zoneColumns}
+                                loadRange={loadZones}
+                            />
                         </CardContent>
                     </Card>
                 </TabsContent>
@@ -253,56 +400,52 @@ export default function SettingsPage() {
                 {/* INSTANCE TYPES */}
                 <TabsContent value="types">
                     <Card>
-                        <CardHeader><CardTitle>Instance Types</CardTitle></CardHeader>
                         <CardContent>
-                            <Table>
-                                <TableHeader>
-                                    <TableRow>
-                                        <TableHead>Name</TableHead>
-                                        <TableHead>Code</TableHead>
-                                        <TableHead>Specs</TableHead>
-                                        <TableHead>Cost/Hr</TableHead>
-                                        <TableHead>Status</TableHead>
-                                        <TableHead className="text-right">Actions</TableHead>
-                                    </TableRow>
-                                </TableHeader>
-                                <TableBody>
-                                    {types.map(t => (
-                                        <TableRow key={t.id}>
-                                            <TableCell className="font-medium">{t.name}</TableCell>
-                                            <TableCell className="font-mono text-xs">{t.code}</TableCell>
-                                            <TableCell className="text-xs text-muted-foreground">{t.gpu_count}x GPU, {t.vram_per_gpu_gb}GB VRAM</TableCell>
-                                            <TableCell>${t.cost_per_hour}</TableCell>
-                                            <TableCell>
-                                                <Switch checked={t.is_active} onCheckedChange={() => toggleActive(t, 'type')} />
-                                            </TableCell>
-                                            <TableCell className="text-right">
-                                                <div className="flex justify-end gap-2">
-                                                    <Button
-                                                        variant="outline"
-                                                        size="sm"
-                                                        onClick={() => {
-                                                            setSelectedInstanceType(t);
-                                                            setIsManageZonesOpen(true);
-                                                        }}
-                                                        title="Manage Zones"
-                                                    >
-                                                        <Settings2 className="h-4 w-4 mr-1" />
-                                                        Manage Zones
-                                                    </Button>
-                                                    <Button variant="ghost" size="icon" onClick={() => handleEdit(t, 'type')}>
-                                                        <Pencil className="h-4 w-4" />
-                                                    </Button>
-                                                </div>
-                                            </TableCell>
-                                        </TableRow>
-                                    ))}
-                                </TableBody>
-                            </Table>
+                            <VirtualizedDataTable<InstanceType>
+                                listId="settings:types"
+                                title="Instance Types"
+                                dataKey={String(refreshTick.types)}
+                                height={420}
+                                rowHeight={52}
+                                columns={typeColumns}
+                                loadRange={loadTypes}
+                            />
                         </CardContent>
                     </Card>
                 </TabsContent>
             </Tabs>
+
+            <Dialog open={!!confirmToggle} onOpenChange={(open) => { if (!open) setConfirmToggle(null); }}>
+                <DialogContent showCloseButton={false} className="sm:max-w-[520px]">
+                    <DialogHeader>
+                        <DialogTitle>
+                            {confirmToggle?.nextActive ? "Activer" : "Désactiver"}{" "}
+                            {confirmToggle?.type === "type"
+                                ? "le type d’instance"
+                                : confirmToggle?.type === "region"
+                                    ? "la région"
+                                    : confirmToggle?.type === "zone"
+                                        ? "la zone"
+                                        : "le provider"}
+                        </DialogTitle>
+                    </DialogHeader>
+                    <div className="text-sm text-muted-foreground">
+                        Confirmer l’action pour <span className="font-medium text-foreground">{confirmToggle?.name}</span>.
+                    </div>
+                    <DialogFooter className="sm:justify-between">
+                        <Button variant="outline" onClick={() => setConfirmToggle(null)}>Annuler</Button>
+                        <Button
+                            onClick={async () => {
+                                if (!confirmToggle) return;
+                                await toggleActive(confirmToggle.id, confirmToggle.type, confirmToggle.nextActive);
+                                setConfirmToggle(null);
+                            }}
+                        >
+                            Confirmer
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
 
             <Dialog
                 open={isEditOpen}

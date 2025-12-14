@@ -2,36 +2,35 @@ use sqlx::{Pool, Postgres};
 use uuid::Uuid;
 
 use crate::logger;
-use crate::provider::CloudProvider;
 use crate::provider_manager::ProviderManager;
 use crate::state_machine;
+use crate::finops_events;
 
 /// job-terminator: processes TERMINATING instances until provider deletion is confirmed.
 /// Uses SKIP LOCKED claiming so multiple orchestrators can run safely.
-pub async fn run(pool: Pool<Postgres>) {
+pub async fn run(pool: Pool<Postgres>, redis_client: redis::Client) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
     println!("🧹 job-terminator started (processing TERMINATING instances)");
 
     loop {
         interval.tick().await;
 
-        if let Some(provider) = ProviderManager::get_provider("scaleway") {
-            match terminator_terminating_instances(&pool, provider.as_ref()).await {
-                Ok(count) if count > 0 => println!("🧹 job-terminator: progressed {} instance(s)", count),
-                Ok(_) => {}
-                Err(e) => eprintln!("❌ job-terminator error: {:?}", e),
-            }
+        match terminator_terminating_instances(&pool, &redis_client).await {
+            Ok(count) if count > 0 => println!("🧹 job-terminator: progressed {} instance(s)", count),
+            Ok(_) => {}
+            Err(e) => eprintln!("❌ job-terminator error: {:?}", e),
         }
     }
 }
 
 pub async fn terminator_terminating_instances(
     pool: &Pool<Postgres>,
-    provider: &(impl CloudProvider + ?Sized),
+    redis_client: &redis::Client,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    let claimed: Vec<(Uuid, Option<String>, Option<String>)> = sqlx::query_as(
+    let claimed: Vec<(Uuid, Uuid, Option<String>, Option<String>)> = sqlx::query_as(
         "WITH cte AS (
             SELECT i.id,
+                   i.provider_id,
                    i.provider_instance_id::text AS provider_instance_id,
                    (SELECT COALESCE(z.code, z.name) FROM zones z WHERE z.id = i.zone_id) AS zone
             FROM instances i
@@ -45,7 +44,7 @@ pub async fn terminator_terminating_instances(
         SET last_reconciliation = NOW()
         FROM cte
         WHERE i.id = cte.id
-        RETURNING cte.id, cte.provider_instance_id, cte.zone",
+        RETURNING cte.id, cte.provider_id, cte.provider_instance_id, cte.zone",
     )
     .fetch_all(pool)
     .await?;
@@ -56,7 +55,7 @@ pub async fn terminator_terminating_instances(
 
     let mut progressed = 0usize;
 
-    for (instance_id, provider_instance_id_opt, zone_opt) in claimed {
+    for (instance_id, provider_id, provider_instance_id_opt, zone_opt) in claimed {
         // If we don't even have a provider instance id, we can safely finalize termination in DB.
         // This happens for invalid/failed provisioning requests that never created a provider resource.
         if provider_instance_id_opt.as_deref().unwrap_or("").is_empty() {
@@ -81,7 +80,17 @@ pub async fn terminator_terminating_instances(
             .execute(pool)
             .await;
 
-            let _ = state_machine::terminating_to_terminated(pool, instance_id).await?;
+            let changed = state_machine::terminating_to_terminated(pool, instance_id).await?;
+            if changed {
+                let _ = finops_events::emit_instance_cost_stop(
+                    pool,
+                    redis_client,
+                    instance_id,
+                    "inventiv-orchestrator/terminator_job",
+                    "no_provider_resource",
+                )
+                .await;
+            }
 
             if let Some(lid) = log_id {
                 let duration = start.elapsed().as_millis() as i32;
@@ -105,6 +114,21 @@ pub async fn terminator_terminating_instances(
         };
 
         let provider_instance_id = provider_instance_id_opt.unwrap_or_default();
+        let provider_code: String = sqlx::query_scalar("SELECT code FROM providers WHERE id = $1")
+            .bind(provider_id)
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None)
+            .unwrap_or_else(|| ProviderManager::current_provider_name());
+
+        let Some(provider) = ProviderManager::get_provider(&provider_code, pool.clone()) else {
+            let _ = sqlx::query("UPDATE instances SET last_reconciliation = NULL WHERE id = $1")
+                .bind(instance_id)
+                .execute(pool)
+                .await;
+            continue;
+        };
+
         match provider.check_instance_exists(&zone, &provider_instance_id).await {
             Ok(false) => {
                 // Provider deletion confirmed → finalize
@@ -119,7 +143,17 @@ pub async fn terminator_terminating_instances(
                 .await
                 .ok();
 
-                let _ = state_machine::terminating_to_terminated(pool, instance_id).await?;
+                let changed = state_machine::terminating_to_terminated(pool, instance_id).await?;
+                if changed {
+                    let _ = finops_events::emit_instance_cost_stop(
+                        pool,
+                        redis_client,
+                        instance_id,
+                        "inventiv-orchestrator/terminator_job",
+                        "termination_confirmed",
+                    )
+                    .await;
+                }
 
                 if let Some(lid) = log_id {
                     let duration = start.elapsed().as_millis() as i32;

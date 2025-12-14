@@ -17,6 +17,7 @@ pub async fn run(pool: Pool<Postgres>) {
         let booting_instances: Result<
             Vec<(
                 uuid::Uuid,
+                uuid::Uuid,      // provider_id
                 Option<String>, // provider_instance_id
                 String,         // zone
                 Option<String>, // ip
@@ -27,6 +28,7 @@ pub async fn run(pool: Pool<Postgres>) {
         > = sqlx::query_as(
             "WITH cte AS (
                 SELECT i.id,
+                       i.provider_id,
                        i.provider_instance_id::text AS provider_instance_id,
                        COALESCE(z.code, z.name) AS zone,
                        i.ip_address::text as ip,
@@ -45,7 +47,7 @@ pub async fn run(pool: Pool<Postgres>) {
             SET last_health_check = NOW()
             FROM cte
             WHERE i.id = cte.id
-            RETURNING cte.id, cte.provider_instance_id, cte.zone, cte.ip, cte.created_at, cte.health_check_failures",
+            RETURNING cte.id, cte.provider_id, cte.provider_instance_id, cte.zone, cte.ip, cte.created_at, cte.health_check_failures",
         )
         .fetch_all(&pool)
         .await;
@@ -54,13 +56,19 @@ pub async fn run(pool: Pool<Postgres>) {
             Ok(instances) if !instances.is_empty() => {
                 println!("🏥 job-health-check: checking {} booting instance(s)...", instances.len());
 
-                for (id, provider_instance_id, zone, ip, created_at, health_check_failures) in instances {
+                for (id, provider_id, provider_instance_id, zone, ip, created_at, health_check_failures) in instances {
                     let db_clone = pool.clone();
                     tokio::spawn(async move {
                         // If IP is missing, try to fetch it from provider first (bounded by reqwest timeout).
                         if ip.is_none() {
                             if let Some(pid) = provider_instance_id.as_deref() {
-                                let provider = ProviderManager::get_provider("scaleway");
+                                let provider_code: String = sqlx::query_scalar("SELECT code FROM providers WHERE id = $1")
+                                    .bind(provider_id)
+                                    .fetch_optional(&db_clone)
+                                    .await
+                                    .unwrap_or(None)
+                                    .unwrap_or_else(|| ProviderManager::current_provider_name());
+                                let provider = ProviderManager::get_provider(&provider_code, db_clone.clone());
                                 let Some(provider) = provider else {
                                     return;
                                 };

@@ -9,11 +9,13 @@ COPY Cargo.toml Cargo.lock ./
 COPY inventiv-api/Cargo.toml ./inventiv-api/
 COPY inventiv-common/Cargo.toml ./inventiv-common/
 COPY inventiv-orchestrator/Cargo.toml ./inventiv-orchestrator/
+COPY inventiv-finops/Cargo.toml ./inventiv-finops/
 
 # Create dummy source files and build dependencies (caching layer)
-RUN mkdir -p inventiv-api/src inventiv-common/src inventiv-orchestrator/src && \
+RUN mkdir -p inventiv-api/src inventiv-common/src inventiv-orchestrator/src inventiv-finops/src && \
     echo "fn main() {}" > inventiv-api/src/main.rs && \
     echo "fn main() {}" > inventiv-orchestrator/src/main.rs && \
+    echo "fn main() {}" > inventiv-finops/src/main.rs && \
     echo "" > inventiv-common/src/lib.rs && \
     cargo build --release && \
     rm -rf inventiv-*/src

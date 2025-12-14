@@ -66,6 +66,16 @@ export function VirtualizedRemoteList<T>({
 }: VirtualizedRemoteListProps<T>) {
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
   const inflightPages = React.useRef<Set<number>>(new Set());
+  const onCountsChangeRef = React.useRef<typeof onCountsChange>(onCountsChange);
+  const onRangeChangeRef = React.useRef<typeof onRangeChange>(onRangeChange);
+
+  React.useEffect(() => {
+    onCountsChangeRef.current = onCountsChange;
+  }, [onCountsChange]);
+
+  React.useEffect(() => {
+    onRangeChangeRef.current = onRangeChange;
+  }, [onRangeChange]);
 
   const [scrollTop, setScrollTop] = React.useState(0);
   const [counts, setCounts] = React.useState<{ total: number; filtered: number }>({
@@ -86,8 +96,11 @@ export function VirtualizedRemoteList<T>({
         const res = await loadRange(offset, pageSize);
 
         // counts can change due to live traffic; keep it monotonic-ish but accept backend truth
-        setCounts({ total: res.totalCount, filtered: res.filteredCount });
-        onCountsChange?.({ total: res.totalCount, filtered: res.filteredCount, meta: res.meta });
+        setCounts((prev) => {
+          if (prev.total === res.totalCount && prev.filtered === res.filteredCount) return prev;
+          return { total: res.totalCount, filtered: res.filteredCount };
+        });
+        onCountsChangeRef.current?.({ total: res.totalCount, filtered: res.filteredCount, meta: res.meta });
 
         // populate cache
         for (let i = 0; i < res.items.length; i++) {
@@ -98,7 +111,7 @@ export function VirtualizedRemoteList<T>({
         inflightPages.current.delete(pageIndex);
       }
     },
-    [loadRange, onCountsChange, pageSize]
+    [loadRange, pageSize]
   );
 
   // Reset when query changes
@@ -112,8 +125,7 @@ export function VirtualizedRemoteList<T>({
 
     // Prime first page
     void requestPage(0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queryKey]);
+  }, [queryKey, requestPage]);
 
   const onScroll = React.useCallback((e: React.UIEvent<HTMLDivElement>) => {
     setScrollTop(e.currentTarget.scrollTop);
@@ -132,13 +144,13 @@ export function VirtualizedRemoteList<T>({
 
   React.useEffect(() => {
     if (totalRows <= 0) return;
-    onRangeChange?.({ startIndex, endIndex });
+    onRangeChangeRef.current?.({ startIndex, endIndex });
 
     // Request pages intersecting the visible range
     const firstPage = Math.floor(startIndex / pageSize);
     const lastPage = Math.floor(endIndex / pageSize);
     for (let p = firstPage; p <= lastPage; p++) void requestPage(p);
-  }, [startIndex, endIndex, totalRows, onRangeChange, pageSize, requestPage]);
+  }, [startIndex, endIndex, totalRows, pageSize, requestPage]);
 
   const totalHeight = effectiveHeaderHeight + totalRows * rowHeight;
   const rowsToRender: number[] = [];

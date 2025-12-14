@@ -27,7 +27,7 @@ services:
       dockerfile: Dockerfile.rust
       args:
         SERVICE_NAME: inventiv-orchestrator
-    command: cargo watch -x "run --release -p inventiv-orchestrator"
+    command: cargo watch -w sqlx-migrations -x "run --release -p inventiv-orchestrator"
     ports:
       - "8001:8001"
     volumes:
@@ -37,6 +37,7 @@ services:
     environment:
       - DATABASE_URL=postgresql://postgres:password@db:5432/llminfra
       - REDIS_URL=redis://redis:6379
+      - CARGO_TARGET_DIR=/app/target/inventiv-orchestrator
       - PROVIDER=scaleway
       - SCALEWAY_PROJECT_ID=${SCALEWAY_PROJECT_ID}
       - SCALEWAY_ACCESS_KEY=${SCALEWAY_ACCESS_KEY}
@@ -52,7 +53,7 @@ services:
       dockerfile: Dockerfile.rust
       args:
         SERVICE_NAME: inventiv-api
-    command: cargo watch -x "run --release -p inventiv-api"
+    command: cargo watch -w sqlx-migrations -x "run --release -p inventiv-api"
     ports:
       - "8003:8003"
     volumes:
@@ -62,6 +63,29 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://postgres:password@db:5432/llminfra
+      - CARGO_TARGET_DIR=/app/target/inventiv-api
+      - RUST_LOG=debug
+    depends_on:
+      - redis
+      - db
+
+  finops:
+    build:
+      context: .
+      dockerfile: Dockerfile.rust
+      args:
+        SERVICE_NAME: inventiv-finops
+    command: cargo watch -w sqlx-migrations -x "run --release -p inventiv-finops"
+    ports:
+      - "8005:8005"
+    volumes:
+      - .:/app # Source code mount for hot reload
+      - cargo_cache:/usr/local/cargo/registry # Cache dependencies
+      - target_cache:/app/target # Cache compiled artifacts
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:password@db:5432/llminfra
+      - CARGO_TARGET_DIR=/app/target/inventiv-finops
       - RUST_LOG=debug
     depends_on:
       - redis

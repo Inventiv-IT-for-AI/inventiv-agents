@@ -1,16 +1,46 @@
 use axum::{
     extract::{State, Path},
+    extract::Query,
     Json,
     http::StatusCode,
     response::IntoResponse,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 use inventiv_common::{Provider, Region, Zone, InstanceType};
 use crate::AppState;
 
 // --- DTOs ---
+
+#[derive(Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+pub struct SearchQuery {
+    pub offset: Option<i64>,
+    pub limit: Option<i64>,
+    pub q: Option<String>,
+    pub is_active: Option<bool>,
+    pub order_by: Option<String>,
+    pub order_dir: Option<String>, // "asc" | "desc"
+    // Optional foreign-key filters
+    pub provider_id: Option<Uuid>,
+    pub region_id: Option<Uuid>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct SearchResponse<T> {
+    pub offset: i64,
+    pub limit: i64,
+    pub total_count: i64,
+    pub filtered_count: i64,
+    pub rows: Vec<T>,
+}
+
+fn dir_sql(dir: Option<&str>) -> &'static str {
+    match dir.unwrap_or("asc").to_ascii_lowercase().as_str() {
+        "desc" => "DESC",
+        _ => "ASC",
+    }
+}
 
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdateRegionRequest {
@@ -54,6 +84,78 @@ pub async fn list_regions(State(state): State<Arc<AppState>>) -> Json<Vec<Region
     .unwrap_or(vec![]);
 
     Json(regions)
+}
+
+#[utoipa::path(
+    get,
+    path = "/regions/search",
+    tag = "Settings",
+    params(SearchQuery),
+    responses((status = 200, description = "Search regions", body = SearchResponse<Region>))
+)]
+pub async fn search_regions(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<SearchQuery>,
+) -> Json<SearchResponse<Region>> {
+    let offset = params.offset.unwrap_or(0).max(0);
+    let limit = params.limit.unwrap_or(200).clamp(1, 500);
+    let q_like: Option<String> = params
+        .q
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("%{}%", s));
+
+    let total_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM regions")
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0);
+
+    let filtered_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM regions
+        WHERE ($1::uuid IS NULL OR provider_id = $1)
+          AND ($2::bool IS NULL OR is_active = $2)
+          AND ($3::text IS NULL OR name ILIKE $3 OR code ILIKE $3)
+        "#,
+    )
+    .bind(params.provider_id)
+    .bind(params.is_active)
+    .bind(q_like.as_deref())
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
+    let order_by = match params.order_by.as_deref() {
+        Some("code") => "code",
+        Some("is_active") => "is_active",
+        _ => "name",
+    };
+    let dir = dir_sql(params.order_dir.as_deref());
+
+    let sql = format!(
+        r#"
+        SELECT id, provider_id, name, code, is_active
+        FROM regions
+        WHERE ($1::uuid IS NULL OR provider_id = $1)
+          AND ($2::bool IS NULL OR is_active = $2)
+          AND ($3::text IS NULL OR name ILIKE $3 OR code ILIKE $3)
+        ORDER BY {order_by} {dir}, id {dir}
+        LIMIT $4 OFFSET $5
+        "#
+    );
+    let rows: Vec<Region> = sqlx::query_as(&sql)
+        .bind(params.provider_id)
+        .bind(params.is_active)
+        .bind(q_like.as_deref())
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default();
+
+    Json(SearchResponse { offset, limit, total_count, filtered_count, rows })
 }
 
 #[utoipa::path(
@@ -122,6 +224,78 @@ pub async fn list_zones(State(state): State<Arc<AppState>>) -> Json<Vec<Zone>> {
 }
 
 #[utoipa::path(
+    get,
+    path = "/zones/search",
+    tag = "Settings",
+    params(SearchQuery),
+    responses((status = 200, description = "Search zones", body = SearchResponse<Zone>))
+)]
+pub async fn search_zones(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<SearchQuery>,
+) -> Json<SearchResponse<Zone>> {
+    let offset = params.offset.unwrap_or(0).max(0);
+    let limit = params.limit.unwrap_or(200).clamp(1, 500);
+    let q_like: Option<String> = params
+        .q
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("%{}%", s));
+
+    let total_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM zones")
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0);
+
+    let filtered_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM zones
+        WHERE ($1::uuid IS NULL OR region_id = $1)
+          AND ($2::bool IS NULL OR is_active = $2)
+          AND ($3::text IS NULL OR name ILIKE $3 OR code ILIKE $3)
+        "#,
+    )
+    .bind(params.region_id)
+    .bind(params.is_active)
+    .bind(q_like.as_deref())
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
+    let order_by = match params.order_by.as_deref() {
+        Some("code") => "code",
+        Some("is_active") => "is_active",
+        _ => "name",
+    };
+    let dir = dir_sql(params.order_dir.as_deref());
+
+    let sql = format!(
+        r#"
+        SELECT id, region_id, name, code, is_active
+        FROM zones
+        WHERE ($1::uuid IS NULL OR region_id = $1)
+          AND ($2::bool IS NULL OR is_active = $2)
+          AND ($3::text IS NULL OR name ILIKE $3 OR code ILIKE $3)
+        ORDER BY {order_by} {dir}, id {dir}
+        LIMIT $4 OFFSET $5
+        "#
+    );
+    let rows: Vec<Zone> = sqlx::query_as(&sql)
+        .bind(params.region_id)
+        .bind(params.is_active)
+        .bind(q_like.as_deref())
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default();
+
+    Json(SearchResponse { offset, limit, total_count, filtered_count, rows })
+}
+
+#[utoipa::path(
     put,
     path = "/zones/{id}",
     tag = "Settings",
@@ -179,7 +353,7 @@ pub async fn list_instance_types(State(state): State<Arc<AppState>>) -> Json<Vec
         r#"SELECT 
             id, provider_id, name, code, 
             gpu_count, vram_per_gpu_gb, 
-            cpu_count, ram_gb, n_gpu, bandwidth_bps,
+            cpu_count, ram_gb, bandwidth_bps,
             is_active, 
             CAST(cost_per_hour AS DOUBLE PRECISION) as "cost_per_hour"
            FROM instance_types ORDER BY name"#
@@ -189,6 +363,86 @@ pub async fn list_instance_types(State(state): State<Arc<AppState>>) -> Json<Vec
     .unwrap_or(vec![]);
 
     Json(types)
+}
+
+#[utoipa::path(
+    get,
+    path = "/instance_types/search",
+    tag = "Settings",
+    params(SearchQuery),
+    responses((status = 200, description = "Search instance types", body = SearchResponse<InstanceType>))
+)]
+pub async fn search_instance_types(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<SearchQuery>,
+) -> Json<SearchResponse<InstanceType>> {
+    let offset = params.offset.unwrap_or(0).max(0);
+    let limit = params.limit.unwrap_or(200).clamp(1, 500);
+    let q_like: Option<String> = params
+        .q
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("%{}%", s));
+
+    let total_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM instance_types")
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0);
+
+    let filtered_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM instance_types
+        WHERE ($1::uuid IS NULL OR provider_id = $1)
+          AND ($2::bool IS NULL OR is_active = $2)
+          AND ($3::text IS NULL OR name ILIKE $3 OR code ILIKE $3)
+        "#,
+    )
+    .bind(params.provider_id)
+    .bind(params.is_active)
+    .bind(q_like.as_deref())
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
+    let order_by = match params.order_by.as_deref() {
+        Some("code") => "code",
+        Some("gpu_count") => "gpu_count",
+        Some("vram_per_gpu_gb") => "vram_per_gpu_gb",
+        Some("cost_per_hour") => "cost_per_hour",
+        Some("is_active") => "is_active",
+        _ => "name",
+    };
+    let dir = dir_sql(params.order_dir.as_deref());
+
+    let sql = format!(
+        r#"
+        SELECT
+          id, provider_id, name, code,
+          gpu_count, vram_per_gpu_gb,
+          cpu_count, ram_gb, bandwidth_bps,
+          is_active,
+          CAST(cost_per_hour AS DOUBLE PRECISION) as "cost_per_hour"
+        FROM instance_types
+        WHERE ($1::uuid IS NULL OR provider_id = $1)
+          AND ($2::bool IS NULL OR is_active = $2)
+          AND ($3::text IS NULL OR name ILIKE $3 OR code ILIKE $3)
+        ORDER BY {order_by} {dir}, id {dir}
+        LIMIT $4 OFFSET $5
+        "#
+    );
+    let rows: Vec<InstanceType> = sqlx::query_as(&sql)
+        .bind(params.provider_id)
+        .bind(params.is_active)
+        .bind(q_like.as_deref())
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default();
+
+    Json(SearchResponse { offset, limit, total_count, filtered_count, rows })
 }
 
 #[utoipa::path(
@@ -264,6 +518,84 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> Json<Vec<Prov
     .unwrap_or(vec![]);
 
     Json(providers)
+}
+
+#[utoipa::path(
+    get,
+    path = "/providers/search",
+    tag = "Settings",
+    params(SearchQuery),
+    responses((status = 200, description = "Search providers", body = SearchResponse<Provider>))
+)]
+pub async fn search_providers(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<SearchQuery>,
+) -> Json<SearchResponse<Provider>> {
+    let offset = params.offset.unwrap_or(0).max(0);
+    let limit = params.limit.unwrap_or(200).clamp(1, 500);
+    let q_like: Option<String> = params
+        .q
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("%{}%", s));
+
+    let total_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM providers")
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0);
+
+    let filtered_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM providers
+        WHERE ($1::bool IS NULL OR is_active = $1)
+          AND (
+            $2::text IS NULL
+            OR name ILIKE $2
+            OR code ILIKE $2
+            OR COALESCE(description, '') ILIKE $2
+          )
+        "#,
+    )
+    .bind(params.is_active)
+    .bind(q_like.as_deref())
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
+    let order_by = match params.order_by.as_deref() {
+        Some("code") => "code",
+        Some("is_active") => "is_active",
+        _ => "name",
+    };
+    let dir = dir_sql(params.order_dir.as_deref());
+
+    let sql = format!(
+        r#"
+        SELECT id, name, code, description, is_active
+        FROM providers
+        WHERE ($1::bool IS NULL OR is_active = $1)
+          AND (
+            $2::text IS NULL
+            OR name ILIKE $2
+            OR code ILIKE $2
+            OR COALESCE(description, '') ILIKE $2
+          )
+        ORDER BY {order_by} {dir}, id {dir}
+        LIMIT $3 OFFSET $4
+        "#
+    );
+    let rows: Vec<Provider> = sqlx::query_as(&sql)
+        .bind(params.is_active)
+        .bind(q_like.as_deref())
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default();
+
+    Json(SearchResponse { offset, limit, total_count, filtered_count, rows })
 }
 
 #[utoipa::path(

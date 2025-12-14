@@ -3,12 +3,22 @@
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { StatsCard } from "@/components/shared/StatsCard";
 import { useInstances } from "@/hooks/useInstances";
+import { useFinopsCosts } from "@/hooks/useFinops";
+import { useCatalog } from "@/hooks/useCatalog";
 import { Server, Activity, DollarSign, Zap, TrendingUp, Clock } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { displayOrDash } from "@/lib/utils";
+import { displayOrDash, formatEur } from "@/lib/utils";
+import { useEffect, useMemo } from "react";
 
 export default function DashboardPage() {
   const { instances } = useInstances();
+  const finops = useFinopsCosts();
+  const catalog = useCatalog();
+
+  useEffect(() => {
+    catalog.fetchCatalog();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Calculate statistics
   const stats = {
@@ -24,6 +34,25 @@ export default function DashboardPage() {
           instances.length
         : 0,
   };
+
+  const forecastTotal = finops.current?.forecast?.find((r) => r.provider_id === null) ?? null;
+
+  const providersById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const p of catalog.providers) map.set(p.id, p.name);
+    return map;
+  }, [catalog.providers]);
+
+  const forecastProviders = useMemo(() => {
+    const rows = finops.current?.forecast ?? [];
+    return rows
+      .filter((r) => r.provider_id !== null)
+      .sort((a, b) => (b.burn_rate_usd_per_hour ?? 0) - (a.burn_rate_usd_per_hour ?? 0));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [finops.current]);
+
+  const latestActualTotal = finops.actualTotalSeries?.[0]?.amount_usd ?? null;
+  const cumulativeTotal = finops.current?.cumulative_total?.cumulative_amount_usd ?? null;
 
   // Recent instances (last 5)
   const recentInstances = [...instances]
@@ -60,17 +89,17 @@ export default function DashboardPage() {
           iconClassName="text-green-600"
         />
         <StatsCard
-          title="Total Cost"
-          value={`$${stats.totalCost.toFixed(2)}`}
-          description="Accumulated spend"
+          title="Burn Rate"
+          value={forecastTotal ? `${formatEur(forecastTotal.burn_rate_usd_per_hour, { minFrac: 4, maxFrac: 4 })}/h` : "-"}
+          description="Current allocation (forecast)"
           icon={DollarSign}
           valueClassName="text-blue-600"
           iconClassName="text-blue-600"
         />
         <StatsCard
-          title="Avg Cost/Hour"
-          value={`$${stats.avgCostPerHour.toFixed(2)}`}
-          description="Across all instances"
+          title="Cumulative Spend"
+          value={formatEur(cumulativeTotal, { minFrac: 4, maxFrac: 4 })}
+          description="Sum of actual minute costs"
           icon={TrendingUp}
           valueClassName="text-purple-600"
           iconClassName="text-purple-600"
@@ -148,9 +177,9 @@ export default function DashboardPage() {
                 </span>
               </div>
               <div className="flex items-center justify-between p-3 border rounded-lg">
-                <span className="text-sm font-medium">Total Spend</span>
+                <span className="text-sm font-medium">Last Minute Cost</span>
                 <span className="text-2xl font-bold text-purple-600">
-                  ${stats.totalCost.toFixed(2)}
+                  {formatEur(latestActualTotal, { minFrac: 4, maxFrac: 4 })}
                 </span>
               </div>
             </div>
@@ -158,21 +187,71 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      {/* Placeholder for future charts */}
+      {/* FinOps breakdown */}
       <Card>
         <CardHeader>
-          <CardTitle>Usage & Cost Trends</CardTitle>
+          <CardTitle>FinOps – Provider Breakdown</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="h-64 flex items-center justify-center text-muted-foreground">
-            <div className="text-center">
-              <TrendingUp className="h-12 w-12 mx-auto mb-2 opacity-50" />
-              <p>Charts and graphs coming soon...</p>
-              <p className="text-sm">
-                Track your usage patterns and costs over time
-              </p>
+          {finops.loading && !finops.current ? (
+            <p className="text-sm text-muted-foreground">Loading FinOps data…</p>
+          ) : finops.error ? (
+            <p className="text-sm text-red-600">{finops.error}</p>
+          ) : (
+            <div className="space-y-3">
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="p-3 border rounded-lg">
+                  <div className="text-xs text-muted-foreground">Forecast / day</div>
+                  <div className="text-xl font-bold">
+                    {forecastTotal ? formatEur(forecastTotal.forecast_usd_per_day, { minFrac: 4, maxFrac: 4 }) : "-"}
+                  </div>
+                </div>
+                <div className="p-3 border rounded-lg">
+                  <div className="text-xs text-muted-foreground">Forecast / month (30d)</div>
+                  <div className="text-xl font-bold">
+                    {forecastTotal ? formatEur(forecastTotal.forecast_usd_per_month_30d, { minFrac: 4, maxFrac: 4 }) : "-"}
+                  </div>
+                </div>
+                <div className="p-3 border rounded-lg">
+                  <div className="text-xs text-muted-foreground">Forecast / minute</div>
+                  <div className="text-xl font-bold">
+                    {forecastTotal ? formatEur(forecastTotal.forecast_usd_per_minute, { minFrac: 6, maxFrac: 6 }) : "-"}
+                  </div>
+                </div>
+              </div>
+
+              {forecastProviders.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No provider forecast yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {forecastProviders.map((r) => (
+                    <div
+                      key={r.provider_id as string}
+                      className="flex items-center justify-between p-3 border rounded-lg"
+                    >
+                      <div>
+                        <div className="font-medium text-sm">
+                          {providersById.get(r.provider_id as string) ??
+                            (r.provider_id as string)}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          Burn rate: {formatEur(r.burn_rate_usd_per_hour, { minFrac: 4, maxFrac: 4 })}/h
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-sm font-semibold">
+                          {formatEur(r.forecast_usd_per_month_30d, { minFrac: 4, maxFrac: 4 })}/mo
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {formatEur(r.forecast_usd_per_day, { minFrac: 4, maxFrac: 4 })}/day
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-          </div>
+          )}
         </CardContent>
       </Card>
     </div>

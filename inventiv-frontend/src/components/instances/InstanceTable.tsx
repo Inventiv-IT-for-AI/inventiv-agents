@@ -2,12 +2,13 @@
 
 import { formatDistanceToNow, parseISO } from "date-fns";
 import { Button } from "@/components/ui/button";
-import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Eye, Archive } from "lucide-react";
 import { CopyButton } from "@/components/shared/CopyButton";
 import type { Instance } from "@/lib/types";
-import { displayOrDash } from "@/lib/utils";
+import { displayOrDash, formatEur } from "@/lib/utils";
+import { VirtualizedDataTable, type DataTableColumn } from "@/components/shared/VirtualizedDataTable";
+import { useMemo } from "react";
 
 type InstanceTableProps = {
   instances: Instance[];
@@ -22,106 +23,153 @@ export function InstanceTable({
   onTerminate,
   onArchive,
 }: InstanceTableProps) {
-  return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>ID</TableHead>
-          <TableHead>Provider</TableHead>
-          <TableHead>Region</TableHead>
-          <TableHead>Zone</TableHead>
-          <TableHead>Type</TableHead>
-          <TableHead>Cost</TableHead>
-          <TableHead>Status</TableHead>
-          <TableHead>Created</TableHead>
-          <TableHead>IP Address</TableHead>
-          <TableHead className="text-right">Actions</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {instances.map((instance) => (
-          <TableRow key={instance.id}>
-            <TableCell className="font-mono text-xs">
-              {instance.id.split("-")[0]}...
-            </TableCell>
-            <TableCell>{displayOrDash(instance.provider_name)}</TableCell>
-            <TableCell>{displayOrDash(instance.region)}</TableCell>
-            <TableCell>{displayOrDash(instance.zone)}</TableCell>
-            <TableCell>{displayOrDash(instance.instance_type)}</TableCell>
-            <TableCell className="font-mono">
-              {typeof instance.total_cost === "number"
-                ? `$${instance.total_cost.toFixed(4)}`
-                : "-"}
-            </TableCell>
-            <TableCell>
-              <Badge
-                variant={
-                  instance.status.toLowerCase() === "ready"
-                    ? "default"
-                    : instance.status.toLowerCase() === "terminated"
-                      ? "destructive"
-                      : "secondary"
-                }
+  const columns = useMemo<DataTableColumn<Instance>[]>(() => {
+    return [
+      {
+        id: "id",
+        label: "ID",
+        width: 140,
+        cell: ({ row }) => (
+          <span className="font-mono text-xs">{row.id.split("-")[0]}...</span>
+        ),
+      },
+      {
+        id: "provider",
+        label: "Provider",
+        width: 140,
+        cell: ({ row }) => displayOrDash(row.provider_name),
+      },
+      {
+        id: "region",
+        label: "Region",
+        width: 160,
+        cell: ({ row }) => displayOrDash(row.region),
+      },
+      {
+        id: "zone",
+        label: "Zone",
+        width: 140,
+        cell: ({ row }) => displayOrDash(row.zone),
+      },
+      {
+        id: "type",
+        label: "Type",
+        width: 220,
+        cell: ({ row }) => displayOrDash(row.instance_type),
+      },
+      {
+        id: "cost",
+        label: "Cost",
+        width: 120,
+        align: "right",
+        cell: ({ row }) => (
+          <span className="font-mono">
+            {typeof row.total_cost === "number" ? formatEur(row.total_cost, { minFrac: 4, maxFrac: 4 }) : "-"}
+          </span>
+        ),
+      },
+      {
+        id: "status",
+        label: "Status",
+        width: 140,
+        cell: ({ row }) => (
+          <Badge
+            variant={
+              row.status.toLowerCase() === "ready"
+                ? "default"
+                : row.status.toLowerCase() === "terminated"
+                  ? "destructive"
+                  : "secondary"
+            }
+          >
+            {row.status}
+          </Badge>
+        ),
+      },
+      {
+        id: "created",
+        label: "Created",
+        width: 170,
+        cell: ({ row }) => (
+          <span className="whitespace-nowrap text-muted-foreground">
+            {formatDistanceToNow(parseISO(row.created_at), { addSuffix: true })}
+          </span>
+        ),
+      },
+      {
+        id: "ip",
+        label: "IP Address",
+        width: 200,
+        cell: ({ row }) =>
+          row.ip_address ? (
+            <div className="flex items-center gap-1 font-mono text-sm">
+              <span className="truncate">{row.ip_address}</span>
+              <CopyButton text={row.ip_address} />
+            </div>
+          ) : (
+            <span className="text-muted-foreground">-</span>
+          ),
+      },
+      {
+        id: "actions",
+        label: "Actions",
+        width: 220,
+        align: "right",
+        disableReorder: true,
+        cell: ({ row }) => (
+          <div className="flex justify-end items-center gap-2">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={(e) => {
+                e.stopPropagation();
+                onViewDetails(row);
+              }}
+              title="Voir détails"
+            >
+              <Eye className="h-4 w-4" />
+            </Button>
+            {row.status.toLowerCase() !== "terminated" ? (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onTerminate(row.id);
+                }}
               >
-                {instance.status}
-              </Badge>
-            </TableCell>
-            <TableCell className="whitespace-nowrap text-muted-foreground">
-              {formatDistanceToNow(parseISO(instance.created_at), {
-                addSuffix: true,
-              })}
-            </TableCell>
-            <TableCell className="font-mono text-sm">
-              {instance.ip_address ? (
-                <div className="flex items-center">
-                  {instance.ip_address}
-                  <CopyButton text={instance.ip_address} />
-                </div>
-              ) : (
-                <span className="text-muted-foreground">-</span>
-              )}
-            </TableCell>
-            <TableCell className="text-right">
-              <div className="flex justify-end space-x-2">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => onViewDetails(instance)}
-                >
-                  <Eye className="h-4 w-4" />
-                </Button>
-                {instance.status.toLowerCase() !== "terminated" && (
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => onTerminate(instance.id)}
-                  >
-                    Terminer
-                  </Button>
-                )}
-                {instance.status.toLowerCase() === "terminated" && (
-                  <Button
-                    variant="secondary"
-                    size="icon"
-                    onClick={() => onArchive(instance.id)}
-                    title="Archive"
-                  >
-                    <Archive className="h-4 w-4" />
-                  </Button>
-                )}
-              </div>
-            </TableCell>
-          </TableRow>
-        ))}
-        {instances.length === 0 && (
-          <TableRow>
-            <TableCell colSpan={10} className="text-center h-24 text-muted-foreground">
-              No instances found.
-            </TableCell>
-          </TableRow>
-        )}
-      </TableBody>
-    </Table>
+                Terminer
+              </Button>
+            ) : (
+              <Button
+                variant="secondary"
+                size="icon"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onArchive(row.id);
+                }}
+                title="Archive"
+              >
+                <Archive className="h-4 w-4" />
+              </Button>
+            )}
+          </div>
+        ),
+      },
+    ];
+  }, [onArchive, onTerminate, onViewDetails]);
+
+  return (
+    <VirtualizedDataTable<Instance>
+      listId="instances:table"
+      title="Instances"
+      height={560}
+      rowHeight={56}
+      columns={columns}
+      rows={instances}
+      getRowKey={(r) => r.id}
+      onRowClick={onViewDetails}
+    />
   );
 }
 

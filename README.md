@@ -16,7 +16,8 @@ Le système est composé de 4 micro-services principaux structurés dans un Carg
 *   **`inventiv-common`** : Bibliothèque partagée (Types, DTOs).
 *   **`inventiv-frontend`** : UI Next.js (Dashboard / Instances / Settings / Monitoring / Traces).
 
-> Note: le **Router / Data Plane** (OpenAI-compatible) est **prévu** mais **n'est pas présent** dans le repo à ce stade (la doc historique le mentionne encore).
+> Note: le **Router / Data Plane** (OpenAI-compatible) est **prévu** mais **n'est pas présent** dans le repo à ce stade.
+> La priorité immédiate (phase `0.2.1`) est **Worker Ready** (vLLM + agent, readiness fiable + heartbeats).
 
 ## 🚀 Démarrage Rapide
 
@@ -79,13 +80,33 @@ make clean       # Nettoyer les artefacts
 ## 🗄️ Base de données: migrations & seeds
 
 - **Migrations SQLx exécutées au boot**: `sqlx-migrations/` (utilisées par `sqlx::migrate!` dans `inventiv-api` et `inventiv-orchestrator`).
-- **Seeds / données initiales (dev)**: `migrations/seeds*.sql` (non exécutés automatiquement).
+- **Seed catalogue (dev)**: `seeds/catalog_seeds.sql` (non exécuté automatiquement).
 
 Exemple (dev local):
 
 ```bash
-psql "postgresql://postgres:password@localhost:5432/llminfra" -f migrations/seeds_scaleway.sql
+psql "postgresql://postgres:password@localhost:5432/llminfra" -f seeds/catalog_seeds.sql
 ```
+
+## 🧱 Déploiement “simple” multi-machines (Docker Compose)
+
+Objectif: rester compatible avec des scénarios allant de **0 à 10 machines GPU** (typiquement 8×GPU 80–90GB) et aussi du **burst intermittent** (ex: 4×GPU 48GB).
+
+- **Machine “control-plane”**:
+  - `inventiv-api` + `inventiv-orchestrator` + `postgres` + `redis`
+- **Machines GPU (“data-plane”)**:
+  - `inventiv-worker` (agent + vLLM) + cache modèles local
+
+Comme Docker Compose ne gère pas nativement un réseau multi-host, on privilégie un réseau privé type **Tailscale/WireGuard** entre la machine control-plane et les machines GPU.
+
+## 📈 Autoscaling (up/down)
+
+Le plan est d’implémenter un **autoscaler** côté `inventiv-orchestrator` basé sur:
+- **signaux router/worker** (queue depth, ttft/p95, gpu util, erreurs),
+- **politiques par pool** (ex: `h100_8x80`, `l40s_4x48`, etc.),
+- **drain avant terminate** (stop new requests → attendre in-flight → terminate).
+
+> En l’absence de Router (pour l’instant), on démarre par: **Worker-ready + health-check HTTP**, puis on ajoute le routing et les signaux nécessaires au scaling.
 
 ## 📈 Monitoring (Action Logs)
 

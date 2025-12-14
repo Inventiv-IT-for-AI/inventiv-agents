@@ -29,7 +29,7 @@ export type Instance = {
 export type Provider = {
     id: string;
     name: string;
-    code?: string | null;
+    code: string;
     description?: string | null;
     is_active?: boolean;
 };
@@ -61,7 +61,6 @@ export type InstanceType = {
     vram_per_gpu_gb?: number;
     cpu_count?: number;
     ram_gb?: number;
-    n_gpu?: number;
     bandwidth_bps?: number;
 };
 
@@ -94,4 +93,37 @@ export type InstanceStats = {
     active: number;
     provisioning: number;
     failed: number;
+};
+
+// -----------------------------
+// FinOps (costs)
+// -----------------------------
+
+export type FinopsForecastMinuteRow = {
+    bucket_minute: string;
+    provider_id: string | null;
+    burn_rate_usd_per_hour: number;
+    forecast_usd_per_minute: number;
+    forecast_usd_per_day: number;
+    forecast_usd_per_month_30d: number;
+};
+
+export type FinopsActualMinuteRow = {
+    bucket_minute: string;
+    provider_id: string | null;
+    instance_id: string | null;
+    amount_usd: number;
+};
+
+export type FinopsCumulativeMinuteRow = {
+    bucket_minute: string;
+    provider_id: string | null;
+    instance_id: string | null;
+    cumulative_amount_usd: number;
+};
+
+export type FinopsCostCurrentResponse = {
+    latest_bucket_minute: string | null;
+    forecast: FinopsForecastMinuteRow[];
+    cumulative_total: FinopsCumulativeMinuteRow | null;
 };

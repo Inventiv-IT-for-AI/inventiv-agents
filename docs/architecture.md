@@ -34,6 +34,12 @@ Le système repose sur une séparation stricte des responsabilités (Pattern **C
     *   **Ecritures** : Met à jour l'état technique dans PostgreSQL (Status des instances, IPs).
     *   **Lecture/Réaction** : Consomme les événements du Backend (via Redis Pub/Sub) pour déclencher des actions immédiates (Scale Up, Block API Key).
 
+##### Autoscaling (objectif)
+Dans le scénario “simple” (Docker Compose sur quelques machines), l’Orchestrator porte aussi un composant **Autoscaler**:
+- **Input**: signaux de charge/capacité (queue depth, latence/TTFT, GPU util, erreurs) + objectifs par pool/modèle.
+- **Decision**: calcule une capacité désirée (min/max) par pool.
+- **Action**: appelle le provider (Scaleway) pour **créer/terminer** des instances, en appliquant une politique **drain → terminate**.
+
 #### 3. Inventiv Router (Data Plane) — *statut*
 *   **Prévu** (OpenAI-compatible), mais **non présent** dans le repo à ce stade.
 *   La doc “Router” reste utile pour la cible produit, mais les scripts/README doivent être alignés tant que ce service n’est pas réintroduit.
@@ -41,6 +47,7 @@ Le système repose sur une séparation stricte des responsabilités (Pattern **C
 #### 4. Inventiv Worker (Agent Sidecar)
 *   Déployé sur les instances GPU.
 *   Pilote localement le moteur d'inférence (vLLM).
+*   **Objectif 0.2.1**: exposer une **readiness fiable** (`/readyz`) et remonter des **heartbeats/capacity** au control plane.
 
 ### Flux de Communication & Données
 
@@ -55,6 +62,21 @@ Le système repose sur une séparation stricte des responsabilités (Pattern **C
 3.  **Monitoring & Scaling** :
     *   L'Orchestrateur collecte les métriques (Workers/Router) en temps réel.
     *   Il décide seul des actions de Scaling (Up/Down) et notifie le système via DB update + Event.
+
+---
+
+## 2.1 Déploiement “simple” multi-machines (Docker Compose)
+
+### Principe
+- **1 machine control-plane**: `inventiv-api`, `inventiv-orchestrator`, `postgres`, `redis`
+- **N machines GPU**: `inventiv-worker` (agent + vLLM) + volume cache modèles
+
+### Réseau
+Docker Compose ne gère pas un réseau overlay multi-host. On utilise donc un réseau privé entre machines:
+- recommandé: **Tailscale**
+- alternative: **WireGuard**
+
+Le Worker envoie ensuite ses heartbeats au control-plane via l’IP privée (tailnet).
 
 ### Modèle de Données (Simplifié)
 *   **User** : Propriétaire des ressources.

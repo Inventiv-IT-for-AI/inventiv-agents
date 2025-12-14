@@ -7,8 +7,14 @@ use serde_json::json;
 use crate::provider_manager::ProviderManager;
 use crate::logger;
 use bigdecimal::FromPrimitive;
+use crate::finops_events;
 
-pub async fn process_termination(pool: Pool<Postgres>, instance_id: String, correlation_id: Option<String>) {
+pub async fn process_termination(
+    pool: Pool<Postgres>,
+    _redis_client: redis::Client,
+    instance_id: String,
+    correlation_id: Option<String>,
+) {
     let start = Instant::now();
     let id_uuid = match Uuid::parse_str(&instance_id) {
         Ok(v) => v,
@@ -51,7 +57,17 @@ pub async fn process_termination(pool: Pool<Postgres>, instance_id: String, corr
             
             // 2. Try to terminate on Provider
             if let Some(provider_instance_id) = provider_id_opt {
-                if let Some(provider) = ProviderManager::get_provider("scaleway") {
+                // Select provider based on instance.provider_id (supports multiple providers)
+                let provider_code: String = sqlx::query_scalar(
+                    "SELECT p.code FROM providers p JOIN instances i ON i.provider_id = p.id WHERE i.id = $1",
+                )
+                .bind(id_uuid)
+                .fetch_optional(&pool)
+                .await
+                .unwrap_or(None)
+                .unwrap_or_else(|| ProviderManager::current_provider_name());
+
+                if let Some(provider) = ProviderManager::get_provider(&provider_code, pool.clone()) {
                     
                     // LOG 2: PROVIDER_TERMINATE (API call to provider)
                     let api_start = Instant::now();
@@ -237,6 +253,7 @@ pub async fn process_termination(pool: Pool<Postgres>, instance_id: String, corr
 
 pub async fn process_provisioning(
     pool: Pool<Postgres>,
+    redis_client: redis::Client,
     instance_id: String,
     zone: String,
     instance_type: String,
@@ -253,9 +270,20 @@ pub async fn process_provisioning(
     let correlation_id_meta = correlation_id.clone();
     println!("🔨 [Orchestrator] Processing Provision for instance: {}", instance_uuid);
     
-    // 0. Resolve Catalog IDs dynamically
-    let provider_name = "scaleway"; // TODO: Dynamic?
-    let provider_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(); // Scaleway ID
+    // 0. Resolve provider from the instance row (supports multiple providers)
+    let provider_id: Uuid = sqlx::query_scalar("SELECT provider_id FROM instances WHERE id = $1")
+        .bind(instance_uuid)
+        .fetch_optional(&pool)
+        .await
+        .unwrap_or(None)
+        .unwrap_or_else(|| Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap()); // default scaleway
+
+    let provider_name: String = sqlx::query_scalar("SELECT code FROM providers WHERE id = $1")
+        .bind(provider_id)
+        .fetch_optional(&pool)
+        .await
+        .unwrap_or(None)
+        .unwrap_or_else(|| ProviderManager::current_provider_name());
 
     let zone_id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM zones WHERE code = $1 AND is_active = true")
         .bind(&zone)
@@ -312,7 +340,7 @@ pub async fn process_provisioning(
     ).await.ok();
     
     // 1. Init Provider
-    let provider_opt = ProviderManager::get_provider(provider_name);
+    let provider_opt = ProviderManager::get_provider(&provider_name, pool.clone());
     
     if provider_opt.is_none() {
          let msg = "Missing Provider Credentials";
@@ -543,6 +571,16 @@ pub async fn process_provisioning(
                  let duration = db_start.elapsed().as_millis() as i32;
                  logger::log_event_complete(&pool, log_id, "success", duration, None).await.ok();
               }
+
+              // FinOps domain event: instance is now allocated (booting) → start cost counting ASAP
+              let _ = finops_events::emit_instance_cost_start(
+                  &pool,
+                  &redis_client,
+                  instance_uuid,
+                  "inventiv-orchestrator/services",
+                  Some("status=booting"),
+              )
+              .await;
             
             // Complete LOG 2
             if let Some(log_id) = log_id_execute {
@@ -570,13 +608,55 @@ pub async fn process_catalog_sync(pool: Pool<Postgres>) {
     println!("🔄 [Catalog Sync] Starting catalog synchronization...");
 
     // 1. Get Provider (Scaleway)
-    if let Some(provider) = ProviderManager::get_provider("scaleway") {
-        let provider_uuid = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap_or_default();
-        let zones = vec!["fr-par-1", "fr-par-2", "nl-ams-1", "pl-waw-1"];
-        // TODO: Could fetch zones from DB: SELECT code FROM zones WHERE is_active=true
+    let provider_name = ProviderManager::current_provider_name();
+    if let Some(provider) = ProviderManager::get_provider(&provider_name, pool.clone()) {
+        let provider_uuid: Uuid = sqlx::query_scalar("SELECT id FROM providers WHERE code = $1 LIMIT 1")
+            .bind(&provider_name)
+            .fetch_optional(&pool)
+            .await
+            .unwrap_or(None)
+            .unwrap_or_default();
 
-        for zone in zones {
+        // Prefer zones configured in DB for this provider; fallback to a sane default list.
+        let zones: Vec<String> = sqlx::query_scalar(
+            r#"
+            SELECT z.code
+            FROM zones z
+            JOIN regions r ON r.id = z.region_id
+            WHERE z.is_active = true
+              AND r.provider_id = $1
+            ORDER BY z.code
+            "#,
+        )
+            .bind(provider_uuid)
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_default();
+
+        let zones: Vec<String> = if zones.is_empty() {
+            vec![
+                // fallback only makes sense for scaleway; mock will typically be in DB
+                "fr-par-1".to_string(),
+                "fr-par-2".to_string(),
+            ]
+        } else {
+            zones
+        };
+
+        for zone in &zones {
              println!("🔄 [Catalog Sync] Fetching catalog for zone: {}", zone);
+
+             // Resolve zone id for mapping (instance_type_zones)
+             let zone_id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM zones WHERE code = $1 AND is_active = true")
+                 .bind(zone)
+                 .fetch_optional(&pool)
+                 .await
+                 .unwrap_or(None);
+
+             if zone_id.is_none() {
+                 println!("⚠️ [Catalog Sync] Zone '{}' not found in DB; skipping availability mapping", zone);
+             }
+
              match provider.fetch_catalog(zone).await {
                  Ok(items) => {
                      let mut count = 0;
@@ -587,18 +667,21 @@ pub async fn process_catalog_sync(pool: Pool<Postgres>) {
                          // But safer to cast in SQL or use bigdecimal crate types.
                          let hourly_price = bigdecimal::BigDecimal::from_f64(item.cost_per_hour).unwrap_or_default();
 
-                        let _ = sqlx::query(
-                            "INSERT INTO instance_types (id, provider_id, name, code, is_active, cost_per_hour, cpu_count, ram_gb, n_gpu, vram_per_gpu_gb, bandwidth_bps)
+                        // Upsert instance type and get its id (needed to map availability to zones)
+                        let type_id: Option<Uuid> = sqlx::query_scalar(
+                            "INSERT INTO instance_types (id, provider_id, name, code, is_active, cost_per_hour, cpu_count, ram_gb, gpu_count, vram_per_gpu_gb, bandwidth_bps)
                              VALUES (gen_random_uuid(), $1, $2, $3, true, $4, $5, $6, $7, $8, $9)
                              ON CONFLICT (provider_id, code)
                              DO UPDATE SET
+                                name = EXCLUDED.name,
                                 cost_per_hour = EXCLUDED.cost_per_hour,
                                 cpu_count = EXCLUDED.cpu_count,
                                 ram_gb = EXCLUDED.ram_gb,
-                                n_gpu = EXCLUDED.n_gpu,
+                                gpu_count = EXCLUDED.gpu_count,
                                 vram_per_gpu_gb = EXCLUDED.vram_per_gpu_gb,
                                 bandwidth_bps = EXCLUDED.bandwidth_bps,
-                                is_active = true"
+                                is_active = true
+                             RETURNING id"
                         )
                         .bind(provider_uuid)
                         .bind(&item.name)
@@ -606,11 +689,26 @@ pub async fn process_catalog_sync(pool: Pool<Postgres>) {
                         .bind(hourly_price)
                         .bind(item.cpu_count)
                         .bind(item.ram_gb)
-                        .bind(item.n_gpu)
+                        .bind(item.gpu_count)
                         .bind(item.vram_per_gpu_gb)
                         .bind(item.bandwidth_bps)
-                        .execute(&pool)
-                        .await;
+                        .fetch_optional(&pool)
+                        .await
+                        .unwrap_or(None);
+
+                        // Map availability: all items returned by provider for this zone are available.
+                        if let (Some(tid), Some(zid)) = (type_id, zone_id) {
+                            let _ = sqlx::query(
+                                "INSERT INTO instance_type_zones (instance_type_id, zone_id, is_available)
+                                 VALUES ($1, $2, true)
+                                 ON CONFLICT (instance_type_id, zone_id)
+                                 DO UPDATE SET is_available = EXCLUDED.is_available"
+                            )
+                            .bind(tid)
+                            .bind(zid)
+                            .execute(&pool)
+                            .await;
+                        }
                         count += 1;
                      }
                      println!("✅ [Catalog Sync] Updated {} types for zone {}", count, zone);
@@ -625,11 +723,27 @@ pub async fn process_catalog_sync(pool: Pool<Postgres>) {
 
 pub async fn process_full_reconciliation(pool: Pool<Postgres>) {
     println!("🔄 [Full Reconciliation] Starting...");
-    if let Some(provider) = ProviderManager::get_provider("scaleway") {
-        let zones = vec!["fr-par-2"]; // TODO: Fetch from DB / Config
+    let provider_name = ProviderManager::current_provider_name();
+    if let Some(provider) = ProviderManager::get_provider(&provider_name, pool.clone()) {
+        // Zones for this provider
+        let zones: Vec<String> = sqlx::query_scalar(
+            r#"
+            SELECT z.code
+            FROM zones z
+            JOIN regions r ON r.id = z.region_id
+            JOIN providers p ON p.id = r.provider_id
+            WHERE z.is_active = true
+              AND p.code = $1
+            ORDER BY z.code
+            "#,
+        )
+        .bind(&provider_name)
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default();
 
         for zone in zones {
-             match provider.list_instances(zone).await {
+             match provider.list_instances(&zone).await {
                  Ok(instances) => {
                      println!("🔍 [Full Reconciliation] List returned {} instances in {}", instances.len(), zone);
                      let mut import_count = 0;
@@ -650,7 +764,7 @@ pub async fn process_full_reconciliation(pool: Pool<Postgres>) {
                              
                              // Resolve Zone ID
                              let zone_id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM zones WHERE code = $1 OR name = $1 LIMIT 1")
-                                 .bind(zone)
+                                 .bind(&zone)
                                  .fetch_optional(&pool)
                                  .await
                                  .unwrap_or(None);

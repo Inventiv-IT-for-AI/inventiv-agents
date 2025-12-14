@@ -104,7 +104,7 @@ pub async fn associate_zones_to_instance_type(
 
     // Insert new associations
     for zone_id in req.zone_ids {
-        let insert_result = sqlx::query(
+        let insert_new = sqlx::query(
             "INSERT INTO instance_type_zones (instance_type_id, zone_id, is_available) VALUES ($1, $2, true)"
         )
         .bind(instance_type_id)
@@ -112,10 +112,11 @@ pub async fn associate_zones_to_instance_type(
         .execute(&state.db)
         .await;
 
-        if insert_result.is_err() {
-            eprintln!("Error inserting association: {:?}", insert_result.err());
+        if insert_new.is_err() {
+            eprintln!("Error inserting instance_type_zones association: {:?}", insert_new.err());
             return StatusCode::INTERNAL_SERVER_ERROR;
         }
+
     }
 
     StatusCode::OK
@@ -138,23 +139,39 @@ pub async fn list_instance_types_for_zone(
     Path(zone_id): Path<Uuid>,
     axum::extract::Query(params): axum::extract::Query<ListInstanceTypesForZoneQuery>,
 ) -> Json<Vec<InstanceType>> {
-    let provider_filter = params.provider_id;
+    // Prefer provider_code, keep provider_id for backward compatibility.
+    let provider_filter: Option<Uuid> = if let Some(pid) = params.provider_id {
+        Some(pid)
+    } else if let Some(code) = params
+        .provider_code
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        sqlx::query_scalar("SELECT id FROM providers WHERE code = $1 LIMIT 1")
+            .bind(code.to_ascii_lowercase())
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None)
+    } else {
+        None
+    };
 
     let types = sqlx::query_as::<_, InstanceType>(
         r#"SELECT DISTINCT
             it.id, it.provider_id, it.name, it.code, 
             it.gpu_count, it.vram_per_gpu_gb, 
-            it.cpu_count, it.ram_gb, it.n_gpu, it.bandwidth_bps,
+            it.cpu_count, it.ram_gb, it.bandwidth_bps,
             it.is_active,
             CAST(it.cost_per_hour AS DOUBLE PRECISION) as "cost_per_hour"
            FROM instance_types it
-           JOIN instance_type_zones itz ON it.id = itz.instance_type_id
+           JOIN instance_type_zones itz
+             ON it.id = itz.instance_type_id AND itz.zone_id = $1
            JOIN providers p ON p.id = it.provider_id
-           WHERE itz.zone_id = $1
-             AND it.is_active = true
-             AND itz.is_available = true
+           WHERE it.is_active = true
              AND p.is_active = true
              AND ($2::uuid IS NULL OR it.provider_id = $2::uuid)
+             AND itz.is_available = true
            ORDER BY it.name"#
     )
     .bind(zone_id)
@@ -168,5 +185,6 @@ pub async fn list_instance_types_for_zone(
 
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct ListInstanceTypesForZoneQuery {
-    pub provider_id: Option<Uuid>,
+    pub provider_code: Option<String>,
+    pub provider_id: Option<Uuid>, // deprecated
 }

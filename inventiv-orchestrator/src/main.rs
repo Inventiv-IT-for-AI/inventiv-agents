@@ -16,6 +16,7 @@ mod health_check_job;
 mod terminator_job;
 mod watch_dog_job;
 mod services; // NEW
+mod finops_events;
 use tokio::time::{sleep, Duration};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres};
@@ -23,6 +24,7 @@ use sqlx::{Pool, Postgres};
 
 struct AppState {
     db: Pool<Postgres>,
+    redis_client: redis::Client,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -42,6 +44,8 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let redis_url = std::env::var("REDIS_URL").expect("REDIS_URL must be set");
+    let redis_client = redis::Client::open(redis_url.clone()).unwrap();
     
     // Connect to Postgres
     let pool = PgPoolOptions::new()
@@ -62,6 +66,7 @@ async fn main() {
 
     let state = Arc::new(AppState {
         db: pool,
+        redis_client: redis_client.clone(),
     });
 
 
@@ -73,11 +78,8 @@ async fn main() {
     });
 
     // 4. Start Event Listener (Redis Subscriber)
-    let redis_url = std::env::var("REDIS_URL").expect("REDIS_URL must be set");
-    let client = redis::Client::open(redis_url.clone()).unwrap();
-    
     // Use dedicated PubSub connection
-    let mut pubsub = client.get_async_pubsub().await.unwrap();
+    let mut pubsub = redis_client.get_async_pubsub().await.unwrap();
     pubsub.subscribe("orchestrator_events").await.unwrap();
     println!("🎧 Orchestrator listening on Redis channel 'orchestrator_events'...");
 
@@ -97,16 +99,18 @@ async fn main() {
                     "CMD:PROVISION" => {
                         if let Ok(cmd) = serde_json::from_value::<CommandProvision>(event_json.clone()) {
                             let pool = state_redis.db.clone();
+                            let redis_client = state_redis.redis_client.clone();
                             tokio::spawn(async move {
-                                services::process_provisioning(pool, cmd.instance_id, cmd.zone, cmd.instance_type, cmd.correlation_id).await;
+                                services::process_provisioning(pool, redis_client, cmd.instance_id, cmd.zone, cmd.instance_type, cmd.correlation_id).await;
                             });
                         }
                     }
                     "CMD:TERMINATE" => {
                         if let Ok(cmd) = serde_json::from_value::<CommandTerminate>(event_json.clone()) {
                             let pool = state_redis.db.clone();
+                            let redis_client = state_redis.redis_client.clone();
                             tokio::spawn(async move {
-                                services::process_termination(pool, cmd.instance_id, cmd.correlation_id).await;
+                                services::process_termination(pool, redis_client, cmd.instance_id, cmd.correlation_id).await;
                             });
                         }
                     }
@@ -132,11 +136,13 @@ async fn main() {
 
     // job-watch-dog (READY)
     let pool_watchdog = state.db.clone();
-    tokio::spawn(async move { watch_dog_job::run(pool_watchdog).await; });
+    let redis_watchdog = state.redis_client.clone();
+    tokio::spawn(async move { watch_dog_job::run(pool_watchdog, redis_watchdog).await; });
 
     // job-terminator (TERMINATING)
     let pool_terminator = state.db.clone();
-    tokio::spawn(async move { terminator_job::run(pool_terminator).await; });
+    let redis_terminator = state.redis_client.clone();
+    tokio::spawn(async move { terminator_job::run(pool_terminator, redis_terminator).await; });
 
     // job-health-check (BOOTING)
     let db_health = state.db.clone();

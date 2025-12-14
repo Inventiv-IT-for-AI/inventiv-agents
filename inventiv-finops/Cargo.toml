@@ -1,5 +1,5 @@
 [package]
-name = "inventiv-orchestrator"
+name = "inventiv-finops"
 version = "0.1.0"
 edition = "2021"
 
@@ -11,13 +11,12 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tracing = "0.1"
 tracing-subscriber = "0.3"
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "migrate", "bigdecimal"] }
-reqwest = { version = "0.12", features = ["json"] }
-dotenv = "0.15"
-async-trait = "0.1"
-anyhow = "1.0"
+sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono", "time", "json", "migrate", "bigdecimal"] }
 uuid = { version = "1.6", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dotenv = "0.15"
+anyhow = "1.0"
+tower-http = { version = "0.6.8", features = ["cors"] }
+bigdecimal = "0.3.0"
 redis = { version = "0.27", features = ["tokio-comp"] }
 futures-util = "0.3"
-bigdecimal = "0.3.0"
-chrono = { version = "0.4", features = ["serde"] }

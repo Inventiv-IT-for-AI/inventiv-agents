@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { CopyButton } from "@/components/shared/CopyButton";
 import { Button } from "@/components/ui/button";
 import type { Instance } from "@/lib/types";
-import { displayOrDash } from "@/lib/utils";
+import { displayOrDash, formatEur } from "@/lib/utils";
 
 type InstanceDetailsModalProps = {
   open: boolean;
@@ -68,12 +68,12 @@ export function InstanceDetailsModal({
                   </div>
                   <div className="flex justify-between border-b pb-1">
                     <span>Rate</span>
-                    <span>${instance.cost_per_hour ?? "-"}/hr</span>
+                    <span>{instance.cost_per_hour != null ? `${formatEur(instance.cost_per_hour, { minFrac: 4, maxFrac: 4 })}/h` : "-"}</span>
                   </div>
                   <div className="flex justify-between border-b pb-1">
                     <span>Total Cost</span>
                     <span className="font-bold text-green-600">
-                      ${instance.total_cost?.toFixed(4) ?? "0.0000"}
+                      {instance.total_cost != null ? formatEur(instance.total_cost, { minFrac: 4, maxFrac: 4 }) : formatEur(0, { minFrac: 4, maxFrac: 4 })}
                     </span>
                   </div>
                   <div className="flex justify-between border-b pb-1">

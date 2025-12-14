@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Plus, RefreshCcw } from "lucide-react";
 import { Instance } from "@/lib/types";
 import { apiUrl } from "@/lib/api";
@@ -115,9 +115,6 @@ export default function InstancesPage() {
 
             {/* Instances Table */}
             <Card>
-                <CardHeader>
-                    <CardTitle>Instances ({instances.length})</CardTitle>
-                </CardHeader>
                 <CardContent>
                     <InstanceTable
                         instances={instances}

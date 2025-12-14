@@ -30,6 +30,16 @@ pub async fn check_and_transition_instance(
     failures: i32,
     db: Pool<Postgres>,
 ) {
+    // Mock provider: no real SSH. We emulate a successful startup so the rest of the platform can be tested.
+    let provider_code: Option<String> = sqlx::query_scalar(
+        "SELECT p.code FROM instances i JOIN providers p ON p.id = i.provider_id WHERE i.id = $1",
+    )
+    .bind(instance_id)
+    .fetch_optional(&db)
+    .await
+    .ok()
+    .flatten();
+
     let ip = match ip {
         Some(ip) => ip,
         None => {
@@ -37,6 +47,27 @@ pub async fn check_and_transition_instance(
             return;
         }
     };
+
+    if provider_code.as_deref() == Some("mock") {
+        println!("✅ Instance {} is on mock provider: auto-ready", instance_id);
+        let hc_start = std::time::Instant::now();
+        let log_id = logger::log_event_with_metadata(
+            &db,
+            "HEALTH_CHECK",
+            "in_progress",
+            instance_id,
+            None,
+            Some(serde_json::json!({"ip": ip, "result": "success", "failures": failures, "mode": "mock"})),
+        )
+        .await
+        .ok();
+        let _ = state_machine::booting_to_ready(&db, instance_id, "Mock provider auto-ready").await;
+        if let Some(lid) = log_id {
+            let dur = hc_start.elapsed().as_millis() as i32;
+            let _ = logger::log_event_complete(&db, lid, "success", dur, None).await;
+        }
+        return;
+    }
 
     // Timeout after 5 minutes
     let age = sqlx::types::chrono::Utc::now() - created_at;

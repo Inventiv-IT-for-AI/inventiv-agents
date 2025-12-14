@@ -160,7 +160,7 @@ impl CloudProvider for ScalewayProvider {
                 let ram_gb = (ram_bytes / 1024 / 1024 / 1024) as i32;
                 
                 // GPU Info
-                let n_gpu = details["gpu"].as_i64().unwrap_or(0) as i32;
+                let gpu_count = details["gpu"].as_i64().unwrap_or(0) as i32;
                 let vram_bytes = details["gpu_info"].get("gpu_memory").and_then(|v| v.as_i64()).unwrap_or(0);
                 let vram_gb = (vram_bytes / 1024 / 1024 / 1024) as i32;
                 
@@ -172,7 +172,7 @@ impl CloudProvider for ScalewayProvider {
                     cost_per_hour: hourly_price,
                     cpu_count: ncpus,
                     ram_gb,
-                    n_gpu,
+                    gpu_count,
                     vram_per_gpu_gb: vram_gb,
                     bandwidth_bps,
                 });

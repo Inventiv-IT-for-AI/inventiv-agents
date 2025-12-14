@@ -1,13 +1,16 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { CheckCircle } from "lucide-react";
+import { CheckCircle, Search } from "lucide-react";
 import { apiUrl } from "@/lib/api";
 import { Provider, Region, Zone, InstanceType } from "@/lib/types";
+import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { formatEur } from "@/lib/utils";
 
 type CreateInstanceModalProps = {
     open: boolean;
@@ -32,18 +35,47 @@ export function CreateInstanceModal({
     const [zones, setZones] = useState<Zone[]>([]);
     const [instanceTypes, setInstanceTypes] = useState<InstanceType[]>(initialInstanceTypes);
 
-    const [selectedProviderId, setSelectedProviderId] = useState<string>("");
+    const [selectedProviderCode, setSelectedProviderCode] = useState<string>("");
     const [selectedRegionId, setSelectedRegionId] = useState<string>("");
     const [selectedZoneId, setSelectedZoneId] = useState<string>("");
     const [selectedTypeId, setSelectedTypeId] = useState<string>("");
+    const [isTypePickerOpen, setIsTypePickerOpen] = useState(false);
+    const [typeQuery, setTypeQuery] = useState("");
+
+    const selectedProviderId = useMemo(() => {
+        const p = providers.find((pp) => pp.code === selectedProviderCode);
+        return p?.id ?? "";
+    }, [providers, selectedProviderCode]);
 
     const selectedType = instanceTypes.find((t) => t.id === selectedTypeId);
+
+    const formatMoney = (n: number) => formatEur(n, { maxFrac: 4 });
+
+    const selectedTypePricing = useMemo(() => {
+        if (!selectedType || typeof selectedType.cost_per_hour !== "number") return null;
+        const perHour = selectedType.cost_per_hour;
+        return {
+            perMin: perHour / 60,
+            perHour,
+            perDay: perHour * 24,
+            perMonth: perHour * 24 * 30,
+        };
+    }, [selectedType]);
+
+    const filteredTypesForPicker = useMemo(() => {
+        const q = typeQuery.trim().toLowerCase();
+        if (!q) return instanceTypes;
+        return instanceTypes.filter((t) => {
+            const hay = `${t.name ?? ""} ${t.code ?? ""}`.toLowerCase();
+            return hay.includes(q);
+        });
+    }, [instanceTypes, typeQuery]);
 
     // Initialize provider when modal opens
     useEffect(() => {
         if (open && providers.length > 0) {
             // eslint-disable-next-line react-hooks/set-state-in-effect
-            setSelectedProviderId(providers[0].id);
+            setSelectedProviderCode(providers[0].code);
         }
     }, [open, providers]);
 
@@ -56,7 +88,7 @@ export function CreateInstanceModal({
         setSelectedTypeId("");
         setZones(allZones);
         setInstanceTypes(initialInstanceTypes.filter((t) => !selectedProviderId || t.provider_id === selectedProviderId));
-    }, [selectedProviderId, open, allZones, initialInstanceTypes]);
+    }, [selectedProviderCode, selectedProviderId, open, allZones, initialInstanceTypes]);
 
     // Filter zones by selected region
     useEffect(() => {
@@ -87,11 +119,29 @@ export function CreateInstanceModal({
 
         const fetchTypesForZone = async () => {
             try {
-                const qs = selectedProviderId ? `?provider_id=${encodeURIComponent(selectedProviderId)}` : "";
+                const qs = selectedProviderCode ? `?provider_code=${encodeURIComponent(selectedProviderCode)}` : "";
                 const res = await fetch(apiUrl(`zones/${selectedZoneId}/instance_types${qs}`));
                 if (res.ok) {
                     const data: InstanceType[] = await res.json();
-                    setInstanceTypes(data);
+                    // Merge zone-filtered types with full provider catalog.
+                    // Reason: availability mappings (instance_type_zones / legacy) can be incomplete,
+                    // but we still want to show all configured types to the user.
+                    const base = initialInstanceTypes.filter((t) => !selectedProviderId || t.provider_id === selectedProviderId);
+                    const byId = new Map<string, InstanceType>();
+                    for (const t of base) byId.set(t.id, t);
+                    for (const t of data) byId.set(t.id, { ...byId.get(t.id), ...t });
+
+                    const merged = Array.from(byId.values()).sort((a, b) => {
+                        const ag = (a.gpu_count ?? 0);
+                        const bg = (b.gpu_count ?? 0);
+                        if (bg !== ag) return bg - ag;
+                        const av = (a.vram_per_gpu_gb ?? 0);
+                        const bv = (b.vram_per_gpu_gb ?? 0);
+                        if (bv !== av) return bv - av;
+                        return (a.name || "").localeCompare(b.name || "");
+                    });
+
+                    setInstanceTypes(merged);
                     // Reset instance type selection when zone changes
                     setSelectedTypeId("");
                 }
@@ -100,7 +150,7 @@ export function CreateInstanceModal({
             }
         };
         fetchTypesForZone();
-    }, [selectedZoneId, initialInstanceTypes, selectedProviderId]);
+    }, [selectedZoneId, initialInstanceTypes, selectedProviderId, selectedProviderCode]);
 
     const handleDeploy = async () => {
         if (!selectedZoneId || !selectedTypeId) {
@@ -117,7 +167,7 @@ export function CreateInstanceModal({
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    provider_id: selectedProviderId || undefined,
+                    provider_code: selectedProviderCode || undefined,
                     zone: selectedZone?.code || "",
                     instance_type: selectedType?.code || "",
                 }),
@@ -145,6 +195,7 @@ export function CreateInstanceModal({
 
     const handleClose = () => {
         setDeployStep("form");
+        setSelectedProviderCode("");
         setSelectedRegionId("");
         setSelectedZoneId("");
         setSelectedTypeId("");
@@ -170,13 +221,13 @@ export function CreateInstanceModal({
                     <div className="grid gap-4 py-4">
                         <div className="grid grid-cols-4 items-center gap-4">
                             <Label className="text-right">Provider</Label>
-                            <Select value={selectedProviderId} onValueChange={setSelectedProviderId}>
+                            <Select value={selectedProviderCode} onValueChange={setSelectedProviderCode}>
                                 <SelectTrigger className="col-span-3">
                                     <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
                                     {providers.map((p) => (
-                                        <SelectItem key={p.id} value={p.id}>
+                                        <SelectItem key={p.id} value={p.code}>
                                             {p.name}
                                         </SelectItem>
                                     ))}
@@ -189,7 +240,7 @@ export function CreateInstanceModal({
                             <Select
                                 value={selectedRegionId}
                                 onValueChange={(val) => setSelectedRegionId(val)}
-                                disabled={!selectedProviderId}
+                                disabled={!selectedProviderCode}
                             >
                                 <SelectTrigger className="col-span-3">
                                     <SelectValue placeholder="Select region" />
@@ -228,26 +279,45 @@ export function CreateInstanceModal({
 
                         <div className="grid grid-cols-4 items-center gap-4">
                             <Label className="text-right">Instance Type</Label>
-                            <Select value={selectedTypeId} onValueChange={setSelectedTypeId}>
-                                <SelectTrigger className="col-span-3">
-                                    <SelectValue placeholder="Select type" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    {instanceTypes.map((t) => (
-                                        <SelectItem key={t.id} value={t.id}>
-                                            {t.name} {t.cost_per_hour && `(${t.cost_per_hour}$/h)`}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                className="col-span-3 justify-between"
+                                onClick={() => setIsTypePickerOpen(true)}
+                                disabled={!selectedZoneId || deployStep === "submitting"}
+                            >
+                                <span className="truncate">
+                                    {selectedType
+                                        ? `${selectedType.name} — ${selectedType.gpu_count ?? "-"} GPU • ${selectedType.vram_per_gpu_gb ?? "-"}GB VRAM/GPU`
+                                        : "Choisir un type"}
+                                </span>
+                                <Search className="h-4 w-4 opacity-60" />
+                            </Button>
                         </div>
 
-                        {selectedType && selectedType.cost_per_hour && (
-                            <div className="grid grid-cols-4 items-center gap-4 bg-muted/50 p-3 rounded-md">
-                                <Label className="text-right text-muted-foreground">Cost</Label>
-                                <p className="col-span-3 font-semibold">
-                                    ${selectedType.cost_per_hour}/hour
-                                </p>
+                        {selectedType && (
+                            <div className="grid grid-cols-4 items-start gap-4 bg-muted/50 p-3 rounded-md">
+                                <Label className="text-right text-muted-foreground">Détails</Label>
+                                <div className="col-span-3 space-y-1">
+                                    <div className="text-sm">
+                                        <span className="font-medium">{selectedType.name}</span>{" "}
+                                        <span className="text-muted-foreground">
+                                            ({selectedType.gpu_count ?? "-"} GPU,{" "}
+                                            {selectedType.vram_per_gpu_gb ?? "-"}GB VRAM/GPU
+                                            {typeof selectedType.vram_per_gpu_gb === "number" && typeof selectedType.gpu_count === "number"
+                                                ? ` — ${(selectedType.vram_per_gpu_gb * selectedType.gpu_count)}GB total`
+                                                : ""}
+                                            )
+                                        </span>
+                                    </div>
+                                    {selectedTypePricing ? (
+                                        <div className="text-xs text-muted-foreground font-mono">
+                                            {formatMoney(selectedTypePricing.perMin)}/min • {formatMoney(selectedTypePricing.perHour)}/h • {formatMoney(selectedTypePricing.perDay)}/j • {formatMoney(selectedTypePricing.perMonth)}/mois
+                                        </div>
+                                    ) : (
+                                        <div className="text-xs text-muted-foreground">Prix indisponible</div>
+                                    )}
+                                </div>
                             </div>
                         )}
                     </div>
@@ -278,6 +348,98 @@ export function CreateInstanceModal({
                     )}
                 </DialogFooter>
             </DialogContent>
+
+            {/* Instance Type Picker */}
+            <Dialog open={isTypePickerOpen} onOpenChange={setIsTypePickerOpen}>
+                <DialogContent showCloseButton={false} className="sm:max-w-[720px]">
+                    <DialogHeader>
+                        <DialogTitle>Choisir un type d&apos;instance</DialogTitle>
+                        <DialogDescription>
+                            Rechercher et sélectionner le type le plus adapté (GPU, VRAM, coût).
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="flex items-center gap-2">
+                        <Input
+                            placeholder="Rechercher (ex: H100, L40S, RENDER...)"
+                            value={typeQuery}
+                            onChange={(e) => setTypeQuery(e.target.value)}
+                        />
+                    </div>
+
+                    <ScrollArea className="h-[420px] rounded-md border">
+                        <div className="p-2 space-y-2">
+                            {filteredTypesForPicker.length === 0 ? (
+                                <div className="text-sm text-muted-foreground p-4">Aucun type ne correspond à la recherche.</div>
+                            ) : (
+                                filteredTypesForPicker.map((t) => {
+                                    const gpus = t.gpu_count ?? 0;
+                                    const vram = t.vram_per_gpu_gb ?? 0;
+                                    const perHour = typeof t.cost_per_hour === "number" ? t.cost_per_hour : null;
+                                    const isSelected = t.id === selectedTypeId;
+                                    return (
+                                        <button
+                                            key={t.id}
+                                            type="button"
+                                            onClick={() => {
+                                                setSelectedTypeId(t.id);
+                                                setIsTypePickerOpen(false);
+                                            }}
+                                            className={`w-full text-left rounded-md border p-3 hover:bg-muted/30 transition-colors ${
+                                                isSelected ? "border-primary bg-muted/20" : "border-border bg-background"
+                                            }`}
+                                        >
+                                            <div className="flex items-start justify-between gap-3">
+                                                <div className="min-w-0">
+                                                    <div className="font-medium truncate">{t.name}</div>
+                                                    <div className="text-xs text-muted-foreground">
+                                                        {gpus} GPU • {vram}GB VRAM/GPU{gpus && vram ? ` • ${gpus * vram}GB total` : ""}
+                                                        {t.cpu_count ? ` • ${t.cpu_count} vCPU` : ""}
+                                                        {t.ram_gb ? ` • ${t.ram_gb}GB RAM` : ""}
+                                                    </div>
+                                                </div>
+                                                <div className="text-right shrink-0">
+                                                    {perHour != null ? (
+                                                        <div className="text-xs font-mono text-muted-foreground">
+                                                            {formatMoney(perHour / 60)}/min
+                                                            <div className="text-sm font-semibold text-foreground">{formatMoney(perHour)}/h</div>
+                                                            <div>{formatMoney(perHour * 24)}/j</div>
+                                                            <div>{formatMoney(perHour * 24 * 30)}/mois</div>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="text-xs text-muted-foreground">Prix indisponible</div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </button>
+                                    );
+                                })
+                            )}
+                        </div>
+                    </ScrollArea>
+
+                    <DialogFooter className="sm:justify-between">
+                        <Button
+                            variant="outline"
+                            onClick={() => {
+                                setIsTypePickerOpen(false);
+                                setTypeQuery("");
+                            }}
+                        >
+                            Fermer
+                        </Button>
+                        <Button
+                            onClick={() => {
+                                setIsTypePickerOpen(false);
+                                setTypeQuery("");
+                            }}
+                            disabled={!selectedTypeId}
+                        >
+                            Sélectionner
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </Dialog>
     );
 }

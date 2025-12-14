@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
+pub mod bus;
+
 // --- Enums ---
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type, utoipa::ToSchema)]
@@ -73,8 +75,6 @@ pub struct InstanceType {
     pub cpu_count: i32,
     #[sqlx(default)]
     pub ram_gb: i32,
-    #[sqlx(default)]
-    pub n_gpu: i32,     // New column
     #[sqlx(default)]
     pub bandwidth_bps: i64, // Bigint
 }
