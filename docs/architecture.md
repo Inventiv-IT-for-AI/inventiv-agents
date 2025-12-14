@@ -34,10 +34,9 @@ Le système repose sur une séparation stricte des responsabilités (Pattern **C
     *   **Ecritures** : Met à jour l'état technique dans PostgreSQL (Status des instances, IPs).
     *   **Lecture/Réaction** : Consomme les événements du Backend (via Redis Pub/Sub) pour déclencher des actions immédiates (Scale Up, Block API Key).
 
-#### 3. Inventiv Router (Data Plane)
-*   La "Porte d'entrée" du trafic LLM (Compatible OpenAI).
-*   Valide les API Keys auprès du Backend (ou cache Redis).
-*   Route le trafic vers les instances actives.
+#### 3. Inventiv Router (Data Plane) — *statut*
+*   **Prévu** (OpenAI-compatible), mais **non présent** dans le repo à ce stade.
+*   La doc “Router” reste utile pour la cible produit, mais les scripts/README doivent être alignés tant que ce service n’est pas réintroduit.
 
 #### 4. Inventiv Worker (Agent Sidecar)
 *   Déployé sur les instances GPU.
@@ -110,11 +109,8 @@ Ce workflow décrit le processus complet, de la définition du besoin ("Je veux 
 ## 4. API Endpoints (État Actuel MVP)
 
 ### Orchestrator (`:8001`)
-*   `GET /admin/status` : État du cluster (DB connected, Instance count).
-*   `POST /instances/provision` : Créer une instance.
-    *   Body: `{"zone": "fr-par-2", "instance_type": "RENDER-S"}`
-    *   Response: `{"status": "provisioning", "id": "uuid...", "server_id": "..."}`
-*   `DELETE /instances/:id` : Supprimer une instance (Terminate).
+*   `GET /admin/status` : état du cluster (instances count, etc.).
+*   Provisioning/termination sont principalement déclenchés via **Redis Pub/Sub** (`CMD:*`) publiés par l’API.
 
 ### Router (`:8002`)
-*   `POST /v1/chat/completions` : Endpoint compatible OpenAI (Proxy vers les Instances).
+*   **Non présent** à date (voir section Router).

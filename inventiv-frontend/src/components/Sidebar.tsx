@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Box, Settings, Activity, Archive, BarChart3 } from "lucide-react";
+import { LayoutDashboard, Box, Settings, Activity, Archive, BarChart3, Server } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 interface SidebarLinkProps {
@@ -32,8 +32,6 @@ function SidebarLink({ href, icon: Icon, label, disabled }: SidebarLinkProps) {
 }
 
 export function Sidebar() {
-    const pathname = usePathname();
-
     return (
         <div className="pb-12 w-64 border-r min-h-screen bg-background text-foreground hidden md:block">
             <div className="space-y-4 py-4">
@@ -43,6 +41,7 @@ export function Sidebar() {
                     </h2>
                     <div className="space-y-1">
                         <SidebarLink href="/" icon={LayoutDashboard} label="Dashboard" />
+                        <SidebarLink href="/instances" icon={Server} label="Instances" />
                         <SidebarLink href="/monitoring" icon={BarChart3} label="Monitoring" />
                         <SidebarLink href="/models" icon={Box} label="Models" />
                         <SidebarLink href="/settings" icon={Settings} label="Settings" />

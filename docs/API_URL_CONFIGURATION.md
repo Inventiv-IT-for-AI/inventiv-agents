@@ -1,11 +1,11 @@
 # Configuration des URLs d'API - Guide
 
-## ⚠️ Problème actuel
+## ✅ État actuel (repo)
 
-Le frontend utilise `/api/backend/...` qui n'existe PAS (pas de proxy Next.js configuré).
-Résultat : **Les requêtes POST /deployments n'arrivent jamais au backend !**
+Le frontend utilise maintenant **`NEXT_PUBLIC_API_URL`** + le helper **`apiUrl()`** (dans `inventiv-frontend/src/lib/api.ts`).
+Cela évite les URLs hardcodées et garantit que l’UI parle toujours au bon backend.
 
-## ✅ Solution professionnelle
+## Configuration
 
 ### 1. Créer `/inventiv-frontend/.env.local`
 
@@ -14,44 +14,17 @@ Résultat : **Les requêtes POST /deployments n'arrivent jamais au backend !**
 NEXT_PUBLIC_API_URL=http://localhost:8003
 ```
 
-### 2. Créer `/inventiv-frontend/src/lib/api.ts`
+### 2. Helper `apiUrl()`
 
-```typescript
-// API configuration 
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8003';
+Déjà implémenté dans `inventiv-frontend/src/lib/api.ts`.
 
-// Helper function
-export const apiUrl = (path: string) => `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
-```
+### 3. Endroits typiques à vérifier
 
-### 3. Modifier les fichiers frontend
-
-#### `src/app/page.tsx`
-
-```typescript
-// Ajouter l'import
-import { apiUrl } from "@/lib/api";
-
-// Remplacer:
-fetch("/api/backend/deployments", ...)
-// Par:
-fetch(apiUrl("/deployments"), ...)
-
-// Remplacer:
-fetch("/api/backend/providers")
-// Par:
-fetch(apiUrl("/providers"))
-
-// Etc pour toutes les requêtes
-```
-
-#### `src/app/settings/page.tsx`
-
-Même principe - remplacer tous les `/api/backend/...` par `apiUrl("...")`
-
-#### `src/app/monitoring/page.tsx`
-
-Idem
+- Dashboard: `src/app/(dashboard)/page.tsx`
+- Instances: `src/app/instances/page.tsx` + `components/instances/*`
+- Monitoring: `src/app/monitoring/page.tsx`
+- Traces: `src/app/traces/page.tsx`
+- Settings: `src/app/settings/page.tsx`
 
 ### 4. Configuration par environnement
 
@@ -80,34 +53,10 @@ NEXT_PUBLIC_API_URL=https://api.yourdomain.com
 ✅ **Facile à déployer** : Juste changer la variable d'env
 ✅ **Standards Next.js** : Utilise `NEXT_PUBLIC_*` correctement
 
-## 🔍 Debug actuel
-
-Le problème **immédiat** est que `/api/backend/deployments` ne mène nulle part.
-
-**Quick fix temporaire** (pas recommandé) :
-```typescript
- fetch("http://localhost:8003/deployments", ...)
-```
-
-**Vraie solution** (recommandé) :
-Suivre les étapes ci-dessus pour configurer `apiUrl()` proprement.
-
-## 📝 Next Steps
-
-1. ✅ Créer `.env.local` avec `NEXT_PUBLIC_API_URL`
-2. ✅ Créer `src/lib/api.ts`  
-3. ⏹️ Remplacer tous les `/api/backend/` par `apiUrl("/")` dans :
-   - src/app/page.tsx
-   - src/app/settings/page.tsx
-   - src/app/monitoring/page.tsx
-4. ⏹️ Tester la création d'instance
-5. ⏹️ Créer `.env.example` avec template
-6. ⏹️ Documenter dans README
-
 ## 🚀 Redémarrage nécessaire
 
 Après modification des `.env*`, redémarrer le serveur dev :
 ```bash
 cd inventiv-frontend
-npm run dev -- -p 3002
+npm run dev -- --port 3000
 ```

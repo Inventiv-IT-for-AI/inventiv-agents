@@ -3,6 +3,7 @@ use reqwest::Client;
 use serde_json::json;
 use anyhow::Result;
 use crate::provider::{CloudProvider, inventory};
+use std::time::Duration;
 
 pub struct ScalewayProvider {
     client: Client,
@@ -12,7 +13,12 @@ pub struct ScalewayProvider {
 
 impl ScalewayProvider {
     pub fn new(project_id: String, secret_key: String) -> Self {
-        let client = Client::builder().build().unwrap();
+        // Default reqwest client has no overall timeout. If Scaleway stalls, a job can hang forever.
+        let client = Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(20))
+            .build()
+            .unwrap();
         Self { client, project_id, secret_key }
     }
 
@@ -64,7 +70,19 @@ impl CloudProvider for ScalewayProvider {
             .send()
             .await?;
 
-        Ok(resp.status().is_success())
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Failed to start instance {} in zone {}: {} - {}",
+                server_id,
+                zone,
+                status,
+                text
+            ));
+        }
+
+        Ok(true)
     }
 
     async fn get_instance_ip(&self, zone: &str, server_id: &str) -> Result<Option<String>> {
@@ -74,7 +92,16 @@ impl CloudProvider for ScalewayProvider {
             .send()
             .await?;
             
-        if !resp.status().is_success() { return Ok(None); }
+        if !resp.status().is_success() {
+            match resp.status().as_u16() {
+                404 => return Ok(None),
+                _ => {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    return Err(anyhow::anyhow!("Failed to get instance IP: {} - {}", status, text));
+                }
+            }
+        }
         
         let json: serde_json::Value = resp.json().await?;
         let ip = json["server"]["public_ip"]["address"].as_str().map(|s| s.to_string());
@@ -165,7 +192,19 @@ impl CloudProvider for ScalewayProvider {
             .send()
             .await?;
 
-        Ok(resp.status().is_success())
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Failed to terminate instance {} in zone {}: {} - {}",
+                server_id,
+                zone,
+                status,
+                text
+            ));
+        }
+
+        Ok(true)
     }
 
     async fn list_instances(&self, zone: &str) -> Result<Vec<inventory::DiscoveredInstance>> {

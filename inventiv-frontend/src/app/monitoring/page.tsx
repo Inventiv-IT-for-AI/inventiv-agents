@@ -1,26 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { formatDistanceToNow, parseISO } from "date-fns";
 import { Badge } from "@/components/ui/badge";
 import { apiUrl } from "@/lib/api";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import type { LucideIcon } from "lucide-react";
 import { Activity, CheckCircle, XCircle, Clock, Server, Zap, Cloud, Database, Archive, AlertTriangle, Copy, Check } from 'lucide-react';
-import { InstanceTimelineModal } from '@/components/InstanceTimelineModal';
-
-type ActionLog = {
-    id: string;
-    action_type: string;
-    component: string;
-    status: string;
-    error_message: string | null;
-    instance_id: string | null;
-    duration_ms: number | null;
-    created_at: string;
-    metadata: Record<string, any> | null;
-};
+import { InstanceTimelineModal } from "@/components/instances/InstanceTimelineModal";
+import type { ActionLog } from "@/lib/types";
 
 export default function MonitoringPage() {
     const [logs, setLogs] = useState<ActionLog[]>([]);
@@ -32,7 +22,7 @@ export default function MonitoringPage() {
     const [timelineModalOpen, setTimelineModalOpen] = useState(false);
     const [copiedLogId, setCopiedLogId] = useState<string | null>(null);
 
-    const fetchLogs = async () => {
+    const fetchLogs = useCallback(async () => {
         try {
             const params = new URLSearchParams();
             if (filterComponent !== "all") params.append("component", filterComponent);
@@ -54,28 +44,17 @@ export default function MonitoringPage() {
         } catch (error) {
             console.error("Failed to fetch logs:", error);
         }
-    };
+    }, [filterActionType, filterComponent, filterStatus]);
 
     useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         fetchLogs();
-        const interval = setInterval(fetchLogs, 5000); // Auto-refresh every 10s
+        const interval = setInterval(fetchLogs, 10000); // Auto-refresh every 10s
         return () => clearInterval(interval);
-    }, [filterComponent, filterStatus, filterActionType]);
+    }, [fetchLogs]);
 
     const copyLogToClipboard = async (log: ActionLog, e: React.MouseEvent) => {
         e.stopPropagation(); // Prevent row click event
-
-        const logData = {
-            id: log.id,
-            timestamp: log.created_at,
-            action_type: log.action_type,
-            component: log.component,
-            status: log.status,
-            duration_ms: log.duration_ms,
-            instance_id: log.instance_id,
-            error_message: log.error_message,
-            metadata: log.metadata,
-        };
 
         const textFormat = `
 Action Log
@@ -111,17 +90,22 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
     };
 
     const getActionTypeBadge = (actionType: string) => {
-        const config: Record<string, { color: string; icon: any; label: string }> = {
+        const config: Record<string, { color: string; icon: LucideIcon; label: string }> = {
             // Creation workflow
             REQUEST_CREATE: { color: "bg-blue-500 hover:bg-blue-600 text-white", icon: Zap, label: "Request Create" },
             EXECUTE_CREATE: { color: "bg-purple-500 hover:bg-purple-600 text-white", icon: Server, label: "Execute Create" },
             PROVIDER_CREATE: { color: "bg-orange-500 hover:bg-orange-600 text-white", icon: Cloud, label: "Provider Create" },
+            PROVIDER_START: { color: "bg-orange-500 hover:bg-orange-600 text-white", icon: Cloud, label: "Provider Start" },
+            PROVIDER_GET_IP: { color: "bg-orange-500 hover:bg-orange-600 text-white", icon: Cloud, label: "Provider Get IP" },
             INSTANCE_CREATED: { color: "bg-green-500 hover:bg-green-600 text-white", icon: Database, label: "Instance Created" },
 
             // Termination workflow
             REQUEST_TERMINATE: { color: "bg-blue-600 hover:bg-blue-700 text-white", icon: Zap, label: "Request Terminate" },
             EXECUTE_TERMINATE: { color: "bg-purple-600 hover:bg-purple-700 text-white", icon: Server, label: "Execute Terminate" },
             PROVIDER_TERMINATE: { color: "bg-orange-600 hover:bg-orange-700 text-white", icon: Cloud, label: "Provider Terminate" },
+            TERMINATION_PENDING: { color: "bg-yellow-500 hover:bg-yellow-600 text-white", icon: Clock, label: "Termination Pending" },
+            TERMINATOR_RETRY: { color: "bg-orange-600 hover:bg-orange-700 text-white", icon: Cloud, label: "Terminator Retry" },
+            TERMINATION_CONFIRMED: { color: "bg-red-500 hover:bg-red-600 text-white", icon: Database, label: "Termination Confirmed" },
             INSTANCE_TERMINATED: { color: "bg-red-500 hover:bg-red-600 text-white", icon: Database, label: "Instance Terminated" },
 
             // Archive workflow
@@ -138,7 +122,7 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
 
         const { color, icon: Icon, label } = config[actionType] || {
             color: "bg-gray-500 hover:bg-gray-600 text-white",
-            icon: Activity,
+            icon: Activity as LucideIcon,
             label: actionType.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
         };
 
@@ -161,13 +145,16 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
         return `${(ms / 60000).toFixed(2)}min`;
     };
 
-    const formatMetadata = (metadata: Record<string, any> | null) => {
+    const formatMetadata = (metadata: Record<string, unknown> | null) => {
         if (!metadata) return null;
         const keys = Object.keys(metadata);
         if (keys.length === 0) return null;
 
         // Show first 2 keys as summary
-        const summary = keys.slice(0, 2).map(key => `${key}: ${metadata[key]}`).join(", ");
+        const summary = keys
+            .slice(0, 2)
+            .map((key) => `${key}: ${String(metadata[key])}`)
+            .join(", ");
         return (
             <span className="text-xs text-muted-foreground font-mono">
                 {summary}

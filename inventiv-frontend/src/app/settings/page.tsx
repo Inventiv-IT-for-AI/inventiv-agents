@@ -5,35 +5,21 @@ import { apiUrl } from "@/lib/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Pencil, Check, Settings2 } from "lucide-react";
-import { ManageZonesModal } from "@/components/ManageZonesModal";
-
-// --- Types ---
-
-type Region = { id: string; name: string; code: string | null; is_active: boolean };
-type Zone = { id: string; name: string; code: string | null; is_active: boolean };
-type InstanceType = {
-    id: string;
-    name: string;
-    code: string | null;
-    is_active: boolean;
-    cost_per_hour: number | null;
-    gpu_count: number;
-    vram_per_gpu_gb: number;
-};
+import { Pencil, Settings2 } from "lucide-react";
+import { ManageZonesModal } from "@/components/settings/ManageZonesModal";
+import type { Region, Zone, InstanceType } from "@/lib/types";
 
 export default function SettingsPage() {
     const [regions, setRegions] = useState<Region[]>([]);
     const [zones, setZones] = useState<Zone[]>([]);
     const [types, setTypes] = useState<InstanceType[]>([]);
 
-    const [editingEntity, setEditingEntity] = useState<any>(null);
+    const [editingEntity, setEditingEntity] = useState<Region | Zone | InstanceType | null>(null);
     const [entityType, setEntityType] = useState<'region' | 'zone' | 'type' | null>(null);
     const [isEditOpen, setIsEditOpen] = useState(false);
 
@@ -66,17 +52,21 @@ export default function SettingsPage() {
     };
 
     useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         fetchData();
     }, []);
 
-    const handleEdit = (entity: any, type: 'region' | 'zone' | 'type') => {
+    const handleEdit = (entity: Region | Zone | InstanceType, type: 'region' | 'zone' | 'type') => {
         setEditingEntity(entity);
         setEntityType(type);
         setFormData({
-            code: entity.code || "",
+            code: entity.code ?? "",
             name: entity.name || "",
             is_active: entity.is_active,
-            cost_per_hour: entity.cost_per_hour ? entity.cost_per_hour.toString() : ""
+            cost_per_hour:
+                type === 'type' && (entity as InstanceType).cost_per_hour != null
+                    ? String((entity as InstanceType).cost_per_hour)
+                    : ""
         });
         setIsEditOpen(true);
     };
@@ -86,7 +76,7 @@ export default function SettingsPage() {
 
         const url = apiUrl(`${entityType === 'type' ? 'instance_types' : entityType + 's'}/${editingEntity.id}`);
 
-        const payload: any = {
+        const payload: { code?: string; name?: string; is_active?: boolean; cost_per_hour?: number | null } = {
             code: formData.code,
             name: formData.name,
             is_active: formData.is_active
@@ -114,7 +104,7 @@ export default function SettingsPage() {
         }
     };
 
-    const toggleActive = async (entity: any, type: 'region' | 'zone' | 'type') => {
+    const toggleActive = async (entity: Region | Zone | InstanceType, type: 'region' | 'zone' | 'type') => {
         // Quick toggle without modal
         const url = apiUrl(`${type === 'type' ? 'instance_types' : type + 's'}/${entity.id}`);
         try {

@@ -9,20 +9,17 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 mod provider;
 mod provider_manager; // NEW
-use crate::provider::CloudProvider;
-use crate::provider_manager::ProviderManager; // NEW
 mod providers; // NEW
 mod models;
 mod logger;
-mod reconciliation;
+mod health_check_job;
+mod terminator_job;
+mod watch_dog_job;
 mod services; // NEW
 use tokio::time::{sleep, Duration};
-use inventiv_common::{Instance, InstanceStatus}; // Keep imports
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres};
 
-mod health_check;
-use health_check::{check_and_transition_instance};
 
 struct AppState {
     db: Pool<Postgres>,
@@ -33,9 +30,12 @@ struct CommandProvision {
     instance_id: String,
     zone: String,
     instance_type: String,
+    correlation_id: Option<String>,
 }
 
 mod migrations; // NEW
+mod state_machine;
+mod health_check_flow;
 
 #[tokio::main]
 async fn main() {
@@ -54,8 +54,11 @@ async fn main() {
     sqlx::query("SELECT 1").execute(&pool).await.unwrap();
     println!("✅ Connected to Database");
 
-    // Run Migrations
-    migrations::run_inline_migrations(&pool).await;
+    // Run migrations (source of truth is /migrations at workspace root)
+    sqlx::migrate!("../sqlx-migrations")
+        .run(&pool)
+        .await
+        .expect("Failed to run migrations");
 
     let state = Arc::new(AppState {
         db: pool,
@@ -95,7 +98,7 @@ async fn main() {
                         if let Ok(cmd) = serde_json::from_value::<CommandProvision>(event_json.clone()) {
                             let pool = state_redis.db.clone();
                             tokio::spawn(async move {
-                                services::process_provisioning(pool, cmd.instance_id, cmd.zone, cmd.instance_type).await;
+                                services::process_provisioning(pool, cmd.instance_id, cmd.zone, cmd.instance_type, cmd.correlation_id).await;
                             });
                         }
                     }
@@ -103,7 +106,7 @@ async fn main() {
                         if let Ok(cmd) = serde_json::from_value::<CommandTerminate>(event_json.clone()) {
                             let pool = state_redis.db.clone();
                             tokio::spawn(async move {
-                                services::process_termination(pool, cmd.instance_id).await;
+                                services::process_termination(pool, cmd.instance_id, cmd.correlation_id).await;
                             });
                         }
                     }
@@ -127,74 +130,17 @@ async fn main() {
         }
     });
 
-    // Background reconciliation task - runs every 10 seconds
-    // but only checks instances not reconciled in last 60 seconds (smart filtering)
-    let pool_reconcile = state.db.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
+    // job-watch-dog (READY)
+    let pool_watchdog = state.db.clone();
+    tokio::spawn(async move { watch_dog_job::run(pool_watchdog).await; });
 
-        loop {
-            interval.tick().await;
-            
-            // Check Scaleway Provider
-            if let Some(provider) = ProviderManager::get_provider("scaleway") {
-                match crate::reconciliation::reconcile_instances(&pool_reconcile, provider.as_ref()).await {
-                    Ok(count) if count > 0 => {
-                        println!("🔴 [Auto-Reconciliation] {} orphaned instances detected", count);
-                    }
-                    Ok(_) => {}, // Normal
-                    Err(e) => eprintln!("❌ [Auto-Reconciliation] {:?}", e),
-                }
-            } else {
-                // Provider not configured, skipping
-            }
-        }
-    });
+    // job-terminator (TERMINATING)
+    let pool_terminator = state.db.clone();
+    tokio::spawn(async move { terminator_job::run(pool_terminator).await; });
 
-    // 4. Spawn Health Check Monitor (Background Task)
+    // job-health-check (BOOTING)
     let db_health = state.db.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
-        println!("🏥 Health Check Monitor Started (checking every 10s)");
-        
-        loop {
-            interval.tick().await;
-            
-            // Find all instances in 'booting' state with IP addresses
-            let booting_instances: Result<Vec<_>, _> = sqlx::query!(
-                "SELECT id, ip_address::text as ip, created_at, health_check_failures 
-                 FROM instances 
-                 WHERE status = 'booting' AND ip_address IS NOT NULL"
-            )
-            .fetch_all(&db_health)
-            .await;
-            
-            match booting_instances {
-                Ok(instances) if !instances.is_empty() => {
-                    println!("🔍 Checking {} booting instance(s)...", instances.len());
-                    
-                    for instance in instances {
-                        let db_clone = db_health.clone();
-                        tokio::spawn(async move {
-                            check_and_transition_instance(
-                    instance.id,
-                    instance.ip,
-                    instance.created_at.unwrap_or_else(|| sqlx::types::chrono::Utc::now()),
-                    instance.health_check_failures.unwrap_or(0),
-                    db_clone
-                ).await;
-                        });
-                    }
-                }
-                Ok(_) => {
-                    // No booting instances, silent
-                }
-                Err(e) => {
-                    println!("⚠️  Health check query error: {:?}", e);
-                }
-            }
-        }
-    });
+    tokio::spawn(async move { health_check_job::run(db_health).await; });
 
     // 5. Start HTTP Server (Admin API - Simplified for internal health/debug only)
     let app = Router::new()
@@ -218,6 +164,7 @@ async fn root() -> &'static str {
 #[derive(serde::Deserialize, Debug)]
 struct CommandTerminate {
     instance_id: String,
+    correlation_id: Option<String>,
 }
 
 // DELETED HANDLERS (Moved to services.rs)

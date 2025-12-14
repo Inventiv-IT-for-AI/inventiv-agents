@@ -7,7 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
-import { RefreshCcw, Copy, Check, Eye } from "lucide-react";
+import { RefreshCcw, Eye } from "lucide-react";
+import { apiUrl } from "@/lib/api";
 
 type Instance = {
     id: string;
@@ -38,7 +39,7 @@ export default function Traces() {
     useEffect(() => {
         const fetchData = async () => {
             try {
-                const res = await fetch("/api/backend/instances?archived=true");
+                const res = await fetch(apiUrl("instances?archived=true"));
                 if (res.ok) {
                     const data = await res.json();
                     setInstances(data);

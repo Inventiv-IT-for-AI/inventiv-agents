@@ -5,13 +5,16 @@ use chrono::{DateTime, Utc};
 // --- Enums ---
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type, utoipa::ToSchema)]
-#[sqlx(type_name = "instance_status", rename_all = "lowercase")]
+#[sqlx(type_name = "instance_status", rename_all = "snake_case")]
 pub enum InstanceStatus {
     Provisioning, // Request sent to provider
     Booting,      // Instance is up, installing/loading
     Ready,        // Healthy and serving traffic
     Draining,     // Stopping, finishing current requests
+    Terminating,  // Termination requested, waiting provider deletion
     Terminated,   // Destroyed
+    ProvisioningFailed,
+    StartupFailed,
     Failed,       // Error state
 }
 

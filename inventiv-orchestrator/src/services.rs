@@ -8,23 +8,27 @@ use crate::provider_manager::ProviderManager;
 use crate::logger;
 use bigdecimal::FromPrimitive;
 
-pub async fn process_termination(pool: Pool<Postgres>, instance_id: String) {
+pub async fn process_termination(pool: Pool<Postgres>, instance_id: String, correlation_id: Option<String>) {
     let start = Instant::now();
     let id_uuid = Uuid::parse_str(&instance_id).unwrap_or_else(|_| Uuid::new_v4());
+    let correlation_id_meta = correlation_id.clone();
     println!("⚙️ Processing Termination Async: {}", id_uuid);
     
     // LOG 1: EXECUTE_TERMINATE (orchestrator starts processing)
-    let log_id_execute = logger::log_event(
+    let log_id_execute = logger::log_event_with_metadata(
         &pool,
         "EXECUTE_TERMINATE",
         "in_progress",
         id_uuid,
         None,
+        Some(json!({
+            "correlation_id": correlation_id_meta,
+        })),
     ).await.ok();
 
     // 1. Get instance details from DB
-    let row_result = sqlx::query_as::<_, (Option<String>, String, String)>(
-        "SELECT provider_instance_id, z.name as zone, i.status::text FROM instances i
+    let row_result = sqlx::query_as::<_, (Option<String>, Option<String>, String)>(
+        "SELECT provider_instance_id, z.code as zone, i.status::text FROM instances i
          JOIN zones z ON i.zone_id = z.id
          WHERE i.id = $1"
     )
@@ -33,7 +37,8 @@ pub async fn process_termination(pool: Pool<Postgres>, instance_id: String) {
     .await;
 
     match row_result {
-        Ok(Some((provider_id_opt, zone, current_status))) => {
+        Ok(Some((provider_id_opt, zone_opt, current_status))) => {
+            let zone = zone_opt.unwrap_or_default();
             println!("🔍 Found instance {} (Zone: {}) Status: {}", 
                      provider_id_opt.as_deref().unwrap_or("None"), zone, current_status);
             
@@ -49,19 +54,33 @@ pub async fn process_termination(pool: Pool<Postgres>, instance_id: String) {
                         "in_progress", 
                         id_uuid, 
                         None,
-                        Some(json!({"zone": zone, "provider_instance_id": provider_instance_id})),
+                        Some(json!({"zone": zone, "provider_instance_id": provider_instance_id, "correlation_id": correlation_id_meta})),
                     ).await.ok();
                     
                     let result = provider.terminate_instance(&zone, &provider_instance_id).await;
                     
                     match &result {
-                        Ok(_) => {
+                        Ok(true) => {
                             println!("✅ Successfully terminated instance on Provider");
                             
                             if let Some(log_id) = log_id_provider {
                                 let api_duration = api_start.elapsed().as_millis() as i32;
                                 logger::log_event_complete(&pool, log_id, "success", api_duration, None).await.ok();
                             }
+                        }
+                        Ok(false) => {
+                            let err_msg = "Provider termination call returned non-success status";
+                            println!("⚠️ {}", err_msg);
+
+                            if let Some(log_id) = log_id_provider {
+                                let api_duration = api_start.elapsed().as_millis() as i32;
+                                logger::log_event_complete(&pool, log_id, "failed", api_duration, Some(err_msg)).await.ok();
+                            }
+                            if let Some(log_id) = log_id_execute {
+                                let duration = start.elapsed().as_millis() as i32;
+                                logger::log_event_complete(&pool, log_id, "failed", duration, Some(err_msg)).await.ok();
+                            }
+                            return;
                         }
                         Err(e) => {
                             let err_msg = e.to_string();
@@ -86,6 +105,50 @@ pub async fn process_termination(pool: Pool<Postgres>, instance_id: String) {
                                 return;
                             }
                         }
+                    }
+
+                    // 2.5 Verify deletion (avoid marking terminated while still running)
+                    // Scaleway termination is async; we poll for a short, bounded period.
+                    let verify_start = Instant::now();
+                    let mut deleted = false;
+                    while verify_start.elapsed() < Duration::from_secs(60) {
+                        match provider.check_instance_exists(&zone, &provider_instance_id).await {
+                            Ok(false) => {
+                                deleted = true;
+                                break;
+                            }
+                            Ok(true) => {
+                                sleep(Duration::from_secs(5)).await;
+                            }
+                            Err(e) => {
+                                eprintln!("⚠️ Error checking deletion status on provider: {:?}", e);
+                                // Keep waiting a bit; reconciliation watchdog will retry later if needed.
+                                sleep(Duration::from_secs(5)).await;
+                            }
+                        }
+                    }
+
+                    if !deleted {
+                        // Don't mark terminated in DB yet; keep 'terminating' until reconciliation confirms deletion.
+                        let log_id_pending = logger::log_event_with_metadata(
+                            &pool,
+                            "TERMINATION_PENDING",
+                            "in_progress",
+                            id_uuid,
+                            Some("Termination requested on provider; instance still exists (deletion in progress)"),
+                        Some(json!({"zone": zone, "provider_instance_id": provider_instance_id, "waited_ms": verify_start.elapsed().as_millis(), "correlation_id": correlation_id_meta})),
+                        ).await.ok();
+
+                        if let Some(log_id) = log_id_pending {
+                            let duration = verify_start.elapsed().as_millis() as i32;
+                            logger::log_event_complete(&pool, log_id, "success", duration, None).await.ok();
+                        }
+
+                        if let Some(log_id) = log_id_execute {
+                            let duration = start.elapsed().as_millis() as i32;
+                            logger::log_event_complete(&pool, log_id, "success", duration, Some("Termination in progress (not yet deleted on provider)")).await.ok();
+                        }
+                        return;
                     }
                 } else {
                     println!("⚠️ Provider configuration missing or provider not found");
@@ -165,9 +228,16 @@ pub async fn process_termination(pool: Pool<Postgres>, instance_id: String) {
     }
 }
 
-pub async fn process_provisioning(pool: Pool<Postgres>, instance_id: String, zone: String, instance_type: String) {
+pub async fn process_provisioning(
+    pool: Pool<Postgres>,
+    instance_id: String,
+    zone: String,
+    instance_type: String,
+    correlation_id: Option<String>,
+) {
     let start = Instant::now();
     let instance_uuid = Uuid::parse_str(&instance_id).unwrap_or_else(|_| Uuid::new_v4());
+    let correlation_id_meta = correlation_id.clone();
     println!("🔨 [Orchestrator] Processing Provision for instance: {}", instance_uuid);
     
     // 0. Resolve Catalog IDs dynamically
@@ -189,18 +259,18 @@ pub async fn process_provisioning(pool: Pool<Postgres>, instance_id: String, zon
 
     if zone_id.is_none() || type_id.is_none() {
         println!("❌ Error: Zone '{}' or Type '{}' not found in catalog.", zone, instance_type);
-        let msg = format!("Catalog lookup failed: Zone={} Type={}", zone, instance_type);
+        let _msg = format!("Catalog lookup failed: Zone={} Type={}", zone, instance_type);
          sqlx::query("UPDATE instances SET status = 'failed' WHERE id = $1")
              .bind(instance_uuid).execute(&pool).await.ok();
          // TODO: Log failure
         return;
     }
 
-    // 0.5. Pre-Create Instance in DB (Provisioning State)
+    // 0.5. Ensure row exists (idempotent; do NOT regress status on retries)
     let insert_result = sqlx::query(
          "INSERT INTO instances (id, provider_id, zone_id, instance_type_id, status, created_at, gpu_profile)
           VALUES ($1, $2, $3, $4, 'provisioning', NOW(), '{}')
-          ON CONFLICT (id) DO UPDATE SET status = 'provisioning', provider_id = EXCLUDED.provider_id" // Handle if already inserted by API
+          ON CONFLICT (id) DO NOTHING"
     )
     .bind(instance_uuid)
     .bind(provider_id)
@@ -210,13 +280,22 @@ pub async fn process_provisioning(pool: Pool<Postgres>, instance_id: String, zon
     .await;
 
     if let Err(e) = insert_result {
-         println!("❌ Initial DB Insert Error: {:?}", e);
-         return; 
+        println!("❌ Initial DB Insert Error: {:?}", e);
+        return;
     }
     
     // LOG 2: EXECUTE_CREATE
-    let log_id_execute = logger::log_event(
-        &pool, "EXECUTE_CREATE", "in_progress", instance_uuid, None,
+    let log_id_execute = logger::log_event_with_metadata(
+        &pool,
+        "EXECUTE_CREATE",
+        "in_progress",
+        instance_uuid,
+        None,
+        Some(json!({
+            "zone": zone,
+            "instance_type": instance_type,
+            "correlation_id": correlation_id_meta,
+        })),
     ).await.ok();
     
     // 1. Init Provider
@@ -234,6 +313,59 @@ pub async fn process_provisioning(pool: Pool<Postgres>, instance_id: String, zon
          return;
     }
     let provider = provider_opt.unwrap();
+
+    // 1.5 Idempotence guard: if provider_instance_id already exists, don't create a second server
+    let existing: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT provider_instance_id, status::text FROM instances WHERE id = $1"
+    )
+    .bind(instance_uuid)
+    .fetch_optional(&pool)
+    .await
+    .ok()
+    .flatten();
+
+    if let Some((Some(existing_server_id), status_opt)) = existing {
+        let status = status_opt.unwrap_or_default();
+        println!(
+            "♻️ [Orchestrator] Provision idempotence: instance already has provider_instance_id={} (status={}), skipping create",
+            existing_server_id, status
+        );
+
+        // Best-effort: refresh IP and ensure it's in booting (unless already beyond)
+        let mut ip_address: Option<String> = None;
+        for attempt in 1..=5 {
+            match provider.get_instance_ip(&zone, &existing_server_id).await {
+                Ok(Some(ip)) => {
+                    ip_address = Some(ip);
+                    break;
+                }
+                Ok(None) => {
+                    if attempt < 5 { sleep(Duration::from_secs(2)).await; }
+                }
+                Err(_) => break,
+            }
+        }
+
+        let _ = sqlx::query(
+            "UPDATE instances
+             SET ip_address = COALESCE($1::inet, ip_address),
+                 status = CASE
+                   WHEN status IN ('provisioning', 'booting') THEN 'booting'
+                   ELSE status
+                 END
+             WHERE id = $2"
+        )
+        .bind(ip_address)
+        .bind(instance_uuid)
+        .execute(&pool)
+        .await;
+
+        if let Some(log_id) = log_id_execute {
+            let duration = start.elapsed().as_millis() as i32;
+            logger::log_event_complete(&pool, log_id, "success", duration, Some("Idempotent retry: provider server already exists")).await.ok();
+        }
+        return;
+    }
     
     // 2. Create Server
     let image_id = "8e0da557-5d75-40ba-b928-5984075aa255"; 
@@ -242,7 +374,7 @@ pub async fn process_provisioning(pool: Pool<Postgres>, instance_id: String, zon
     let api_start = Instant::now();
     let log_id_provider = logger::log_event_with_metadata(
         &pool, "PROVIDER_CREATE", "in_progress", instance_uuid, None,
-        Some(json!({"zone": zone, "instance_type": instance_type})),
+        Some(json!({"zone": zone, "instance_type": instance_type, "correlation_id": correlation_id_meta})),
     ).await.ok();
     
     let server_id_result = provider.create_instance(&zone, &instance_type, image_id).await;
@@ -253,16 +385,93 @@ pub async fn process_provisioning(pool: Pool<Postgres>, instance_id: String, zon
              
              if let Some(log_id) = log_id_provider {
                 let api_duration = api_start.elapsed().as_millis() as i32;
-                let metadata = json!({"server_id": server_id, "zone": zone});
+                let metadata = json!({"server_id": server_id, "zone": zone, "correlation_id": correlation_id_meta});
                 logger::log_event_complete_with_metadata(&pool, log_id, "success", api_duration, None, Some(metadata)).await.ok();
              }
+
+            // Persist provider_instance_id immediately (prevents "stuck provisioning with no server_id" on later failures/hangs)
+            let persist_start = Instant::now();
+            let log_id_persist = logger::log_event_with_metadata(
+                &pool,
+                "PERSIST_PROVIDER_ID",
+                "in_progress",
+                instance_uuid,
+                None,
+                Some(json!({"server_id": server_id, "zone": zone, "correlation_id": correlation_id_meta})),
+            ).await.ok();
+
+            let persist_res = sqlx::query(
+                "UPDATE instances
+                 SET provider_instance_id = COALESCE(provider_instance_id, $1)
+                 WHERE id = $2"
+            )
+            .bind(&server_id)
+            .bind(instance_uuid)
+            .execute(&pool)
+            .await;
+
+            if let Some(lid) = log_id_persist {
+                let dur = persist_start.elapsed().as_millis() as i32;
+                match &persist_res {
+                    Ok(_) => logger::log_event_complete(&pool, lid, "success", dur, None).await.ok(),
+                    Err(e) => logger::log_event_complete(&pool, lid, "failed", dur, Some(&format!("DB persist failed: {:?}", e))).await.ok(),
+                };
+            }
+            if let Err(e) = persist_res {
+                // If we can't persist server_id, better fail fast to avoid an untraceable leak.
+                let msg = format!("Failed to persist provider_instance_id after create: {:?}", e);
+                if let Some(log_id) = log_id_execute {
+                    let duration = start.elapsed().as_millis() as i32;
+                    logger::log_event_complete(&pool, log_id, "failed", duration, Some(&msg)).await.ok();
+                }
+                return;
+            }
              
-             // 3. Power On
-             let _ = provider.start_instance(&zone, &server_id).await;
+            // LOG 3.1: PROVIDER_START (API call)
+            let start_api = Instant::now();
+            let log_id_start = logger::log_event_with_metadata(
+                &pool,
+                "PROVIDER_START",
+                "in_progress",
+                instance_uuid,
+                None,
+                Some(json!({"zone": zone, "server_id": server_id, "correlation_id": correlation_id_meta})),
+            ).await.ok();
+
+            // 3. Power On (fail-fast if provider rejects)
+            if let Err(e) = provider.start_instance(&zone, &server_id).await {
+                let msg = format!("Failed to start instance on provider: {:?}", e);
+                println!("❌ {}", msg);
+                if let Some(lid) = log_id_start {
+                    let duration = start_api.elapsed().as_millis() as i32;
+                    logger::log_event_complete(&pool, lid, "failed", duration, Some(&msg)).await.ok();
+                }
+                if let Some(log_id) = log_id_execute {
+                    let duration = start.elapsed().as_millis() as i32;
+                    logger::log_event_complete(&pool, log_id, "failed", duration, Some(&msg)).await.ok();
+                }
+                let _ = sqlx::query("UPDATE instances SET status = 'provisioning_failed' WHERE id = $1")
+                    .bind(instance_uuid)
+                    .execute(&pool)
+                    .await;
+                return;
+            } else if let Some(lid) = log_id_start {
+                let duration = start_api.elapsed().as_millis() as i32;
+                logger::log_event_complete(&pool, lid, "success", duration, None).await.ok();
+            }
              
              // 3.5. Retrieve IP
              println!("🔍 Retrieving IP address for {}...", server_id);
              let mut ip_address: Option<String> = None;
+             let ip_api = Instant::now();
+             let log_id_ip = logger::log_event_with_metadata(
+                &pool,
+                "PROVIDER_GET_IP",
+                "in_progress",
+                instance_uuid,
+                None,
+                Some(json!({"zone": zone, "server_id": server_id, "correlation_id": correlation_id_meta, "max_attempts": 5})),
+             ).await.ok();
              for attempt in 1..=5 {
                  match provider.get_instance_ip(&zone, &server_id).await {
                      Ok(Some(ip)) => {
@@ -276,17 +485,30 @@ pub async fn process_provisioning(pool: Pool<Postgres>, instance_id: String, zon
                      Err(_) => break,
                  }
              }
+             if let Some(lid) = log_id_ip {
+                let duration = ip_api.elapsed().as_millis() as i32;
+                let meta = json!({"ip_address": ip_address, "zone": zone, "server_id": server_id, "correlation_id": correlation_id_meta});
+                if ip_address.is_some() {
+                    logger::log_event_complete_with_metadata(&pool, lid, "success", duration, None, Some(meta)).await.ok();
+                } else {
+                    logger::log_event_complete_with_metadata(&pool, lid, "failed", duration, Some("IP not available after retries"), Some(meta)).await.ok();
+                }
+             }
              
              // LOG 4: INSTANCE_CREATED
              let db_start = Instant::now();
              let log_id_created = logger::log_event_with_metadata(
                 &pool, "INSTANCE_CREATED", "in_progress", instance_uuid, None,
-                Some(json!({"ip_address": ip_address, "server_id": server_id})),
+                Some(json!({"ip_address": ip_address, "server_id": server_id, "correlation_id": correlation_id_meta})),
              ).await.ok();
              
              // 4. Update DB
              let update_result = sqlx::query(
-                  "UPDATE instances SET provider_instance_id = $1, ip_address = $2::inet, status = 'booting' WHERE id = $3"
+                  "UPDATE instances
+                   SET provider_instance_id = $1,
+                       ip_address = $2::inet,
+                       status = 'booting'
+                   WHERE id = $3 AND status NOT IN ('terminating', 'terminated')"
              )
              .bind(&server_id).bind(ip_address).bind(instance_uuid)
              .execute(&pool).await;
@@ -352,31 +574,30 @@ pub async fn process_catalog_sync(pool: Pool<Postgres>) {
                          // But safer to cast in SQL or use bigdecimal crate types.
                          let hourly_price = bigdecimal::BigDecimal::from_f64(item.cost_per_hour).unwrap_or_default();
 
-                         sqlx::query!(
+                        let _ = sqlx::query(
                             "INSERT INTO instance_types (id, provider_id, name, code, is_active, cost_per_hour, cpu_count, ram_gb, n_gpu, vram_per_gpu_gb, bandwidth_bps)
                              VALUES (gen_random_uuid(), $1, $2, $3, true, $4, $5, $6, $7, $8, $9)
-                             ON CONFLICT (provider_id, code) 
-                             DO UPDATE SET 
+                             ON CONFLICT (provider_id, code)
+                             DO UPDATE SET
                                 cost_per_hour = EXCLUDED.cost_per_hour,
                                 cpu_count = EXCLUDED.cpu_count,
                                 ram_gb = EXCLUDED.ram_gb,
                                 n_gpu = EXCLUDED.n_gpu,
                                 vram_per_gpu_gb = EXCLUDED.vram_per_gpu_gb,
                                 bandwidth_bps = EXCLUDED.bandwidth_bps,
-                                is_active = true",
-                            provider_uuid,
-                            item.name,
-                            item.code,
-                            hourly_price,
-                            item.cpu_count,
-                            item.ram_gb,
-                            item.n_gpu,
-                            item.vram_per_gpu_gb,
-                            item.bandwidth_bps
+                                is_active = true"
                         )
+                        .bind(provider_uuid)
+                        .bind(&item.name)
+                        .bind(&item.code)
+                        .bind(hourly_price)
+                        .bind(item.cpu_count)
+                        .bind(item.ram_gb)
+                        .bind(item.n_gpu)
+                        .bind(item.vram_per_gpu_gb)
+                        .bind(item.bandwidth_bps)
                         .execute(&pool)
-                        .await
-                         .unwrap_or_default(); // Ignore errors for brevity, or log them
+                        .await;
                         count += 1;
                      }
                      println!("✅ [Catalog Sync] Updated {} types for zone {}", count, zone);

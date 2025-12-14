@@ -44,16 +44,13 @@ async fn main() {
         .connect(&database_url)
         .await
         .expect("Failed to connect to Postgres");
-    // Run Migrations (Manual for now due to macro path issues in Docker)
-    /*
-    let res: Result<(), sqlx::Error> = sqlx::migrate!("../migrations")
+
+    // Run migrations (source of truth is /migrations at workspace root)
+    // Safe to run on startup; sqlx uses the _sqlx_migrations table + lock.
+    sqlx::migrate!("../sqlx-migrations")
         .run(&pool)
-        .await;
-    
-    if let Err(e) = res {
-        panic!("Failed to run migrations: {}", e);
-    }
-    */
+        .await
+        .expect("Failed to run migrations");
 
     let state = Arc::new(AppState {
         redis_client: client,
@@ -162,12 +159,16 @@ async fn create_deployment(
     let instance_id = instance_id_uuid.to_string();
     
     // LOG 1: REQUEST_CREATE (changed from CREATE_INSTANCE)
-    let log_id = simple_logger::log_action(
+    let log_id = simple_logger::log_action_with_metadata(
         &state.db,
         "REQUEST_CREATE",           // ✅ Step 1: Request accepted
         "in_progress",
         Some(instance_id_uuid),     // ✅ Now has instance_id
         None,
+        Some(serde_json::json!({
+            "zone": payload.zone,
+            "instance_type": payload.instance_type,
+        })),
     ).await.ok();
     
     println!("🚀 New Instance Creation Request: {}", instance_id);
@@ -178,6 +179,7 @@ async fn create_deployment(
         "instance_id": instance_id,
         "zone": payload.zone,
         "instance_type": payload.instance_type,
+        "correlation_id": log_id.map(|id| id.to_string()),
     }).to_string();
 
     println!("📤 Publishing provisioning event to Redis: {}", event_payload);
@@ -190,7 +192,14 @@ async fn create_deployment(
                     // Log completion
                     if let Some(id) = log_id {
                         let duration = start.elapsed().as_millis() as i32;
-                        simple_logger::log_action_complete(&state.db, id, "success", duration, None).await.ok();
+                        simple_logger::log_action_complete_with_metadata(
+                            &state.db,
+                            id,
+                            "success",
+                            duration,
+                            None,
+                            Some(serde_json::json!({"redis_published": true, "event_type": "CMD:PROVISION"})),
+                        ).await.ok();
                     }
 
                     Json(DeploymentResponse {
@@ -203,7 +212,14 @@ async fn create_deployment(
                     println!("❌ {}", error_msg);
                     if let Some(id) = log_id {
                         let duration = start.elapsed().as_millis() as i32;
-                        simple_logger::log_action_complete(&state.db, id, "failed", duration, Some(&error_msg)).await.ok();
+                        simple_logger::log_action_complete_with_metadata(
+                            &state.db,
+                            id,
+                            "failed",
+                            duration,
+                            Some(&error_msg),
+                            Some(serde_json::json!({"redis_published": false, "event_type": "CMD:PROVISION"})),
+                        ).await.ok();
                     }
                     Json(DeploymentResponse {
                         status: "failed".to_string(),
@@ -217,7 +233,14 @@ async fn create_deployment(
             println!("❌ {}", error_msg);
             if let Some(id) = log_id {
                 let duration = start.elapsed().as_millis() as i32;
-                simple_logger::log_action_complete(&state.db, id, "failed", duration, Some(&error_msg)).await.ok();
+                simple_logger::log_action_complete_with_metadata(
+                    &state.db,
+                    id,
+                    "failed",
+                    duration,
+                    Some(&error_msg),
+                    Some(serde_json::json!({"redis_published": false, "event_type": "CMD:PROVISION"})),
+                ).await.ok();
             }
             Json(DeploymentResponse {
                 status: "failed".to_string(),
@@ -425,12 +448,15 @@ async fn terminate_instance(
 ) -> impl IntoResponse {
     // Log start of archive action
     let start = std::time::Instant::now();
-    let log_id = simple_logger::log_action(
+    let log_id = simple_logger::log_action_with_metadata(
         &state.db,
         "REQUEST_TERMINATE",
         "in_progress",
         Some(id),
         None,
+        Some(serde_json::json!({
+            "instance_id": id.to_string(),
+        })),
     ).await.ok();
     
     println!("🗑️ Termination Request: {}", id);
@@ -469,7 +495,8 @@ async fn terminate_instance(
     // 2. Send termination event to orchestrator (async)
     let event = serde_json::json!({
         "type": "CMD:TERMINATE",
-        "instance_id": id.to_string()
+        "instance_id": id.to_string(),
+        "correlation_id": log_id.map(|id| id.to_string()),
     }).to_string();
 
     println!("📤 Publishing termination event to Redis: {}", event);
@@ -482,7 +509,14 @@ async fn terminate_instance(
                     // Log success
                     if let Some(log_id) = log_id {
                         let duration = start.elapsed().as_millis() as i32;
-                        simple_logger::log_action_complete(&state.db, log_id, "success", duration, None).await.ok();
+                        simple_logger::log_action_complete_with_metadata(
+                            &state.db,
+                            log_id,
+                            "success",
+                            duration,
+                            None,
+                            Some(serde_json::json!({"redis_published": true, "event_type": "CMD:TERMINATE"})),
+                        ).await.ok();
                     }
                     (StatusCode::ACCEPTED, "Termination initiated").into_response()
                 }
@@ -491,7 +525,14 @@ async fn terminate_instance(
                     println!("❌ {}", error_msg);
                     if let Some(log_id) = log_id {
                         let duration = start.elapsed().as_millis() as i32;
-                        simple_logger::log_action_complete(&state.db, log_id, "failed", duration, Some(&error_msg)).await.ok();
+                        simple_logger::log_action_complete_with_metadata(
+                            &state.db,
+                            log_id,
+                            "failed",
+                            duration,
+                            Some(&error_msg),
+                            Some(serde_json::json!({"redis_published": false, "event_type": "CMD:TERMINATE"})),
+                        ).await.ok();
                     }
                     (StatusCode::INTERNAL_SERVER_ERROR, "Failed to queue termination").into_response()
                 }
@@ -502,7 +543,14 @@ async fn terminate_instance(
             println!("❌ {}", error_msg);
             if let Some(log_id) = log_id {
                 let duration = start.elapsed().as_millis() as i32;
-                simple_logger::log_action_complete(&state.db, log_id, "failed", duration, Some(&error_msg)).await.ok();
+                simple_logger::log_action_complete_with_metadata(
+                    &state.db,
+                    log_id,
+                    "failed",
+                    duration,
+                    Some(&error_msg),
+                    Some(serde_json::json!({"redis_published": false, "event_type": "CMD:TERMINATE"})),
+                ).await.ok();
             }
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to queue termination").into_response()
         }
@@ -520,6 +568,7 @@ struct ActionLogQuery {
     instance_id: Option<uuid::Uuid>,
     component: Option<String>,
     status: Option<String>,
+    action_type: Option<String>,
     limit: Option<i32>,
 }
 
@@ -558,12 +607,14 @@ async fn list_action_logs(
          WHERE ($1::uuid IS NULL OR instance_id = $1)
            AND ($2::text IS NULL OR component = $2)
            AND ($3::text IS NULL OR status = $3)
+           AND ($4::text IS NULL OR action_type = $4)
          ORDER BY created_at DESC
-         LIMIT $4"
+         LIMIT $5"
     )
     .bind(params.instance_id)
     .bind(params.component)
     .bind(params.status)
+    .bind(params.action_type)
     .bind(limit as i64)
     .fetch_all(&state.db)
     .await

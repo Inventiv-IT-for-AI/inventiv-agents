@@ -1,8 +1,4 @@
 use async_trait::async_trait;
-use reqwest::Client;
-use serde_json::json;
-use crate::models::CloudInstance; // Assuming models are available
-use inventiv_common::{InstanceStatus, InstanceType};
 use anyhow::Result;
 
 #[async_trait]
@@ -23,7 +19,6 @@ pub trait CloudProvider: Send + Sync {
 }
 
 pub mod inventory {
-    use super::*;
     pub struct CatalogItem {
         pub name: String,
         pub code: String,
