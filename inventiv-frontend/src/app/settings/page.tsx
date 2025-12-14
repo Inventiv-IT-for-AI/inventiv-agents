@@ -12,15 +12,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Pencil, Settings2 } from "lucide-react";
 import { ManageZonesModal } from "@/components/settings/ManageZonesModal";
-import type { Region, Zone, InstanceType } from "@/lib/types";
+import type { Provider, Region, Zone, InstanceType } from "@/lib/types";
 
 export default function SettingsPage() {
+    const [providers, setProviders] = useState<Provider[]>([]);
     const [regions, setRegions] = useState<Region[]>([]);
     const [zones, setZones] = useState<Zone[]>([]);
     const [types, setTypes] = useState<InstanceType[]>([]);
 
-    const [editingEntity, setEditingEntity] = useState<Region | Zone | InstanceType | null>(null);
-    const [entityType, setEntityType] = useState<'region' | 'zone' | 'type' | null>(null);
+    const [editingEntity, setEditingEntity] = useState<Provider | Region | Zone | InstanceType | null>(null);
+    const [entityType, setEntityType] = useState<'provider' | 'region' | 'zone' | 'type' | null>(null);
     const [isEditOpen, setIsEditOpen] = useState(false);
 
     // Manage Zones Modal State
@@ -30,18 +31,21 @@ export default function SettingsPage() {
     const [formData, setFormData] = useState({
         code: "",
         name: "",
+        description: "",
         is_active: true,
         cost_per_hour: ""
     });
 
     const fetchData = async () => {
         try {
-            const [resRegions, resZones, resTypes] = await Promise.all([
+            const [resProviders, resRegions, resZones, resTypes] = await Promise.all([
+                fetch(apiUrl("providers")),
                 fetch(apiUrl("regions")),
                 fetch(apiUrl("zones")),
                 fetch(apiUrl("instance_types"))
             ]);
 
+            if (resProviders.ok) setProviders(await resProviders.json());
             if (resRegions.ok) setRegions(await resRegions.json());
             if (resZones.ok) setZones(await resZones.json());
             if (resTypes.ok) setTypes(await resTypes.json());
@@ -56,13 +60,14 @@ export default function SettingsPage() {
         fetchData();
     }, []);
 
-    const handleEdit = (entity: Region | Zone | InstanceType, type: 'region' | 'zone' | 'type') => {
+    const handleEdit = (entity: Provider | Region | Zone | InstanceType, type: 'provider' | 'region' | 'zone' | 'type') => {
         setEditingEntity(entity);
         setEntityType(type);
         setFormData({
             code: entity.code ?? "",
             name: entity.name || "",
-            is_active: entity.is_active,
+            description: type === 'provider' ? (((entity as Provider).description ?? "") || "") : "",
+            is_active: entity.is_active ?? false,
             cost_per_hour:
                 type === 'type' && (entity as InstanceType).cost_per_hour != null
                     ? String((entity as InstanceType).cost_per_hour)
@@ -76,11 +81,15 @@ export default function SettingsPage() {
 
         const url = apiUrl(`${entityType === 'type' ? 'instance_types' : entityType + 's'}/${editingEntity.id}`);
 
-        const payload: { code?: string; name?: string; is_active?: boolean; cost_per_hour?: number | null } = {
+        const payload: { code?: string; name?: string; description?: string; is_active?: boolean; cost_per_hour?: number | null } = {
             code: formData.code,
             name: formData.name,
             is_active: formData.is_active
         };
+
+        if (entityType === 'provider') {
+            payload.description = formData.description;
+        }
 
         if (entityType === 'type') {
             payload.cost_per_hour = formData.cost_per_hour ? parseFloat(formData.cost_per_hour) : null;
@@ -104,14 +113,14 @@ export default function SettingsPage() {
         }
     };
 
-    const toggleActive = async (entity: Region | Zone | InstanceType, type: 'region' | 'zone' | 'type') => {
+    const toggleActive = async (entity: Provider | Region | Zone | InstanceType, type: 'provider' | 'region' | 'zone' | 'type') => {
         // Quick toggle without modal
         const url = apiUrl(`${type === 'type' ? 'instance_types' : type + 's'}/${entity.id}`);
         try {
             await fetch(url, {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ is_active: !entity.is_active })
+                body: JSON.stringify({ is_active: !(entity.is_active ?? false) })
             });
             fetchData();
         } catch (err) {
@@ -128,10 +137,48 @@ export default function SettingsPage() {
 
             <Tabs defaultValue="regions" className="w-full">
                 <TabsList>
+                    <TabsTrigger value="providers">Providers</TabsTrigger>
                     <TabsTrigger value="regions">Regions</TabsTrigger>
                     <TabsTrigger value="zones">Zones</TabsTrigger>
                     <TabsTrigger value="types">Instance Types</TabsTrigger>
                 </TabsList>
+
+                {/* PROVIDERS */}
+                <TabsContent value="providers">
+                    <Card>
+                        <CardHeader><CardTitle>Providers</CardTitle></CardHeader>
+                        <CardContent>
+                            <Table>
+                                <TableHeader>
+                                    <TableRow>
+                                        <TableHead>Name</TableHead>
+                                        <TableHead>Code</TableHead>
+                                        <TableHead>Description</TableHead>
+                                        <TableHead>Status</TableHead>
+                                        <TableHead className="text-right">Actions</TableHead>
+                                    </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                    {providers.map(p => (
+                                        <TableRow key={p.id}>
+                                            <TableCell className="font-medium">{p.name}</TableCell>
+                                            <TableCell className="font-mono text-xs">{p.code}</TableCell>
+                                            <TableCell className="text-sm text-muted-foreground">{p.description}</TableCell>
+                                            <TableCell>
+                                                <Switch checked={!!p.is_active} onCheckedChange={() => toggleActive(p, 'provider')} />
+                                            </TableCell>
+                                            <TableCell className="text-right">
+                                                <Button variant="ghost" size="icon" onClick={() => handleEdit(p, 'provider')}>
+                                                    <Pencil className="h-4 w-4" />
+                                                </Button>
+                                            </TableCell>
+                                        </TableRow>
+                                    ))}
+                                </TableBody>
+                            </Table>
+                        </CardContent>
+                    </Card>
+                </TabsContent>
 
                 {/* REGIONS */}
                 <TabsContent value="regions">
@@ -257,33 +304,72 @@ export default function SettingsPage() {
                 </TabsContent>
             </Tabs>
 
-            <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
-                <DialogContent>
+            <Dialog
+                open={isEditOpen}
+                onOpenChange={(open) => {
+                    setIsEditOpen(open);
+                    if (!open) {
+                        setEditingEntity(null);
+                        setEntityType(null);
+                    }
+                }}
+            >
+                <DialogContent showCloseButton={false}>
                     <DialogHeader>
-                        <DialogTitle>Edit {entityType === 'type' ? 'Instance Type' : entityType === 'region' ? 'Region' : 'Zone'}</DialogTitle>
+                        <DialogTitle>
+                            Modifier{" "}
+                            {entityType === 'type'
+                                ? 'le type d’instance'
+                                : entityType === 'region'
+                                    ? 'la région'
+                                    : entityType === 'zone'
+                                        ? 'la zone'
+                                        : 'le provider'}
+                        </DialogTitle>
                     </DialogHeader>
                     <div className="grid gap-4 py-4">
                         <div className="grid grid-cols-4 items-center gap-4">
-                            <Label htmlFor="name" className="text-right">Name</Label>
+                            <Label htmlFor="name" className="text-right">Nom</Label>
                             <Input id="name" value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} className="col-span-3" />
                         </div>
                         <div className="grid grid-cols-4 items-center gap-4">
                             <Label htmlFor="code" className="text-right">Code</Label>
                             <Input id="code" value={formData.code} onChange={(e) => setFormData({ ...formData, code: e.target.value })} className="col-span-3" />
                         </div>
+                        {entityType === 'provider' && (
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <Label htmlFor="description" className="text-right">Description</Label>
+                                <Input
+                                    id="description"
+                                    value={formData.description}
+                                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                                    className="col-span-3"
+                                />
+                            </div>
+                        )}
                         {entityType === 'type' && (
                             <div className="grid grid-cols-4 items-center gap-4">
-                                <Label htmlFor="cost" className="text-right">Cost ($/hr)</Label>
+                                <Label htmlFor="cost" className="text-right">Coût ($/h)</Label>
                                 <Input id="cost" type="number" step="0.0001" value={formData.cost_per_hour} onChange={(e) => setFormData({ ...formData, cost_per_hour: e.target.value })} className="col-span-3" />
                             </div>
                         )}
                         <div className="grid grid-cols-4 items-center gap-4">
-                            <Label htmlFor="active" className="text-right">Active</Label>
+                            <Label htmlFor="active" className="text-right">Actif</Label>
                             <Switch id="active" checked={formData.is_active} onCheckedChange={(c) => setFormData({ ...formData, is_active: c })} />
                         </div>
                     </div>
-                    <DialogFooter>
-                        <Button onClick={handleSave}>Save changes</Button>
+                    <DialogFooter className="sm:justify-between">
+                        <Button
+                            variant="outline"
+                            onClick={() => {
+                                setIsEditOpen(false);
+                                setEditingEntity(null);
+                                setEntityType(null);
+                            }}
+                        >
+                            Annuler
+                        </Button>
+                        <Button onClick={handleSave}>Enregistrer</Button>
                     </DialogFooter>
                 </DialogContent>
             </Dialog>

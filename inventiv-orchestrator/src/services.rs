@@ -10,7 +10,13 @@ use bigdecimal::FromPrimitive;
 
 pub async fn process_termination(pool: Pool<Postgres>, instance_id: String, correlation_id: Option<String>) {
     let start = Instant::now();
-    let id_uuid = Uuid::parse_str(&instance_id).unwrap_or_else(|_| Uuid::new_v4());
+    let id_uuid = match Uuid::parse_str(&instance_id) {
+        Ok(v) => v,
+        Err(e) => {
+            println!("❌ Invalid instance_id for termination '{}': {:?}", instance_id, e);
+            return;
+        }
+    };
     let correlation_id_meta = correlation_id.clone();
     println!("⚙️ Processing Termination Async: {}", id_uuid);
     
@@ -28,8 +34,9 @@ pub async fn process_termination(pool: Pool<Postgres>, instance_id: String, corr
 
     // 1. Get instance details from DB
     let row_result = sqlx::query_as::<_, (Option<String>, Option<String>, String)>(
-        "SELECT provider_instance_id, z.code as zone, i.status::text FROM instances i
-         JOIN zones z ON i.zone_id = z.id
+        "SELECT i.provider_instance_id, z.code as zone, i.status::text
+         FROM instances i
+         LEFT JOIN zones z ON i.zone_id = z.id
          WHERE i.id = $1"
     )
     .bind(id_uuid)
@@ -236,7 +243,13 @@ pub async fn process_provisioning(
     correlation_id: Option<String>,
 ) {
     let start = Instant::now();
-    let instance_uuid = Uuid::parse_str(&instance_id).unwrap_or_else(|_| Uuid::new_v4());
+    let instance_uuid = match Uuid::parse_str(&instance_id) {
+        Ok(v) => v,
+        Err(e) => {
+            println!("❌ Invalid instance_id for provisioning '{}': {:?}", instance_id, e);
+            return;
+        }
+    };
     let correlation_id_meta = correlation_id.clone();
     println!("🔨 [Orchestrator] Processing Provision for instance: {}", instance_uuid);
     

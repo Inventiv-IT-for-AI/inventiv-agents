@@ -12,12 +12,17 @@ export function useCatalog() {
     const fetchCatalog = async () => {
         setLoading(true);
         try {
-            const [regionsRes, zonesRes, typesRes] = await Promise.all([
+            const [providersRes, regionsRes, zonesRes, typesRes] = await Promise.all([
+                fetch(apiUrl("providers")),
                 fetch(apiUrl("regions")),
                 fetch(apiUrl("zones")),
                 fetch(apiUrl("instance_types")),
             ]);
 
+            if (providersRes.ok) {
+                const data: Provider[] = await providersRes.json();
+                setProviders(data.filter((p) => p.is_active));
+            }
             if (regionsRes.ok) {
                 const data: Region[] = await regionsRes.json();
                 setRegions(data.filter((r) => r.is_active));
@@ -30,11 +35,6 @@ export function useCatalog() {
                 const data: InstanceType[] = await typesRes.json();
                 setInstanceTypes(data.filter((t) => t.is_active));
             }
-
-            // Hardcoded provider for now (Scaleway)
-            setProviders([
-                { id: "00000000-0000-0000-0000-000000000001", name: "Scaleway" },
-            ]);
         } catch (err) {
             console.error("Failed to fetch catalog", err);
         } finally {

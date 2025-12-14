@@ -183,28 +183,65 @@ impl CloudProvider for ScalewayProvider {
     }
 
     async fn terminate_instance(&self, zone: &str, server_id: &str) -> Result<bool> {
-        let url = format!("https://api.scaleway.com/instance/v1/zones/{}/servers/{}/action", zone, server_id);
+        // Preferred: terminate action
+        let action_url = format!(
+            "https://api.scaleway.com/instance/v1/zones/{}/servers/{}/action",
+            zone, server_id
+        );
         let body = json!({"action": "terminate"});
-        
-        let resp = self.client.post(&url)
+
+        let resp = self
+            .client
+            .post(&action_url)
             .headers(self.headers())
             .json(&body)
             .send()
             .await?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+        if resp.status().is_success() {
+            return Ok(true);
+        }
+
+        // Fallback: some server states can reject terminate action (e.g. stopped).
+        // Use DELETE /servers/{id} which is the canonical delete endpoint.
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if status.as_u16() == 400 && text.contains("resource_not_usable") {
+            let delete_url = format!(
+                "https://api.scaleway.com/instance/v1/zones/{}/servers/{}",
+                zone, server_id
+            );
+            let delete_resp = self
+                .client
+                .delete(&delete_url)
+                .headers(self.headers())
+                .send()
+                .await?;
+
+            if delete_resp.status().is_success() {
+                return Ok(true);
+            }
+
+            let d_status = delete_resp.status();
+            let d_text = delete_resp.text().await.unwrap_or_default();
             return Err(anyhow::anyhow!(
-                "Failed to terminate instance {} in zone {}: {} - {}",
+                "Failed to terminate instance {} in zone {}: {} - {} (fallback DELETE failed: {} - {})",
                 server_id,
                 zone,
                 status,
-                text
+                text,
+                d_status,
+                d_text
             ));
         }
 
-        Ok(true)
+        Err(anyhow::anyhow!(
+            "Failed to terminate instance {} in zone {}: {} - {}",
+            server_id,
+            zone,
+            status,
+            text
+        ))
     }
 
     async fn list_instances(&self, zone: &str) -> Result<Vec<inventory::DiscoveredInstance>> {

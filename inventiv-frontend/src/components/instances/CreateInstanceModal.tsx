@@ -47,6 +47,17 @@ export function CreateInstanceModal({
         }
     }, [open, providers]);
 
+    // Reset region/zone/type when provider changes
+    useEffect(() => {
+        if (!open) return;
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setSelectedRegionId("");
+        setSelectedZoneId("");
+        setSelectedTypeId("");
+        setZones(allZones);
+        setInstanceTypes(initialInstanceTypes.filter((t) => !selectedProviderId || t.provider_id === selectedProviderId));
+    }, [selectedProviderId, open, allZones, initialInstanceTypes]);
+
     // Filter zones by selected region
     useEffect(() => {
         if (!selectedRegionId) {
@@ -70,13 +81,14 @@ export function CreateInstanceModal({
     useEffect(() => {
         if (!selectedZoneId) {
             // eslint-disable-next-line react-hooks/set-state-in-effect
-            setInstanceTypes(initialInstanceTypes);
+            setInstanceTypes(initialInstanceTypes.filter((t) => !selectedProviderId || t.provider_id === selectedProviderId));
             return;
         }
 
         const fetchTypesForZone = async () => {
             try {
-                const res = await fetch(apiUrl(`zones/${selectedZoneId}/instance_types`));
+                const qs = selectedProviderId ? `?provider_id=${encodeURIComponent(selectedProviderId)}` : "";
+                const res = await fetch(apiUrl(`zones/${selectedZoneId}/instance_types${qs}`));
                 if (res.ok) {
                     const data: InstanceType[] = await res.json();
                     setInstanceTypes(data);
@@ -88,7 +100,7 @@ export function CreateInstanceModal({
             }
         };
         fetchTypesForZone();
-    }, [selectedZoneId, initialInstanceTypes]);
+    }, [selectedZoneId, initialInstanceTypes, selectedProviderId]);
 
     const handleDeploy = async () => {
         if (!selectedZoneId || !selectedTypeId) {
@@ -105,19 +117,23 @@ export function CreateInstanceModal({
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
+                    provider_id: selectedProviderId || undefined,
                     zone: selectedZone?.code || "",
                     instance_type: selectedType?.code || "",
                 }),
             });
 
-            if (res.ok) {
+            const data = await res.json().catch(() => null);
+
+            if (res.ok && data?.status === "accepted") {
                 setDeployStep("success");
                 setTimeout(() => {
                     handleClose();
                     onSuccess();
                 }, 2000);
             } else {
-                alert("Deployment failed!");
+                const msg = data?.message || data?.status || "Deployment failed!";
+                alert(msg);
                 handleClose();
             }
         } catch (e) {
@@ -137,7 +153,7 @@ export function CreateInstanceModal({
 
     return (
         <Dialog open={open} onOpenChange={handleClose}>
-            <DialogContent className="sm:max-w-[500px]">
+            <DialogContent showCloseButton={false} className="sm:max-w-[500px]">
                 <DialogHeader>
                     <DialogTitle>Create New Instance</DialogTitle>
                     <DialogDescription>
@@ -148,13 +164,13 @@ export function CreateInstanceModal({
                 {deployStep === "success" ? (
                     <div className="flex flex-col items-center justify-center py-6 space-y-4 text-green-600 animate-in fade-in zoom-in duration-300">
                         <CheckCircle className="h-16 w-16" />
-                        <span className="text-xl font-bold">Instance Created!</span>
+                        <span className="text-xl font-bold">Demande de création prise en compte</span>
                     </div>
                 ) : (
                     <div className="grid gap-4 py-4">
                         <div className="grid grid-cols-4 items-center gap-4">
                             <Label className="text-right">Provider</Label>
-                            <Select value={selectedProviderId} onValueChange={setSelectedProviderId} disabled>
+                            <Select value={selectedProviderId} onValueChange={setSelectedProviderId}>
                                 <SelectTrigger className="col-span-3">
                                     <SelectValue />
                                 </SelectTrigger>
@@ -173,12 +189,15 @@ export function CreateInstanceModal({
                             <Select
                                 value={selectedRegionId}
                                 onValueChange={(val) => setSelectedRegionId(val)}
+                                disabled={!selectedProviderId}
                             >
                                 <SelectTrigger className="col-span-3">
                                     <SelectValue placeholder="Select region" />
                                 </SelectTrigger>
                                 <SelectContent>
-                                    {regions.map((r) => (
+                                    {regions
+                                        .filter((r) => !selectedProviderId || r.provider_id === selectedProviderId)
+                                        .map((r) => (
                                         <SelectItem key={r.id} value={r.id}>
                                             {r.name}
                                         </SelectItem>
@@ -235,14 +254,27 @@ export function CreateInstanceModal({
                 )}
 
                 <DialogFooter>
-                    {deployStep !== "success" && (
-                        <Button
-                            type="submit"
-                            onClick={handleDeploy}
-                            disabled={deployStep === "submitting"}
-                        >
-                            {deployStep === "submitting" ? "Deploying..." : "Create Instance"}
+                    {deployStep === "success" ? (
+                        <Button variant="outline" onClick={handleClose}>
+                            Fermer
                         </Button>
+                    ) : (
+                        <div className="flex w-full flex-col-reverse gap-2 sm:flex-row sm:justify-between">
+                            <Button
+                                variant="outline"
+                                onClick={handleClose}
+                                disabled={deployStep === "submitting"}
+                            >
+                                Annuler
+                            </Button>
+                            <Button
+                                type="submit"
+                                onClick={handleDeploy}
+                                disabled={deployStep === "submitting"}
+                            >
+                                {deployStep === "submitting" ? "Créer..." : "Créer"}
+                            </Button>
+                        </div>
                     )}
                 </DialogFooter>
             </DialogContent>

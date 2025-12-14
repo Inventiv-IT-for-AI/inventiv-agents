@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Eye, Archive } from "lucide-react";
 import { CopyButton } from "@/components/shared/CopyButton";
 import type { Instance } from "@/lib/types";
+import { displayOrDash } from "@/lib/utils";
 
 type InstanceTableProps = {
   instances: Instance[];
@@ -43,12 +44,12 @@ export function InstanceTable({
             <TableCell className="font-mono text-xs">
               {instance.id.split("-")[0]}...
             </TableCell>
-            <TableCell>{instance.provider_name}</TableCell>
-            <TableCell>{instance.region}</TableCell>
-            <TableCell>{instance.zone}</TableCell>
-            <TableCell>{instance.instance_type}</TableCell>
+            <TableCell>{displayOrDash(instance.provider_name)}</TableCell>
+            <TableCell>{displayOrDash(instance.region)}</TableCell>
+            <TableCell>{displayOrDash(instance.zone)}</TableCell>
+            <TableCell>{displayOrDash(instance.instance_type)}</TableCell>
             <TableCell className="font-mono">
-              {instance.total_cost !== undefined
+              {typeof instance.total_cost === "number"
                 ? `$${instance.total_cost.toFixed(4)}`
                 : "-"}
             </TableCell>
@@ -95,7 +96,7 @@ export function InstanceTable({
                     size="sm"
                     onClick={() => onTerminate(instance.id)}
                   >
-                    Terminate
+                    Terminer
                   </Button>
                 )}
                 {instance.status.toLowerCase() === "terminated" && (

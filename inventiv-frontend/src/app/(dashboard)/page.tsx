@@ -5,6 +5,7 @@ import { StatsCard } from "@/components/shared/StatsCard";
 import { useInstances } from "@/hooks/useInstances";
 import { Server, Activity, DollarSign, Zap, TrendingUp, Clock } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { displayOrDash } from "@/lib/utils";
 
 export default function DashboardPage() {
   const { instances } = useInstances();
@@ -100,10 +101,10 @@ export default function DashboardPage() {
                   >
                     <div>
                       <p className="font-medium text-sm">
-                        {instance.instance_type}
+                        {displayOrDash(instance.instance_type)}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        {instance.zone} • {instance.provider_name}
+                        {displayOrDash(instance.zone)} • {displayOrDash(instance.provider_name)}
                       </p>
                     </div>
                     <div className="flex items-center gap-2">

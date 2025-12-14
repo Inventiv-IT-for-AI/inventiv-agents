@@ -38,15 +38,17 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et les 
 ## 🐛 Bugs connus / incohérences (à corriger en priorité)
 
 ### DB migrations / seeds
-- [ ] **Deux dossiers** existent:
-  - `sqlx-migrations/` (migrations “exécutables” au boot, sans seeds)
-  - `migrations/` (historique + seeds)
+- [x] **Single source of truth migrations**:
+  - `sqlx-migrations/` = migrations exécutées au boot (API + orchestrator)
+  - `migrations/` = seeds uniquement (`seeds*.sql`)
 - [ ] **Seeds non exécutés automatiquement**: il faut un mécanisme clair (script, make target, doc) pour initialiser providers/regions/zones/types/associations en dev.
 
 ### Contrats API/UI à surveiller
 - [ ] `instance_type_zones` existait dans la doc mais pas en SQL au départ → maintenant ajouté; vérifier que l’UI Settings alimente correctement cette table.
 - [ ] `action_logs`:
   - [ ] schéma initial incomplet (pas de `metadata`, component check trop strict) → corrigé via migration dédiée; vérifier en DB.
+  - [x] endpoint de recherche paginée + stats pour UI virtualisée: `GET /action_logs/search`
+  - [x] table `action_types` (catalogue UI): `GET /action_types`
 
 ### Docs / scripts obsolètes
 - [ ] **Router**: le crate `inventiv-router` a été supprimé mais la doc/README/scripts en parlent encore (port 8002, `/v1/chat/completions`).
@@ -73,6 +75,38 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et les 
 ---
 
 ## 🚧 Ce qui manque encore (produit & plateforme)
+
+## 🧭 Phase 0.2.0 — Workers + Data plane (objectif)
+
+### Worker (vLLM + agent sidecar)
+- [ ] Définir un **contrat minimal** Worker:
+  - `/healthz` (liveness)
+  - `/readyz` (readiness: modèle chargé / vLLM prêt)
+  - `/metrics` (prometheus)
+- [ ] Clarifier le **protocole d’enrôlement** (worker → API/orchestrator):
+  - registration (instance_id, ip, model, gpu specs)
+  - heartbeat (status, queue depth, gpu utilization)
+- [ ] Décider comment le worker est démarré:
+  - cloud-init + systemd
+  - docker run via SSH (provisoire)
+  - k3s / nomad (plus tard)
+
+### Routing / Load Balancing (data plane)
+- [ ] Réintroduire un **router** (OpenAI-compatible):
+  - `POST /v1/chat/completions` (proxy vers workers)
+  - auth API keys + rate limiting
+  - load balancing (LOR / queue depth)
+  - failover (retry + circuit breaker)
+- [ ] Source of truth routing:
+  - Redis (pub/sub + cache)
+  - ou DB + watcher
+
+### Observabilité / Scalabilité
+- [ ] Exposer `metrics` sur API/orchestrator/worker/router
+- [ ] Ajout d’un scaler loop basé sur:
+  - `queue_depth`
+  - `ttft / p95 latency`
+  - `gpu_util`
 
 ### Auth / API Keys
 - [ ] Auth (JWT) + gestion des API keys (backend + router/gateway).

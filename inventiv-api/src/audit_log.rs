@@ -30,7 +30,7 @@ impl AuditLogger {
             "INSERT INTO action_logs 
              (id, action_type, component, status, error_code, error_message, 
               instance_id, request_payload, response_payload, created_at)
-             VALUES ($1, $2, 'backend', $3, $4, $5, $6, $7, $8, NOW())",
+             VALUES ($1, $2, 'api', $3, $4, $5, $6, $7, $8, NOW())",
             log_id,
             action_type,
             status,

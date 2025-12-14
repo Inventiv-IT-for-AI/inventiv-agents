@@ -51,18 +51,18 @@ export function TerminateInstanceModal({
 
     return (
         <Dialog open={open} onOpenChange={handleClose}>
-            <DialogContent className="sm:max-w-[425px]">
+            <DialogContent showCloseButton={false} className="sm:max-w-[425px]">
                 <DialogHeader>
-                    <DialogTitle>Terminate Instance</DialogTitle>
+                    <DialogTitle>Terminer l&apos;instance</DialogTitle>
                     <DialogDescription>
-                        Are you sure you want to shut down this instance? This action cannot be undone.
+                        Voulez-vous vraiment terminer cette instance ? Cette action est irréversible.
                     </DialogDescription>
                 </DialogHeader>
 
                 {terminateStep === "success" ? (
                     <div className="flex flex-col items-center justify-center py-6 space-y-4 text-red-600 animate-in fade-in zoom-in duration-300">
                         <CheckCircle className="h-16 w-16" />
-                        <span className="text-xl font-bold">Instance Terminated</span>
+                        <span className="text-xl font-bold">Demande de terminaison prise en compte</span>
                     </div>
                 ) : (
                     <div className="py-4 text-sm text-muted-foreground">
@@ -71,23 +71,27 @@ export function TerminateInstanceModal({
                 )}
 
                 <DialogFooter>
-                    {terminateStep !== "success" && (
-                        <>
+                    {terminateStep === "success" ? (
+                        <Button variant="outline" onClick={handleClose}>
+                            Fermer
+                        </Button>
+                    ) : (
+                        <div className="flex w-full flex-col-reverse gap-2 sm:flex-row sm:justify-between">
                             <Button
                                 variant="outline"
                                 onClick={handleClose}
                                 disabled={terminateStep === "submitting"}
                             >
-                                Cancel
+                                Annuler
                             </Button>
                             <Button
                                 variant="destructive"
                                 onClick={handleConfirmTerminate}
                                 disabled={terminateStep === "submitting"}
                             >
-                                {terminateStep === "submitting" ? "Terminating..." : "Confirm Terminate"}
+                                {terminateStep === "submitting" ? "Terminer..." : "Terminer"}
                             </Button>
-                        </>
+                        </div>
                     )}
                 </DialogFooter>
             </DialogContent>

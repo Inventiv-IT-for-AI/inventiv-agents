@@ -13,6 +13,7 @@ pub enum InstanceStatus {
     Draining,     // Stopping, finishing current requests
     Terminating,  // Termination requested, waiting provider deletion
     Terminated,   // Destroyed
+    Archived,     // Archived (hidden from active list)
     ProvisioningFailed,
     StartupFailed,
     Failed,       // Error state

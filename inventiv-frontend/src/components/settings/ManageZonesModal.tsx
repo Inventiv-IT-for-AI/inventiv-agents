@@ -103,10 +103,10 @@ export function ManageZonesModal({
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-[600px]">
+      <DialogContent showCloseButton={false} className="sm:max-w-[600px]">
         <DialogHeader>
           <DialogTitle>
-            Manage Zones for{" "}
+            Gérer les zones pour{" "}
             <span className="font-mono text-primary">{instanceType.name}</span>
           </DialogTitle>
         </DialogHeader>
@@ -118,14 +118,14 @@ export function ManageZonesModal({
         ) : (
           <div className="py-4">
             <p className="text-sm text-muted-foreground mb-4">
-              Select which zones support this instance type. Users will only be able
-              to deploy this instance type in linked zones.
+              Sélectionnez les zones où ce type d’instance est disponible. Les utilisateurs ne pourront créer
+              une instance de ce type que dans les zones associées.
             </p>
 
             <div className="space-y-2 max-h-[400px] overflow-y-auto">
               {allZones.length === 0 ? (
                 <div className="text-center text-muted-foreground py-8">
-                  No active zones found
+                  Aucune zone active trouvée
                 </div>
               ) : (
                 allZones.map((zone) => {
@@ -166,12 +166,12 @@ export function ManageZonesModal({
                         ) : isLinked ? (
                           <>
                             <X className="h-4 w-4 mr-1" />
-                            Unlink
+                            Retirer
                           </>
                         ) : (
                           <>
                             <Check className="h-4 w-4 mr-1" />
-                            Link
+                            Ajouter
                           </>
                         )}
                       </Button>
@@ -184,15 +184,17 @@ export function ManageZonesModal({
             <div className="mt-4 pt-4 border-t">
               <div className="flex items-center gap-2 text-sm">
                 <Badge variant="outline">
-                  {linkedZoneIds.size} / {allZones.length} zones linked
+                  {linkedZoneIds.size} / {allZones.length} zones associées
                 </Badge>
               </div>
             </div>
           </div>
         )}
 
-        <DialogFooter>
-          <Button onClick={onClose}>Close</Button>
+        <DialogFooter className="sm:justify-between">
+          <Button variant="outline" onClick={onClose}>
+            Fermer
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

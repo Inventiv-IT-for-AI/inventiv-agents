@@ -29,15 +29,13 @@ pub async fn terminator_terminating_instances(
     pool: &Pool<Postgres>,
     provider: &(impl CloudProvider + ?Sized),
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    let claimed: Vec<(Uuid, String, String)> = sqlx::query_as(
+    let claimed: Vec<(Uuid, Option<String>, Option<String>)> = sqlx::query_as(
         "WITH cte AS (
             SELECT i.id,
                    i.provider_instance_id::text AS provider_instance_id,
-                   COALESCE(z.code, z.name) AS zone
+                   (SELECT COALESCE(z.code, z.name) FROM zones z WHERE z.id = i.zone_id) AS zone
             FROM instances i
-            JOIN zones z ON i.zone_id = z.id
             WHERE i.status = 'terminating'
-              AND i.provider_instance_id IS NOT NULL
               AND (i.last_reconciliation IS NULL OR i.last_reconciliation < NOW() - INTERVAL '30 seconds')
             ORDER BY i.last_reconciliation NULLS FIRST
             LIMIT 50
@@ -58,7 +56,55 @@ pub async fn terminator_terminating_instances(
 
     let mut progressed = 0usize;
 
-    for (instance_id, provider_instance_id, zone) in claimed {
+    for (instance_id, provider_instance_id_opt, zone_opt) in claimed {
+        // If we don't even have a provider instance id, we can safely finalize termination in DB.
+        // This happens for invalid/failed provisioning requests that never created a provider resource.
+        if provider_instance_id_opt.as_deref().unwrap_or("").is_empty() {
+            let start = std::time::Instant::now();
+            let log_id = logger::log_event_with_metadata(
+                pool,
+                "TERMINATION_CONFIRMED",
+                "in_progress",
+                instance_id,
+                None,
+                Some(serde_json::json!({"reason": "no_provider_instance_id"})),
+            )
+            .await
+            .ok();
+
+            let _ = sqlx::query(
+                "UPDATE instances
+                 SET deletion_reason = COALESCE(deletion_reason, 'no_provider_resource')
+                 WHERE id = $1"
+            )
+            .bind(instance_id)
+            .execute(pool)
+            .await;
+
+            let _ = state_machine::terminating_to_terminated(pool, instance_id).await?;
+
+            if let Some(lid) = log_id {
+                let duration = start.elapsed().as_millis() as i32;
+                logger::log_event_complete(pool, lid, "success", duration, None)
+                    .await
+                    .ok();
+            }
+
+            progressed += 1;
+            continue;
+        }
+
+        // If we have a provider id but no zone, we cannot call the provider API safely.
+        let Some(zone) = zone_opt else {
+            eprintln!("⚠️  [job-terminator] Missing zone for instance {} (provider_instance_id present).", instance_id);
+            let _ = sqlx::query("UPDATE instances SET last_reconciliation = NULL, error_code = 'MISSING_ZONE', error_message = 'Missing zone for termination' WHERE id = $1")
+                .bind(instance_id)
+                .execute(pool)
+                .await;
+            continue;
+        };
+
+        let provider_instance_id = provider_instance_id_opt.unwrap_or_default();
         match provider.check_instance_exists(&zone, &provider_instance_id).await {
             Ok(false) => {
                 // Provider deletion confirmed → finalize

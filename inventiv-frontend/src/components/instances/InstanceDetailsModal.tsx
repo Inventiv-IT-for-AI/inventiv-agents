@@ -1,10 +1,12 @@
 "use client";
 
 import { formatDistanceToNow, parseISO } from "date-fns";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { CopyButton } from "@/components/shared/CopyButton";
+import { Button } from "@/components/ui/button";
 import type { Instance } from "@/lib/types";
+import { displayOrDash } from "@/lib/utils";
 
 type InstanceDetailsModalProps = {
   open: boolean;
@@ -19,9 +21,9 @@ export function InstanceDetailsModal({
 }: InstanceDetailsModalProps) {
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-[600px]">
+      <DialogContent showCloseButton={false} className="sm:max-w-[600px]">
         <DialogHeader>
-          <DialogTitle>Instance Details</DialogTitle>
+          <DialogTitle>Détails de l&apos;instance</DialogTitle>
         </DialogHeader>
         {instance && (
           <div className="grid gap-6 py-4">
@@ -39,15 +41,15 @@ export function InstanceDetailsModal({
                   </div>
                   <div className="flex justify-between border-b pb-1">
                     <span>Provider</span>
-                    <span className="font-medium">{instance.provider_name}</span>
+                    <span className="font-medium">{displayOrDash(instance.provider_name)}</span>
                   </div>
                   <div className="flex justify-between border-b pb-1">
                     <span>Region</span>
-                    <span>{instance.region}</span>
+                    <span>{displayOrDash(instance.region)}</span>
                   </div>
                   <div className="flex justify-between border-b pb-1">
                     <span>Zone</span>
-                    <span>{instance.zone}</span>
+                    <span>{displayOrDash(instance.zone)}</span>
                   </div>
                 </div>
               </div>
@@ -58,7 +60,7 @@ export function InstanceDetailsModal({
                 <div className="space-y-1 text-sm">
                   <div className="flex justify-between border-b pb-1">
                     <span>Type</span>
-                    <span className="font-medium">{instance.instance_type}</span>
+                    <span className="font-medium">{displayOrDash(instance.instance_type)}</span>
                   </div>
                   <div className="flex justify-between border-b pb-1">
                     <span>VRAM</span>
@@ -100,6 +102,11 @@ export function InstanceDetailsModal({
             </div>
           </div>
         )}
+        <DialogFooter className="sm:justify-between">
+          <Button variant="outline" onClick={onClose}>
+            Fermer
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

@@ -1,9 +1,8 @@
 use axum::{
     extract::{State, Path},
-    routing::{get, put},
     Json,
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::IntoResponse,
 };
 use serde::Deserialize;
 use std::sync::Arc;

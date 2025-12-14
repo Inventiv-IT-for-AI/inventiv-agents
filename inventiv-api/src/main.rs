@@ -1,6 +1,6 @@
 use axum::{
     extract::{State, Path},
-    routing::{get, post, delete},
+    routing::{get, post},
     Router, Json,
     http::StatusCode,
     response::IntoResponse,
@@ -17,6 +17,7 @@ use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
 use utoipa::{OpenApi, IntoParams};
 use utoipa_swagger_ui::SwaggerUi;
 mod settings; // Module
+mod action_logs_search;
 mod api_docs;
 mod simple_logger;
 mod instance_type_zones; // Module for zone associations
@@ -47,6 +48,7 @@ async fn main() {
 
     // Run migrations (source of truth is /migrations at workspace root)
     // Safe to run on startup; sqlx uses the _sqlx_migrations table + lock.
+    // Note: migrations are embedded at compile-time; code change forces rebuild.
     sqlx::migrate!("../sqlx-migrations")
         .run(&pool)
         .await
@@ -69,8 +71,10 @@ async fn main() {
         // NEW READ ENDPOINTS
         .route("/instances", get(list_instances))
         .route("/instances/:id/archive", axum::routing::put(archive_instance))
-        .route("/instances/:id", delete(terminate_instance))
+        .route("/instances/:id", get(get_instance).delete(terminate_instance))
         .route("/action_logs", get(list_action_logs))
+        .route("/action_logs/search", get(action_logs_search::search_action_logs))
+        .route("/action_types", get(list_action_types))
         .route("/reconcile", post(manual_reconcile_trigger))
         .route("/catalog/sync", post(manual_catalog_sync_trigger))
         // SETTINGS ENDPOINTS
@@ -99,11 +103,19 @@ async fn main() {
 pub struct InstanceResponse {
     pub id: uuid::Uuid,
     pub provider_id: uuid::Uuid,
-    pub zone_id: uuid::Uuid,
-    pub instance_type_id: uuid::Uuid,
+    pub zone_id: Option<uuid::Uuid>,
+    pub instance_type_id: Option<uuid::Uuid>,
+    pub provider_instance_id: Option<String>,
     pub status: String,
     pub ip_address: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    pub terminated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_health_check: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_reconciliation: Option<chrono::DateTime<chrono::Utc>>,
+    pub health_check_failures: Option<i32>,
+    pub deletion_reason: Option<String>,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
     
     // Joined Fields
     pub provider_name: String,
@@ -131,6 +143,7 @@ async fn root() -> &'static str {
 
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
 struct DeploymentRequest {
+    provider_id: Option<uuid::Uuid>,
     zone: String,
     instance_type: String,
 }
@@ -139,6 +152,7 @@ struct DeploymentRequest {
 struct DeploymentResponse {
     status: String,
     instance_id: String,  // Renamed from deployment_id for clarity
+    message: Option<String>,
 }
 
 // COMMAND : CREATE DEPLOYMENT
@@ -153,23 +167,238 @@ struct DeploymentResponse {
 async fn create_deployment(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<DeploymentRequest>,
-) -> Json<DeploymentResponse> {
+) -> impl IntoResponse {
     let start = std::time::Instant::now();
     let instance_id_uuid = uuid::Uuid::new_v4();  // Create UUID first
     let instance_id = instance_id_uuid.to_string();
-    
-    // LOG 1: REQUEST_CREATE (changed from CREATE_INSTANCE)
+
+    // If provider_id isn't sent (older clients), default to Scaleway.
+    let default_provider_id =
+        uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(); // scaleway
+    let provider_id = payload.provider_id.unwrap_or(default_provider_id);
+
+    // We want a durable instance_id from the very first request, even when validation fails.
+    // So we insert the instance row first (zone/type can be NULL), then all errors can be logged with instance_id.
+    //
+    // If this ever collides (extremely unlikely), we return 409 so devs notice immediately.
+    let insert_initial = sqlx::query(
+        "INSERT INTO instances (id, provider_id, zone_id, instance_type_id, status, created_at, gpu_profile)
+         VALUES ($1, $2, NULL, NULL, 'provisioning', NOW(), '{}')"
+    )
+    .bind(instance_id_uuid)
+    .bind(provider_id)
+    .execute(&state.db)
+    .await;
+
+    if let Err(e) = insert_initial {
+        // If duplicate key, surface loudly to detect any upstream bug.
+        let _msg = format!("Failed to create initial instance id: {:?}", e);
+        let is_unique_violation = matches!(e, sqlx::Error::Database(ref db_err) if db_err.code().as_deref() == Some("23505"));
+
+        return (
+            if is_unique_violation { StatusCode::CONFLICT } else { StatusCode::INTERNAL_SERVER_ERROR },
+            Json(DeploymentResponse {
+                status: "failed".to_string(),
+                instance_id,
+                message: Some(if is_unique_violation {
+                    "Instance id collision (duplicate primary key)".to_string()
+                } else {
+                    "Database error while creating initial instance id".to_string()
+                }),
+            }),
+        )
+            .into_response();
+    }
+
+    // LOG 1: REQUEST_CREATE (request is now traceable by instance_id even if validation fails)
     let log_id = simple_logger::log_action_with_metadata(
         &state.db,
-        "REQUEST_CREATE",           // ✅ Step 1: Request accepted
+        "REQUEST_CREATE",
         "in_progress",
-        Some(instance_id_uuid),     // ✅ Now has instance_id
+        Some(instance_id_uuid),
         None,
         Some(serde_json::json!({
+            "provider_id": provider_id.to_string(),
             "zone": payload.zone,
             "instance_type": payload.instance_type,
         })),
-    ).await.ok();
+    )
+    .await
+    .ok();
+
+    // Basic validation: even if invalid, we keep the instance row + log tied to instance_id.
+    if payload.zone.trim().is_empty() || payload.instance_type.trim().is_empty() {
+        let msg = "Missing zone or instance_type";
+        let _ = sqlx::query(
+            "UPDATE instances SET status='provisioning_failed', error_code=$2, error_message=$3, failed_at=NOW()
+             WHERE id=$1"
+        )
+        .bind(instance_id_uuid)
+        .bind("MISSING_PARAMS")
+        .bind(msg)
+        .execute(&state.db)
+        .await;
+
+        if let Some(id) = log_id {
+            let duration = start.elapsed().as_millis() as i32;
+            simple_logger::log_action_complete_with_metadata(
+                &state.db,
+                id,
+                "failed",
+                duration,
+                Some(msg),
+                Some(serde_json::json!({"error_code": "MISSING_PARAMS"})),
+            )
+            .await
+            .ok();
+        }
+
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(DeploymentResponse {
+                status: "failed".to_string(),
+                instance_id,
+                message: Some(msg.to_string()),
+            }),
+        )
+            .into_response();
+    }
+
+    // Provider must exist and be active
+    let provider_active: bool = sqlx::query_scalar("SELECT COALESCE(is_active, false) FROM providers WHERE id = $1")
+        .bind(provider_id)
+        .fetch_optional(&state.db)
+        .await
+        .unwrap_or(None)
+        .unwrap_or(false);
+
+    if !provider_active {
+        let msg = "Invalid provider (not found or inactive)";
+        let _ = sqlx::query(
+            "UPDATE instances SET status='provisioning_failed', error_code=$2, error_message=$3, failed_at=NOW()
+             WHERE id=$1"
+        )
+        .bind(instance_id_uuid)
+        .bind("INVALID_PROVIDER")
+        .bind(msg)
+        .execute(&state.db)
+        .await;
+
+        if let Some(id) = log_id {
+            let duration = start.elapsed().as_millis() as i32;
+            simple_logger::log_action_complete_with_metadata(
+                &state.db,
+                id,
+                "failed",
+                duration,
+                Some(msg),
+                Some(serde_json::json!({"error_code": "INVALID_PROVIDER"})),
+            )
+            .await
+            .ok();
+        }
+
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(DeploymentResponse {
+                status: "failed".to_string(),
+                instance_id,
+                message: Some("Invalid provider (not found or inactive)".to_string()),
+            }),
+        )
+            .into_response();
+    }
+
+    // Zone must be active AND belong to the provider via its region
+    let zone_row: Option<(uuid::Uuid, bool, bool)> = sqlx::query_as(
+        r#"SELECT z.id
+                , z.is_active
+                , r.is_active
+           FROM zones z
+           JOIN regions r ON r.id = z.region_id
+           WHERE z.code = $1
+             AND r.provider_id = $2"#
+    )
+    .bind(&payload.zone)
+    .bind(provider_id)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap_or(None);
+
+    // Instance type must be active and belong to the provider
+    let type_row: Option<(uuid::Uuid, bool)> = sqlx::query_as(
+        r#"SELECT it.id
+                , it.is_active
+           FROM instance_types it
+           WHERE it.code = $1
+             AND it.provider_id = $2"#
+    )
+    .bind(&payload.instance_type)
+    .bind(provider_id)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap_or(None);
+
+    // Persist resolved ids (even if inactive) to keep request traceable in instances table
+    let resolved_zone_id: Option<uuid::Uuid> = zone_row.map(|(id, _z_active, _r_active)| id);
+    let resolved_type_id: Option<uuid::Uuid> = type_row.map(|(id, _active)| id);
+    let _ = sqlx::query("UPDATE instances SET zone_id=$2, instance_type_id=$3 WHERE id=$1")
+        .bind(instance_id_uuid)
+        .bind(resolved_zone_id)
+        .bind(resolved_type_id)
+        .execute(&state.db)
+        .await;
+
+    // Validation
+    let mut validation_error: Option<(&'static str, &'static str)> = None;
+    match zone_row {
+        None => validation_error = Some(("INVALID_ZONE", "Invalid zone (not found for provider)")),
+        Some((_id, z_active, r_active)) if !z_active || !r_active => {
+            validation_error = Some(("INACTIVE_ZONE", "Zone is inactive"))
+        }
+        _ => {}
+    }
+    match type_row {
+        None => validation_error = Some(("INVALID_INSTANCE_TYPE", "Invalid instance type (not found for provider)")),
+        Some((_id, active)) if !active => validation_error = Some(("INACTIVE_INSTANCE_TYPE", "Instance type is inactive")),
+        _ => {}
+    }
+
+    if let Some((code, msg)) = validation_error {
+        let _ = sqlx::query(
+            "UPDATE instances SET status='provisioning_failed', error_code=$2, error_message=$3, failed_at=NOW()
+             WHERE id=$1"
+        )
+        .bind(instance_id_uuid)
+        .bind(code)
+        .bind(msg)
+        .execute(&state.db)
+        .await;
+
+        if let Some(id) = log_id {
+            let duration = start.elapsed().as_millis() as i32;
+            simple_logger::log_action_complete_with_metadata(
+                &state.db,
+                id,
+                "failed",
+                duration,
+                Some(msg),
+                Some(serde_json::json!({"error_code": code})),
+            )
+            .await
+            .ok();
+        }
+
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(DeploymentResponse {
+                status: "failed".to_string(),
+                instance_id,
+                message: Some(msg.to_string()),
+            }),
+        )
+            .into_response();
+    }
     
     println!("🚀 New Instance Creation Request: {}", instance_id);
 
@@ -177,6 +406,7 @@ async fn create_deployment(
     let event_payload = serde_json::json!({
         "type": "CMD:PROVISION",
         "instance_id": instance_id,
+        "provider_id": provider_id.to_string(),
         "zone": payload.zone,
         "instance_type": payload.instance_type,
         "correlation_id": log_id.map(|id| id.to_string()),
@@ -202,10 +432,15 @@ async fn create_deployment(
                         ).await.ok();
                     }
 
-                    Json(DeploymentResponse {
+                    (
+                        StatusCode::ACCEPTED,
+                        Json(DeploymentResponse {
                         status: "accepted".to_string(),
                         instance_id,
-                    })
+                        message: None,
+                        }),
+                    )
+                        .into_response()
                 }
                 Err(e) => {
                     let error_msg = format!("Failed to publish to Redis: {:?}", e);
@@ -218,13 +453,27 @@ async fn create_deployment(
                             "failed",
                             duration,
                             Some(&error_msg),
-                            Some(serde_json::json!({"redis_published": false, "event_type": "CMD:PROVISION"})),
+                            Some(serde_json::json!({"redis_published": false, "event_type": "CMD:PROVISION", "error_code": "REDIS_PUBLISH_FAILED"})),
                         ).await.ok();
                     }
-                    Json(DeploymentResponse {
-                        status: "failed".to_string(),
-                        instance_id,
-                    })
+                    let _ = sqlx::query(
+                        "UPDATE instances SET status='provisioning_failed', error_code=$2, error_message=$3, failed_at=NOW()
+                         WHERE id=$1"
+                    )
+                    .bind(instance_id_uuid)
+                    .bind("REDIS_PUBLISH_FAILED")
+                    .bind(&error_msg)
+                    .execute(&state.db)
+                    .await;
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(DeploymentResponse {
+                            status: "failed".to_string(),
+                            instance_id,
+                            message: Some("Failed to queue provisioning event".to_string()),
+                        }),
+                    )
+                        .into_response()
                 }
             }
         }
@@ -239,13 +488,27 @@ async fn create_deployment(
                     "failed",
                     duration,
                     Some(&error_msg),
-                    Some(serde_json::json!({"redis_published": false, "event_type": "CMD:PROVISION"})),
+                    Some(serde_json::json!({"redis_published": false, "event_type": "CMD:PROVISION", "error_code": "REDIS_CONNECT_FAILED"})),
                 ).await.ok();
             }
-            Json(DeploymentResponse {
-                status: "failed".to_string(),
-                instance_id,
-            })
+            let _ = sqlx::query(
+                "UPDATE instances SET status='provisioning_failed', error_code=$2, error_message=$3, failed_at=NOW()
+                 WHERE id=$1"
+            )
+            .bind(instance_id_uuid)
+            .bind("REDIS_CONNECT_FAILED")
+            .bind(&error_msg)
+            .execute(&state.db)
+            .await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(DeploymentResponse {
+                    status: "failed".to_string(),
+                    instance_id,
+                    message: Some("Failed to connect to Redis".to_string()),
+                }),
+            )
+                .into_response()
         }
     }
 }
@@ -343,10 +606,18 @@ async fn list_instances(
     let instances = sqlx::query_as::<Postgres, InstanceResponse>(
         r#"
         SELECT 
-            i.id, i.provider_id, i.zone_id, i.instance_type_id, 
+            i.id, i.provider_id, i.zone_id, i.instance_type_id,
+            i.provider_instance_id::text as provider_instance_id,
             i.status::text as status, 
             i.ip_address::text as ip_address, 
             i.created_at,
+            i.terminated_at,
+            i.last_health_check,
+            (i.last_reconciliation AT TIME ZONE 'UTC') as last_reconciliation,
+            i.health_check_failures,
+            i.deletion_reason,
+            i.error_code,
+            i.error_message,
             i.is_archived,
             i.deleted_by_provider,
             COALESCE(p.name, 'Unknown Provider') as provider_name,
@@ -372,6 +643,67 @@ async fn list_instances(
     .unwrap_or(vec![]);
 
     Json(instances)
+}
+
+#[utoipa::path(
+    get,
+    path = "/instances/{id}",
+    params(
+        ("id" = Uuid, Path, description = "Instance Database UUID")
+    ),
+    responses(
+        (status = 200, description = "Instance details", body = InstanceResponse),
+        (status = 404, description = "Instance not found")
+    )
+)]
+async fn get_instance(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<uuid::Uuid>,
+) -> impl IntoResponse {
+    let row = sqlx::query_as::<Postgres, InstanceResponse>(
+        r#"
+        SELECT 
+            i.id, i.provider_id, i.zone_id, i.instance_type_id,
+            i.provider_instance_id::text as provider_instance_id,
+            i.status::text as status, 
+            i.ip_address::text as ip_address, 
+            i.created_at,
+            i.terminated_at,
+            i.last_health_check,
+            (i.last_reconciliation AT TIME ZONE 'UTC') as last_reconciliation,
+            i.health_check_failures,
+            i.deletion_reason,
+            i.error_code,
+            i.error_message,
+            i.is_archived,
+            i.deleted_by_provider,
+            COALESCE(p.name, 'Unknown Provider') as provider_name,
+            COALESCE(z.name, 'Unknown Zone') as zone,
+            COALESCE(r.name, 'Unknown Region') as region,
+            COALESCE(it.name, 'Unknown Type') as instance_type,
+            it.vram_per_gpu_gb as gpu_vram,
+            COALESCE(it.gpu_count, it.n_gpu) as gpu_count,
+            cast(it.cost_per_hour as float8) as cost_per_hour,
+            (EXTRACT(EPOCH FROM (COALESCE(i.terminated_at, NOW()) - i.created_at)) / 3600.0) * cast(it.cost_per_hour as float8) as total_cost
+        FROM instances i
+        LEFT JOIN providers p ON i.provider_id = p.id
+        LEFT JOIN zones z ON i.zone_id = z.id
+        LEFT JOIN regions r ON z.region_id = r.id
+        LEFT JOIN instance_types it ON i.instance_type_id = it.id
+        WHERE i.id = $1
+        LIMIT 1
+        "#
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+
+    match row {
+        Some(inst) => Json(inst).into_response(),
+        None => (StatusCode::NOT_FOUND, "Instance not found").into_response(),
+    }
 }
 
 // Archive endpoint (logged version below)
@@ -405,7 +737,11 @@ async fn archive_instance(
     .ok();
 
     let result = sqlx::query(
-        "UPDATE instances SET is_archived = true WHERE id = $1 AND status = 'terminated'"
+        "UPDATE instances
+         SET is_archived = true,
+             status = 'archived'
+         WHERE id = $1
+           AND status IN ('terminated', 'archived')"
     )
     .bind(id)
     .execute(&state.db)
@@ -460,39 +796,114 @@ async fn terminate_instance(
     ).await.ok();
     
     println!("🗑️ Termination Request: {}", id);
-    
-    // 1. Immediately update status to 'terminating' in DB
+
+    // 1. Fetch instance so we can handle edge-cases safely (no provider resource, missing zone, etc.)
+    let instance_row: Option<(Option<String>, Option<uuid::Uuid>, String)> = sqlx::query_as(
+        "SELECT provider_instance_id::text, zone_id, status::text FROM instances WHERE id = $1"
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+
+    let Some((provider_instance_id_opt, zone_id_opt, status)) = instance_row else {
+        println!("⚠️  Instance {} not found for termination", id);
+        if let Some(log_id) = log_id {
+            let duration = start.elapsed().as_millis() as i32;
+            simple_logger::log_action_complete(&state.db, log_id, "failed", duration, Some("Instance not found"))
+                .await
+                .ok();
+        }
+        return (StatusCode::NOT_FOUND, "Instance not found").into_response();
+    };
+
+    if status == "terminated" {
+        if let Some(log_id) = log_id {
+            let duration = start.elapsed().as_millis() as i32;
+            simple_logger::log_action_complete_with_metadata(
+                &state.db,
+                log_id,
+                "success",
+                duration,
+                None,
+                Some(serde_json::json!({"already_terminated": true})),
+            )
+            .await
+            .ok();
+        }
+        return (StatusCode::OK, "Already terminated").into_response();
+    }
+
+    // If there is no provider resource to delete (provider_instance_id missing), we terminate immediately.
+    // This prevents "terminating forever" for failed/invalid provisioning requests.
+    if provider_instance_id_opt.as_deref().unwrap_or("").is_empty() || zone_id_opt.is_none() {
+        let _ = sqlx::query(
+            "UPDATE instances
+             SET status='terminated',
+                 terminated_at = COALESCE(terminated_at, NOW()),
+                 deletion_reason = COALESCE(deletion_reason, 'no_provider_resource')
+             WHERE id=$1 AND status != 'terminated'"
+        )
+        .bind(id)
+        .execute(&state.db)
+        .await;
+
+        if let Some(log_id) = log_id {
+            let duration = start.elapsed().as_millis() as i32;
+            simple_logger::log_action_complete_with_metadata(
+                &state.db,
+                log_id,
+                "success",
+                duration,
+                None,
+                Some(serde_json::json!({
+                    "immediate": true,
+                    "reason": "no_provider_resource",
+                    "provider_instance_id_present": provider_instance_id_opt.is_some(),
+                    "zone_id_present": zone_id_opt.is_some(),
+                })),
+            )
+            .await
+            .ok();
+        }
+
+        return (StatusCode::OK, "Terminated (no provider resource)").into_response();
+    }
+
+    // 2. Update status to 'terminating' in DB (provider resource exists, orchestrator will delete it)
     let update_result = sqlx::query(
         "UPDATE instances SET status = 'terminating' WHERE id = $1 AND status != 'terminated'"
     )
     .bind(id)
     .execute(&state.db)
     .await;
-    
+
     match update_result {
-        Ok(result) if result.rows_affected() > 0 => {
-            println!("✅ Instance {} status set to 'terminating'", id);
-        }
+        Ok(result) if result.rows_affected() > 0 => println!("✅ Instance {} status set to 'terminating'", id),
         Ok(_) => {
-            println!("⚠️  Instance {} not found or already terminated", id);
             if let Some(log_id) = log_id {
                 let duration = start.elapsed().as_millis() as i32;
-                simple_logger::log_action_complete(&state.db, log_id, "failed", duration, Some("Instance not found")).await.ok();
+                simple_logger::log_action_complete(&state.db, log_id, "failed", duration, Some("Instance not found"))
+                    .await
+                    .ok();
             }
-            return (StatusCode::NOT_FOUND, "Instance not found or already terminated").into_response();
+            return (StatusCode::NOT_FOUND, "Instance not found").into_response();
         }
         Err(e) => {
             println!("❌ Failed to update instance status: {:?}", e);
             if let Some(log_id) = log_id {
                 let duration = start.elapsed().as_millis() as i32;
                 let msg = format!("Database error: {:?}", e);
-                simple_logger::log_action_complete(&state.db, log_id, "failed", duration, Some(&msg)).await.ok();
+                simple_logger::log_action_complete(&state.db, log_id, "failed", duration, Some(&msg))
+                    .await
+                    .ok();
             }
             return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
         }
     }
 
-    // 2. Send termination event to orchestrator (async)
+    // 3. Send termination event to orchestrator (async)
     let event = serde_json::json!({
         "type": "CMD:TERMINATE",
         "instance_id": id.to_string(),
@@ -583,6 +994,8 @@ struct ActionLogResponse {
     duration_ms: Option<i32>,
     created_at: chrono::DateTime<chrono::Utc>,
     metadata: Option<serde_json::Value>, // Added metadata field
+    instance_status_before: Option<String>,
+    instance_status_after: Option<String>,
 }
 
 #[utoipa::path(
@@ -602,7 +1015,8 @@ async fn list_action_logs(
     let logs = sqlx::query_as::<Postgres, ActionLogResponse>(
         "SELECT 
             id, action_type, component, status, 
-            error_message, instance_id, duration_ms, created_at, metadata
+            error_message, instance_id, duration_ms, created_at, metadata,
+            instance_status_before, instance_status_after
          FROM action_logs
          WHERE ($1::uuid IS NULL OR instance_id = $1)
            AND ($2::text IS NULL OR component = $2)
@@ -621,4 +1035,41 @@ async fn list_action_logs(
     .unwrap_or_default();
     
     Json(logs)
+}
+
+// ============================================================================
+// ACTION TYPES (UI CATALOG)
+// ============================================================================
+
+#[derive(Serialize, sqlx::FromRow, utoipa::ToSchema)]
+struct ActionTypeResponse {
+    code: String,
+    label: String,
+    icon: String,
+    color_class: String,
+    category: Option<String>,
+    is_active: bool,
+}
+
+#[utoipa::path(
+    get,
+    path = "/action_types",
+    responses(
+        (status = 200, description = "List of action types", body = Vec<ActionTypeResponse>)
+    )
+)]
+async fn list_action_types(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<ActionTypeResponse>> {
+    let rows = sqlx::query_as::<Postgres, ActionTypeResponse>(
+        "SELECT code, label, icon, color_class, category, is_active
+         FROM action_types
+         WHERE is_active = true
+         ORDER BY category NULLS LAST, code ASC"
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    Json(rows)
 }

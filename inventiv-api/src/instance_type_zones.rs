@@ -1,14 +1,12 @@
 use axum::{
     extract::{State, Path},
-    routing::{get, put},
     Json,
     http::StatusCode,
-    response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
-use inventiv_common::{Provider, Region, Zone, InstanceType};
+use inventiv_common::InstanceType;
 use crate::AppState;
 
 // --- DTOs for Zone Associations ---
@@ -138,7 +136,10 @@ pub async fn associate_zones_to_instance_type(
 pub async fn list_instance_types_for_zone(
     State(state): State<Arc<AppState>>,
     Path(zone_id): Path<Uuid>,
+    axum::extract::Query(params): axum::extract::Query<ListInstanceTypesForZoneQuery>,
 ) -> Json<Vec<InstanceType>> {
+    let provider_filter = params.provider_id;
+
     let types = sqlx::query_as::<_, InstanceType>(
         r#"SELECT DISTINCT
             it.id, it.provider_id, it.name, it.code, 
@@ -148,15 +149,24 @@ pub async fn list_instance_types_for_zone(
             CAST(it.cost_per_hour AS DOUBLE PRECISION) as "cost_per_hour"
            FROM instance_types it
            JOIN instance_type_zones itz ON it.id = itz.instance_type_id
+           JOIN providers p ON p.id = it.provider_id
            WHERE itz.zone_id = $1
              AND it.is_active = true
              AND itz.is_available = true
+             AND p.is_active = true
+             AND ($2::uuid IS NULL OR it.provider_id = $2::uuid)
            ORDER BY it.name"#
     )
     .bind(zone_id)
+    .bind(provider_filter)
     .fetch_all(&state.db)
     .await
     .unwrap_or(vec![]);
 
     Json(types)
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct ListInstanceTypesForZoneQuery {
+    pub provider_id: Option<Uuid>,
 }

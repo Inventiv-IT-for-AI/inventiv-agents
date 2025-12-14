@@ -1,57 +1,61 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatDistanceToNow, parseISO } from "date-fns";
 import { Badge } from "@/components/ui/badge";
 import { apiUrl } from "@/lib/api";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { LucideIcon } from "lucide-react";
 import { Activity, CheckCircle, XCircle, Clock, Server, Zap, Cloud, Database, Archive, AlertTriangle, Copy, Check } from 'lucide-react';
 import { InstanceTimelineModal } from "@/components/instances/InstanceTimelineModal";
-import type { ActionLog } from "@/lib/types";
+import type { ActionLog, ActionType } from "@/lib/types";
+import { VirtualizedRemoteList, type LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
 
 export default function MonitoringPage() {
-    const [logs, setLogs] = useState<ActionLog[]>([]);
+    const [actionTypes, setActionTypes] = useState<Record<string, ActionType>>({});
     const [filterComponent, setFilterComponent] = useState<string>("all");
     const [filterStatus, setFilterStatus] = useState<string>("all");
     const [filterActionType, setFilterActionType] = useState<string>("all");
-    const [stats, setStats] = useState({ total: 0, success: 0, failed: 0, inProgress: 0 });
+    const [counts, setCounts] = useState({ total: 0, filtered: 0 });
+    const [statusCounts, setStatusCounts] = useState({ success: 0, failed: 0, inProgress: 0 });
     const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(null);
     const [timelineModalOpen, setTimelineModalOpen] = useState(false);
     const [copiedLogId, setCopiedLogId] = useState<string | null>(null);
 
-    const fetchLogs = useCallback(async () => {
+    const filtersActive = useMemo(
+        () => filterComponent !== "all" || filterStatus !== "all" || filterActionType !== "all",
+        [filterActionType, filterComponent, filterStatus]
+    );
+
+    const queryKey = useMemo(
+        () => JSON.stringify({ filterComponent, filterStatus, filterActionType }),
+        [filterComponent, filterStatus, filterActionType]
+    );
+
+    const fetchActionTypes = useCallback(async () => {
         try {
-            const params = new URLSearchParams();
-            if (filterComponent !== "all") params.append("component", filterComponent);
-            if (filterStatus !== "all") params.append("status", filterStatus);
-            if (filterActionType !== "all") params.append("action_type", filterActionType);
-            params.append("limit", "100");
-
-            // Use the Next.js proxy path like in Dashboard
-            const response = await fetch(apiUrl(`action_logs?${params.toString()}`));
-            const data = await response.json();
-            setLogs(data);
-
-            // Calculate stats
-            const total = data.length;
-            const success = data.filter((l: ActionLog) => l.status === "success").length;
-            const failed = data.filter((l: ActionLog) => l.status === "failed").length;
-            const inProgress = data.filter((l: ActionLog) => l.status === "in_progress").length;
-            setStats({ total, success, failed, inProgress });
+            const response = await fetch(apiUrl("action_types"));
+            const data: ActionType[] = await response.json();
+            const map: Record<string, ActionType> = {};
+            for (const at of data) map[at.code] = at;
+            setActionTypes(map);
         } catch (error) {
-            console.error("Failed to fetch logs:", error);
+            console.error("Failed to fetch action types:", error);
         }
-    }, [filterActionType, filterComponent, filterStatus]);
+    }, []);
+
+    const handleCountsChange = useCallback(
+        ({ total, filtered }: { total: number; filtered: number }) => {
+            setCounts({ total, filtered });
+        },
+        []
+    );
 
     useEffect(() => {
         // eslint-disable-next-line react-hooks/set-state-in-effect
-        fetchLogs();
-        const interval = setInterval(fetchLogs, 10000); // Auto-refresh every 10s
-        return () => clearInterval(interval);
-    }, [fetchLogs]);
+        fetchActionTypes();
+    }, [fetchActionTypes]);
 
     const copyLogToClipboard = async (log: ActionLog, e: React.MouseEvent) => {
         e.stopPropagation(); // Prevent row click event
@@ -90,41 +94,30 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
     };
 
     const getActionTypeBadge = (actionType: string) => {
-        const config: Record<string, { color: string; icon: LucideIcon; label: string }> = {
-            // Creation workflow
-            REQUEST_CREATE: { color: "bg-blue-500 hover:bg-blue-600 text-white", icon: Zap, label: "Request Create" },
-            EXECUTE_CREATE: { color: "bg-purple-500 hover:bg-purple-600 text-white", icon: Server, label: "Execute Create" },
-            PROVIDER_CREATE: { color: "bg-orange-500 hover:bg-orange-600 text-white", icon: Cloud, label: "Provider Create" },
-            PROVIDER_START: { color: "bg-orange-500 hover:bg-orange-600 text-white", icon: Cloud, label: "Provider Start" },
-            PROVIDER_GET_IP: { color: "bg-orange-500 hover:bg-orange-600 text-white", icon: Cloud, label: "Provider Get IP" },
-            INSTANCE_CREATED: { color: "bg-green-500 hover:bg-green-600 text-white", icon: Database, label: "Instance Created" },
-
-            // Termination workflow
-            REQUEST_TERMINATE: { color: "bg-blue-600 hover:bg-blue-700 text-white", icon: Zap, label: "Request Terminate" },
-            EXECUTE_TERMINATE: { color: "bg-purple-600 hover:bg-purple-700 text-white", icon: Server, label: "Execute Terminate" },
-            PROVIDER_TERMINATE: { color: "bg-orange-600 hover:bg-orange-700 text-white", icon: Cloud, label: "Provider Terminate" },
-            TERMINATION_PENDING: { color: "bg-yellow-500 hover:bg-yellow-600 text-white", icon: Clock, label: "Termination Pending" },
-            TERMINATOR_RETRY: { color: "bg-orange-600 hover:bg-orange-700 text-white", icon: Cloud, label: "Terminator Retry" },
-            TERMINATION_CONFIRMED: { color: "bg-red-500 hover:bg-red-600 text-white", icon: Database, label: "Termination Confirmed" },
-            INSTANCE_TERMINATED: { color: "bg-red-500 hover:bg-red-600 text-white", icon: Database, label: "Instance Terminated" },
-
-            // Archive workflow
-            ARCHIVE_INSTANCE: { color: "bg-gray-600 hover:bg-gray-700 text-white", icon: Archive, label: "Archive Instance" },
-
-            // Reconciliation & monitoring
-            PROVIDER_DELETED_DETECTED: { color: "bg-yellow-600 hover:bg-yellow-700 text-white", icon: AlertTriangle, label: "Provider Deleted" },
-
-            // Legacy (to be removed)
-            TERMINATE_INSTANCE: { color: "bg-purple-600 hover:bg-purple-700 text-white", icon: Server, label: "Terminate Instance" },
-            SCALEWAY_CREATE: { color: "bg-orange-500 hover:bg-orange-600 text-white", icon: Cloud, label: "Provider Create" },
-            SCALEWAY_DELETE: { color: "bg-orange-600 hover:bg-orange-700 text-white", icon: Cloud, label: "Provider Delete" },
+        const iconMap: Record<string, LucideIcon> = {
+            Activity,
+            AlertTriangle,
+            Archive,
+            CheckCircle,
+            Clock,
+            Cloud,
+            Database,
+            Server,
+            Zap,
+            Copy,
+            Check,
+            XCircle,
         };
 
-        const { color, icon: Icon, label } = config[actionType] || {
-            color: "bg-gray-500 hover:bg-gray-600 text-white",
-            icon: Activity as LucideIcon,
-            label: actionType.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
-        };
+        const def = actionTypes[actionType];
+        const label =
+            def?.label ||
+            actionType
+                .toLowerCase()
+                .replace(/_/g, " ")
+                .replace(/\b\w/g, (l) => l.toUpperCase());
+        const color = def?.color_class || "bg-gray-500 hover:bg-gray-600 text-white";
+        const Icon = iconMap[def?.icon || "Activity"] || (Activity as LucideIcon);
 
         return (
             <Badge className={`${color} flex items-center gap-1 px-2 py-1`}>
@@ -163,13 +156,59 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
         );
     };
 
+    const formatTransition = (before?: string | null, after?: string | null) => {
+        if (!before && !after) return "-";
+        if (before && after && before !== after) return `${before} → ${after}`;
+        return before || after || "-";
+    };
+
+    type ActionLogsSearchResponse = {
+        offset: number;
+        limit: number;
+        total_count: number;
+        filtered_count: number;
+        status_counts?: { success: number; failed: number; in_progress: number } | null;
+        rows: ActionLog[];
+    };
+
+    const loadRange = useCallback(
+        async (offset: number, limit: number): Promise<LoadRangeResult<ActionLog>> => {
+            const params = new URLSearchParams();
+            params.set("offset", String(offset));
+            params.set("limit", String(limit));
+            if (filterComponent !== "all") params.set("component", filterComponent);
+            if (filterStatus !== "all") params.set("status", filterStatus);
+            if (filterActionType !== "all") params.set("action_type", filterActionType);
+            if (offset === 0) params.set("include_stats", "true");
+
+            const res = await fetch(apiUrl(`action_logs/search?${params.toString()}`));
+            const data: ActionLogsSearchResponse = await res.json();
+
+            if (data.status_counts) {
+                setStatusCounts({
+                    success: data.status_counts.success ?? 0,
+                    failed: data.status_counts.failed ?? 0,
+                    inProgress: data.status_counts.in_progress ?? 0,
+                });
+            }
+
+            return {
+                offset: data.offset,
+                items: data.rows,
+                totalCount: data.total_count,
+                filteredCount: data.filtered_count,
+            };
+        },
+        [filterActionType, filterComponent, filterStatus]
+    );
+
     return (
         <div className="p-8 space-y-6">
             <div className="flex justify-between items-center">
                 <h1 className="text-3xl font-bold">Monitoring & Action Logs</h1>
                 <div className="flex items-center gap-2">
                     <Clock className="h-4 w-4 text-muted-foreground" />
-                    <div className="text-sm text-muted-foreground">Auto-refresh: 10s</div>
+                    <div className="text-sm text-muted-foreground">Défilement virtuel</div>
                 </div>
             </div>
 
@@ -181,7 +220,7 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
                             <Activity className="h-8 w-8 text-gray-500" />
                             <div>
                                 <p className="text-sm text-muted-foreground">Total Actions</p>
-                                <p className="text-2xl font-bold">{stats.total}</p>
+                                <p className="text-2xl font-bold">{counts.total}</p>
                             </div>
                         </div>
                     </CardContent>
@@ -193,7 +232,7 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
                             <CheckCircle className="h-8 w-8 text-green-500" />
                             <div>
                                 <p className="text-sm text-muted-foreground">Success</p>
-                                <p className="text-2xl font-bold">{stats.success}</p>
+                                <p className="text-2xl font-bold">{statusCounts.success}</p>
                             </div>
                         </div>
                     </CardContent>
@@ -205,7 +244,7 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
                             <XCircle className="h-8 w-8 text-red-500" />
                             <div>
                                 <p className="text-sm text-muted-foreground">Failed</p>
-                                <p className="text-2xl font-bold">{stats.failed}</p>
+                                <p className="text-2xl font-bold">{statusCounts.failed}</p>
                             </div>
                         </div>
                     </CardContent>
@@ -217,7 +256,7 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
                             <Clock className="h-8 w-8 text-blue-500" />
                             <div>
                                 <p className="text-sm text-muted-foreground">In Progress</p>
-                                <p className="text-2xl font-bold">{stats.inProgress}</p>
+                                <p className="text-2xl font-bold">{statusCounts.inProgress}</p>
                             </div>
                         </div>
                     </CardContent>
@@ -290,97 +329,119 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
 
             {/* Action Logs Table */}
             <Card>
-                <CardHeader>
-                    <CardTitle>Action Logs ({logs.length})</CardTitle>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                    <CardTitle>Action Logs</CardTitle>
+                    <div className="text-sm text-muted-foreground font-mono">
+                        {filtersActive
+                            ? `Filtrés ${counts.filtered} / Total ${counts.total} lignes`
+                            : `Total ${counts.total} lignes`}
+                    </div>
                 </CardHeader>
                 <CardContent>
-                    <div className="overflow-x-auto">
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead>Time</TableHead>
-                                    <TableHead>Action Type</TableHead>
-                                    <TableHead>Component</TableHead>
-                                    <TableHead>Status</TableHead>
-                                    <TableHead>Duration</TableHead>
-                                    <TableHead>Instance ID</TableHead>
-                                    <TableHead>Metadata</TableHead>
-                                    <TableHead>Error</TableHead>
-                                    <TableHead className="text-right">Actions</TableHead>
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {logs.length === 0 ? (
-                                    <TableRow>
-                                        <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
-                                            No logs found
-                                        </TableCell>
-                                    </TableRow>
-                                ) : (
-                                    logs.map((log) => (
-                                        <TableRow
-                                            key={log.id}
-                                            className="hover:bg-muted/50 cursor-pointer transition-colors"
-                                            onClick={() => {
-                                                if (log.instance_id) {
-                                                    setSelectedInstanceId(log.instance_id);
-                                                    setTimelineModalOpen(true);
-                                                }
-                                            }}
-                                        >
-                                            <TableCell className="whitespace-nowrap">
-                                                {formatDistanceToNow(parseISO(log.created_at), { addSuffix: true })}
-                                            </TableCell>
-                                            <TableCell>
-                                                {getActionTypeBadge(log.action_type)}
-                                            </TableCell>
-                                            <TableCell>
-                                                <span className={`font-semibold ${getComponentColor(log.component)}`}>
-                                                    {log.component}
-                                                </span>
-                                            </TableCell>
-                                            <TableCell>{getStatusBadge(log.status)}</TableCell>
-                                            <TableCell className="font-mono text-sm">
-                                                {formatDuration(log.duration_ms)}
-                                            </TableCell>
-                                            <TableCell className="font-mono text-xs">
-                                                {log.instance_id ? (
-                                                    <span className="bg-muted px-2 py-1 rounded">
-                                                        {log.instance_id.substring(0, 8)}...
-                                                    </span>
-                                                ) : "-"}
-                                            </TableCell>
-                                            <TableCell className="max-w-xs truncate">
-                                                {formatMetadata(log.metadata)}
-                                            </TableCell>
-                                            <TableCell className="text-red-600 text-sm max-w-xs truncate">
-                                                {log.error_message || "-"}
-                                            </TableCell>
-                                            <TableCell className="text-right">
-                                                <button
-                                                    onClick={(e) => copyLogToClipboard(log, e)}
-                                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-all hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-1"
-                                                    title="Copy log details"
-                                                >
-                                                    {copiedLogId === log.id ? (
-                                                        <>
-                                                            <Check className="h-3.5 w-3.5 text-green-600" />
-                                                            <span className="text-green-600">Copied!</span>
-                                                        </>
+                    {(() => {
+                        const cols =
+                            "grid-cols-[72px_140px_200px_130px_120px_160px_110px_160px_320px_280px_120px]";
+                        const header = (
+                            <div
+                                className={`grid ${cols} gap-2 px-3 py-2 text-xs font-semibold text-muted-foreground border-b bg-background`}
+                            >
+                                <div>#</div>
+                                <div>Temps</div>
+                                <div>Action</div>
+                                <div>Composant</div>
+                                <div>Statut</div>
+                                <div>Transition</div>
+                                <div>Durée</div>
+                                <div>Instance</div>
+                                <div>Métadonnées</div>
+                                <div>Erreur</div>
+                                <div className="text-right">Actions</div>
+                            </div>
+                        );
+
+                        return (
+                            <div className="border rounded-md overflow-hidden bg-background">
+                                <VirtualizedRemoteList<ActionLog>
+                                    queryKey={queryKey}
+                                    height={560}
+                                    header={header}
+                                    headerHeight={40}
+                                    contentWidth={1920}
+                                    rowHeight={56}
+                                    className="w-full"
+                                    loadRange={loadRange}
+                                    onCountsChange={handleCountsChange}
+                                    renderRow={({ index, item, style, isLoaded }) => {
+                                        const rowNumber = index + 1;
+                                        const onRowClick = () => {
+                                            if (item?.instance_id) {
+                                                setSelectedInstanceId(item.instance_id);
+                                                setTimelineModalOpen(true);
+                                            }
+                                        };
+
+                                        return (
+                                            <div
+                                                style={style}
+                                                className={`grid ${cols} gap-2 px-3 items-center border-b ${
+                                                    index % 2 === 0 ? "bg-background" : "bg-muted/10"
+                                                } ${item?.instance_id ? "cursor-pointer hover:bg-muted/30" : ""}`}
+                                                onClick={onRowClick}
+                                            >
+                                                <div className="font-mono text-xs text-muted-foreground">{rowNumber}</div>
+                                                <div className="whitespace-nowrap text-sm">
+                                                    {isLoaded && item
+                                                        ? formatDistanceToNow(parseISO(item.created_at), { addSuffix: true })
+                                                        : "…"}
+                                                </div>
+                                                <div>{isLoaded && item ? getActionTypeBadge(item.action_type) : <Badge variant="outline">…</Badge>}</div>
+                                                <div className={`font-semibold ${isLoaded && item ? getComponentColor(item.component) : ""}`}>
+                                                    {isLoaded && item ? item.component : "…"}
+                                                </div>
+                                                <div>{isLoaded && item ? getStatusBadge(item.status) : <Badge variant="outline">…</Badge>}</div>
+                                                <div className="font-mono text-xs text-muted-foreground whitespace-nowrap">
+                                                    {isLoaded && item ? formatTransition(item.instance_status_before, item.instance_status_after) : "…"}
+                                                </div>
+                                                <div className="font-mono text-sm">{isLoaded && item ? formatDuration(item.duration_ms) : "…"}</div>
+                                                <div className="font-mono text-xs">
+                                                    {isLoaded && item && item.instance_id ? (
+                                                        <span className="bg-muted px-2 py-1 rounded">
+                                                            {item.instance_id.substring(0, 8)}...
+                                                        </span>
                                                     ) : (
-                                                        <>
-                                                            <Copy className="h-3.5 w-3.5" />
-                                                            <span>Copy</span>
-                                                        </>
+                                                        "-"
                                                     )}
-                                                </button>
-                                            </TableCell>
-                                        </TableRow>
-                                    ))
-                                )}
-                            </TableBody>
-                        </Table>
-                    </div>
+                                                </div>
+                                                <div className="truncate">{isLoaded && item ? formatMetadata(item.metadata) : null}</div>
+                                                <div className="truncate text-red-600 text-sm">{isLoaded && item ? item.error_message || "-" : "…"}</div>
+                                                <div className="text-right">
+                                                    {isLoaded && item ? (
+                                                        <button
+                                                            onClick={(e) => copyLogToClipboard(item, e)}
+                                                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-all hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-1"
+                                                            title="Copier les détails"
+                                                        >
+                                                            {copiedLogId === item.id ? (
+                                                                <>
+                                                                    <Check className="h-3.5 w-3.5 text-green-600" />
+                                                                    <span className="text-green-600">Copié</span>
+                                                                </>
+                                                            ) : (
+                                                                <>
+                                                                    <Copy className="h-3.5 w-3.5" />
+                                                                    <span>Copier</span>
+                                                                </>
+                                                            )}
+                                                        </button>
+                                                    ) : null}
+                                                </div>
+                                            </div>
+                                        );
+                                    }}
+                                />
+                            </div>
+                        );
+                    })()}
                 </CardContent>
             </Card>
 

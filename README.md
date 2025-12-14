@@ -79,13 +79,19 @@ make clean       # Nettoyer les artefacts
 ## 🗄️ Base de données: migrations & seeds
 
 - **Migrations SQLx exécutées au boot**: `sqlx-migrations/` (utilisées par `sqlx::migrate!` dans `inventiv-api` et `inventiv-orchestrator`).
-- **Seeds / données initiales**: `migrations/seeds*.sql` (non exécutés automatiquement).
+- **Seeds / données initiales (dev)**: `migrations/seeds*.sql` (non exécutés automatiquement).
 
 Exemple (dev local):
 
 ```bash
 psql "postgresql://postgres:password@localhost:5432/llminfra" -f migrations/seeds_scaleway.sql
 ```
+
+## 📈 Monitoring (Action Logs)
+
+- Endpoint simple: `GET /action_logs`
+- Endpoint “UI virtualisée” (pagination + stats): `GET /action_logs/search`
+- Catalogue des types d’actions (badge/couleur/icon): `GET /action_types`
 
 ## 📦 Versioning
 
