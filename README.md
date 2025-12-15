@@ -18,6 +18,7 @@ Le système est composé de 4 micro-services principaux structurés dans un Carg
 
 > Note: le **Router / Data Plane** (OpenAI-compatible) est **prévu** mais **n'est pas présent** dans le repo à ce stade.
 > La priorité immédiate (phase `0.2.1`) est **Worker Ready** (vLLM + agent, readiness fiable + heartbeats).
+> La version `0.2.2` consolide le flow (bootstrap token par worker + doc + harness local).
 
 ## 🚀 Démarrage Rapide
 
@@ -80,13 +81,35 @@ make clean       # Nettoyer les artefacts
 ## 🗄️ Base de données: migrations & seeds
 
 - **Migrations SQLx exécutées au boot**: `sqlx-migrations/` (utilisées par `sqlx::migrate!` dans `inventiv-api` et `inventiv-orchestrator`).
-- **Seed catalogue (dev)**: `seeds/catalog_seeds.sql` (non exécuté automatiquement).
+- **Seed catalogue (dev)**: `seeds/catalog_seeds.sql`.
 
-Exemple (dev local):
+### Seeds automatiques (dev)
+
+En local, on peut activer le seeding automatique côté `inventiv-api` via:
+- `AUTO_SEED_CATALOG=1`
+- `SEED_CATALOG_PATH=/app/seeds/catalog_seeds.sql` (ou `seeds/catalog_seeds.sql`)
+
+> Le seed doit être **idempotent** (via `ON CONFLICT`) car on le veut re-jouable.
+
+Exemple manuel (dev local):
 
 ```bash
 psql "postgresql://postgres:password@localhost:5432/llminfra" -f seeds/catalog_seeds.sql
 ```
+
+## 🧩 Worker ready (local, sans GPU)
+
+Un harness local est disponible pour valider “Worker ready” sans GPU:
+- `mock-vllm` (sert `GET /v1/models`)
+- `worker-agent` (agent Python qui expose `/healthz`, `/readyz`, `/metrics` et parle au control-plane)
+
+```bash
+bash scripts/dev_worker_local.sh
+```
+
+Notes:
+- Par défaut le script reset les volumes (migrations déterministes). Pour éviter: `RESET_VOLUMES=0 bash scripts/dev_worker_local.sh`.
+- Le worker contacte le control-plane via l’API (`CONTROL_PLANE_URL=http://api:8003`) qui proxy `/internal/worker/*` vers l’orchestrator.
 
 ## 🧱 Déploiement “simple” multi-machines (Docker Compose)
 
@@ -98,6 +121,16 @@ Objectif: rester compatible avec des scénarios allant de **0 à 10 machines GPU
   - `inventiv-worker` (agent + vLLM) + cache modèles local
 
 Comme Docker Compose ne gère pas nativement un réseau multi-host, on privilégie un réseau privé type **Tailscale/WireGuard** entre la machine control-plane et les machines GPU.
+
+## 🔐 Worker auth (bootstrap + token par instance)
+
+Le Worker s’authentifie auprès du control-plane avec un **token par instance**:
+- Au premier `register` (bootstrap), si aucun token n’existe encore pour l’`instance_id`, l’orchestrator peut **générer** un token et le renvoyer au worker.
+- Le token est stocké **hashé** en DB (table `worker_auth_tokens`), et utilisé ensuite sur `register/heartbeat` via `Authorization: Bearer ...`.
+
+Important en staging/prod:
+- le worker passe par l’API domain (gateway) → `/internal/worker/*` est proxy vers l’orchestrator
+- la gateway doit forward `X-Forwarded-For` (ou équivalent) de manière fiable pour les checks d’IP au bootstrap.
 
 ## 📈 Autoscaling (up/down)
 

@@ -4,21 +4,15 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { StatsCard } from "@/components/shared/StatsCard";
 import { useInstances } from "@/hooks/useInstances";
 import { useFinopsCosts } from "@/hooks/useFinops";
-import { useCatalog } from "@/hooks/useCatalog";
 import { Server, Activity, DollarSign, Zap, TrendingUp, Clock } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { displayOrDash, formatEur } from "@/lib/utils";
-import { useEffect, useMemo } from "react";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useMemo } from "react";
 
 export default function DashboardPage() {
   const { instances } = useInstances();
   const finops = useFinopsCosts();
-  const catalog = useCatalog();
-
-  useEffect(() => {
-    catalog.fetchCatalog();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // Calculate statistics
   const stats = {
@@ -35,24 +29,15 @@ export default function DashboardPage() {
         : 0,
   };
 
-  const forecastTotal = finops.current?.forecast?.find((r) => r.provider_id === null) ?? null;
+  const allocationTotal = finops.summary?.allocation?.total ?? null;
+  const cumulativeTotal = finops.summary?.cumulative_total?.cumulative_amount_eur ?? null;
+  const spend1m = finops.summary?.actual_spend_windows?.find((w) => w.window === "minute")?.actual_spend_eur ?? null;
 
-  const providersById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const p of catalog.providers) map.set(p.id, p.name);
-    return map;
-  }, [catalog.providers]);
-
-  const forecastProviders = useMemo(() => {
-    const rows = finops.current?.forecast ?? [];
-    return rows
-      .filter((r) => r.provider_id !== null)
-      .sort((a, b) => (b.burn_rate_eur_per_hour ?? 0) - (a.burn_rate_eur_per_hour ?? 0));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [finops.current]);
-
-  const latestActualTotal = finops.actualTotalSeries?.[0]?.amount_eur ?? null;
-  const cumulativeTotal = finops.current?.cumulative_total?.cumulative_amount_eur ?? null;
+  const spendWindows = useMemo(() => {
+    const rows = finops.summary?.actual_spend_windows ?? [];
+    const order = ["minute", "hour", "day", "month_30d", "year_365d"];
+    return [...rows].sort((a, b) => order.indexOf(a.window) - order.indexOf(b.window));
+  }, [finops.summary]);
 
   // Recent instances (last 5)
   const recentInstances = [...instances]
@@ -90,8 +75,8 @@ export default function DashboardPage() {
         />
         <StatsCard
           title="Burn Rate"
-          value={forecastTotal ? `${formatEur(forecastTotal.burn_rate_eur_per_hour, { minFrac: 4, maxFrac: 4 })}/h` : "-"}
-          description="Current allocation (forecast)"
+          value={allocationTotal ? `${formatEur(allocationTotal.burn_rate_eur_per_hour, { minFrac: 4, maxFrac: 4 })}/h` : "-"}
+          description="Current allocation (instances pricing)"
           icon={DollarSign}
           valueClassName="text-blue-600"
           iconClassName="text-blue-600"
@@ -177,9 +162,9 @@ export default function DashboardPage() {
                 </span>
               </div>
               <div className="flex items-center justify-between p-3 border rounded-lg">
-                <span className="text-sm font-medium">Last Minute Cost</span>
+                <span className="text-sm font-medium">Actual Spend (last minute)</span>
                 <span className="text-2xl font-bold text-purple-600">
-                  {formatEur(latestActualTotal, { minFrac: 4, maxFrac: 4 })}
+                  {formatEur(spend1m, { minFrac: 6, maxFrac: 6 })}
                 </span>
               </div>
             </div>
@@ -187,81 +172,52 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      {/* FinOps breakdown */}
+      {/* FinOps */}
       <Card>
         <CardHeader>
-          <CardTitle>FinOps – Costs & Forecast</CardTitle>
+          <CardTitle>FinOps – Allocation & Spend</CardTitle>
         </CardHeader>
         <CardContent>
-          {finops.loading && !finops.current ? (
+          {finops.loading && !finops.summary ? (
             <p className="text-sm text-muted-foreground">Loading FinOps data…</p>
           ) : finops.error ? (
             <p className="text-sm text-red-600">{finops.error}</p>
           ) : (
             <div className="space-y-3">
+              {/* Allocation totals (current) */}
               <div className="grid gap-3 md:grid-cols-4">
                 <div className="p-3 border rounded-lg">
-                  <div className="text-xs text-muted-foreground">Forecast / day</div>
+                  <div className="text-xs text-muted-foreground">Allocation / minute</div>
                   <div className="text-xl font-bold">
-                    {forecastTotal ? formatEur(forecastTotal.forecast_eur_per_day, { minFrac: 4, maxFrac: 4 }) : "-"}
+                    {allocationTotal ? formatEur(allocationTotal.forecast_eur_per_minute, { minFrac: 6, maxFrac: 6 }) : "-"}
                   </div>
                 </div>
                 <div className="p-3 border rounded-lg">
-                  <div className="text-xs text-muted-foreground">Forecast / month (30d)</div>
+                  <div className="text-xs text-muted-foreground">Allocation / hour</div>
                   <div className="text-xl font-bold">
-                    {forecastTotal ? formatEur(forecastTotal.forecast_eur_per_month_30d, { minFrac: 4, maxFrac: 4 }) : "-"}
+                    {allocationTotal ? formatEur(allocationTotal.forecast_eur_per_hour, { minFrac: 4, maxFrac: 4 }) : "-"}
                   </div>
                 </div>
                 <div className="p-3 border rounded-lg">
-                  <div className="text-xs text-muted-foreground">Forecast / minute</div>
+                  <div className="text-xs text-muted-foreground">Allocation / day</div>
                   <div className="text-xl font-bold">
-                    {forecastTotal ? formatEur(forecastTotal.forecast_eur_per_minute, { minFrac: 6, maxFrac: 6 }) : "-"}
+                    {allocationTotal ? formatEur(allocationTotal.forecast_eur_per_day, { minFrac: 4, maxFrac: 4 }) : "-"}
                   </div>
                 </div>
                 <div className="p-3 border rounded-lg">
-                  <div className="text-xs text-muted-foreground">Forecast / year (365d)</div>
+                  <div className="text-xs text-muted-foreground">Allocation / 30d</div>
                   <div className="text-xl font-bold">
-                    {forecastTotal ? formatEur(forecastTotal.forecast_eur_per_year_365d, { minFrac: 2, maxFrac: 2 }) : "-"}
+                    {allocationTotal ? formatEur(allocationTotal.forecast_eur_per_month_30d, { minFrac: 2, maxFrac: 2 }) : "-"}
                   </div>
                 </div>
               </div>
 
-              {forecastProviders.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No provider forecast yet.</p>
-              ) : (
-                <div className="space-y-2">
-                  {forecastProviders.map((r) => (
-                    <div
-                      key={r.provider_id as string}
-                      className="flex items-center justify-between p-3 border rounded-lg"
-                    >
-                      <div>
-                        <div className="font-medium text-sm">
-                          {providersById.get(r.provider_id as string) ??
-                            (r.provider_id as string)}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          Burn rate: {formatEur(r.burn_rate_eur_per_hour, { minFrac: 4, maxFrac: 4 })}/h
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-sm font-semibold">
-                          {formatEur(r.forecast_eur_per_month_30d, { minFrac: 4, maxFrac: 4 })}/mo
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          {formatEur(r.forecast_eur_per_day, { minFrac: 4, maxFrac: 4 })}/day
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
+              {/* Allocation breakdown (current) */}
               <div className="pt-2">
-                <div className="text-sm font-medium mb-2">Current costs (last full minute)</div>
-                {finops.dashboardCurrent?.by_provider_minute?.length ? (
+                <div className="text-sm font-medium mb-2">Allocation breakdown (current burn rate)</div>
+                {finops.summary?.allocation?.by_provider?.length ? (
                   <div className="space-y-2">
-                    {finops.dashboardCurrent.by_provider_minute.slice(0, 6).map((p) => (
+                    {finops.summary.allocation.by_provider.slice(0, 6).map((p) => (
                       <div key={p.provider_id} className="flex items-center justify-between p-3 border rounded-lg">
                         <div className="text-sm">
                           {p.provider_name}{" "}
@@ -270,14 +226,147 @@ export default function DashboardPage() {
                           </span>
                         </div>
                         <div className="font-semibold">
-                          {formatEur(p.amount_eur, { minFrac: 6, maxFrac: 6 })}/min
+                          {formatEur(p.burn_rate_eur_per_hour, { minFrac: 4, maxFrac: 4 })}/h
                         </div>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <p className="text-sm text-muted-foreground">No cost data yet.</p>
+                  <p className="text-sm text-muted-foreground">No allocation data yet.</p>
                 )}
+              </div>
+
+              <div className="pt-2">
+                <div className="text-sm font-medium mb-2">Actual spend (windowed)</div>
+                {spendWindows.length ? (
+                  <div className="grid gap-3 md:grid-cols-5">
+                    {spendWindows.map((w) => (
+                      <div key={w.window} className="p-3 border rounded-lg">
+                        <div className="text-xs text-muted-foreground">
+                          {w.window === "minute"
+                            ? "1m"
+                            : w.window === "hour"
+                            ? "1h"
+                            : w.window === "day"
+                            ? "1d"
+                            : w.window === "month_30d"
+                            ? "30d"
+                            : "365d"}
+                        </div>
+                        <div className="text-lg font-bold">
+                          {formatEur(w.actual_spend_eur, { minFrac: 4, maxFrac: 4 })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No spend data yet.</p>
+                )}
+              </div>
+
+              {/* Spend breakdown (selected window) */}
+              <div className="pt-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-sm font-medium">Spend breakdown</div>
+                  <Tabs value={finops.window} onValueChange={(v) => finops.setWindow(v)}>
+                    <TabsList>
+                      <TabsTrigger value="minute">1m</TabsTrigger>
+                      <TabsTrigger value="hour">1h</TabsTrigger>
+                      <TabsTrigger value="day">1d</TabsTrigger>
+                      <TabsTrigger value="month_30d">30d</TabsTrigger>
+                      <TabsTrigger value="year_365d">365d</TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="p-3 border rounded-lg">
+                    <div className="text-xs text-muted-foreground">Total spend ({finops.breakdown?.window ?? finops.window})</div>
+                    <div className="text-xl font-bold">
+                      {formatEur(finops.breakdown?.total_eur ?? null, { minFrac: 4, maxFrac: 4 })}
+                    </div>
+                  </div>
+                  <div className="p-3 border rounded-lg">
+                    <div className="text-xs text-muted-foreground">Cumulative (all time)</div>
+                    <div className="text-xl font-bold">{formatEur(cumulativeTotal, { minFrac: 4, maxFrac: 4 })}</div>
+                  </div>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">By provider</div>
+                    {finops.breakdown?.by_provider_eur?.length ? (
+                      finops.breakdown.by_provider_eur.slice(0, 6).map((p) => (
+                        <div key={p.provider_id} className="flex items-center justify-between p-3 border rounded-lg">
+                          <div className="text-sm">
+                            {p.provider_name}{" "}
+                            <span className="text-xs text-muted-foreground">
+                              ({p.provider_code ?? p.provider_id.slice(0, 8)})
+                            </span>
+                          </div>
+                          <div className="font-semibold">{formatEur(p.amount_eur, { minFrac: 4, maxFrac: 4 })}</div>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-muted-foreground">No data.</p>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">By instance (top)</div>
+                    {finops.breakdown?.by_instance_eur?.length ? (
+                      finops.breakdown.by_instance_eur.slice(0, 6).map((r) => (
+                        <div key={r.instance_id} className="flex items-center justify-between p-3 border rounded-lg">
+                          <div className="text-sm">
+                            {displayOrDash(r.instance_type_name)}{" "}
+                            <span className="text-xs text-muted-foreground">
+                              {displayOrDash(r.zone_name)} • {r.provider_name}
+                            </span>
+                          </div>
+                          <div className="font-semibold">{formatEur(r.amount_eur, { minFrac: 4, maxFrac: 4 })}</div>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-muted-foreground">No data.</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">By region</div>
+                    {finops.breakdown?.by_region_eur?.length ? (
+                      finops.breakdown.by_region_eur.slice(0, 6).map((r) => (
+                        <div key={`${r.provider_id}-${r.region_id}`} className="flex items-center justify-between p-3 border rounded-lg">
+                          <div className="text-sm">
+                            {displayOrDash(r.region_name)}{" "}
+                            <span className="text-xs text-muted-foreground">{r.provider_code ?? r.provider_id.slice(0, 8)}</span>
+                          </div>
+                          <div className="font-semibold">{formatEur(r.amount_eur, { minFrac: 4, maxFrac: 4 })}</div>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-muted-foreground">No data.</p>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">By instance type</div>
+                    {finops.breakdown?.by_instance_type_eur?.length ? (
+                      finops.breakdown.by_instance_type_eur.slice(0, 6).map((t) => (
+                        <div key={`${t.provider_id}-${t.instance_type_id}`} className="flex items-center justify-between p-3 border rounded-lg">
+                          <div className="text-sm">
+                            {displayOrDash(t.instance_type_name)}{" "}
+                            <span className="text-xs text-muted-foreground">{t.provider_code ?? t.provider_id.slice(0, 8)}</span>
+                          </div>
+                          <div className="font-semibold">{formatEur(t.amount_eur, { minFrac: 4, maxFrac: 4 })}</div>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-muted-foreground">No data.</p>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           )}

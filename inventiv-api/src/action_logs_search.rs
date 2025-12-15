@@ -122,19 +122,26 @@ pub async fn search_action_logs(
     // Rows
     let mut rows_qb: QueryBuilder<Postgres> = QueryBuilder::new(
         r#"SELECT
-            id, action_type,
-            CASE WHEN component = 'backend' THEN 'api' ELSE component END as component,
-            status,
+            al.id,
+            al.action_type,
+            CASE WHEN al.component = 'backend' THEN 'api' ELSE al.component END as component,
+            al.status,
             p.name as provider_name,
             it.name as instance_type,
-            error_code, error_message, instance_id, duration_ms,
-            created_at, completed_at, metadata,
-            instance_status_before, instance_status_after
-           FROM action_logs al
-           LEFT JOIN instances i ON i.id = al.instance_id
-           LEFT JOIN providers p ON p.id = i.provider_id
-           LEFT JOIN instance_types it ON it.id = i.instance_type_id
-           WHERE 1=1"#,
+            al.error_code,
+            al.error_message,
+            al.instance_id,
+            al.duration_ms,
+            al.created_at,
+            al.completed_at,
+            al.metadata,
+            al.instance_status_before,
+            al.instance_status_after
+          FROM action_logs al
+          LEFT JOIN instances i ON i.id = al.instance_id
+          LEFT JOIN providers p ON p.id = i.provider_id
+          LEFT JOIN instance_types it ON it.id = i.instance_type_id
+          WHERE 1=1"#,
     );
     push_filters(&mut rows_qb, &params);
     rows_qb.push(" ORDER BY created_at DESC, id DESC");
@@ -143,11 +150,13 @@ pub async fn search_action_logs(
     rows_qb.push(" OFFSET ");
     rows_qb.push_bind(offset);
 
-    let rows: Vec<ActionLogRow> = rows_qb
-        .build_query_as()
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default();
+    let rows: Vec<ActionLogRow> = match rows_qb.build_query_as().fetch_all(&state.db).await {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("⚠️  action_logs/search rows query failed: {}", e);
+            Vec::new()
+        }
+    };
 
     // Optional stats for the filtered set
     let status_counts = if include_stats {

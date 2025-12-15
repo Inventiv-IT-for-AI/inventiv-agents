@@ -31,7 +31,9 @@ REMOTE_DEPLOY_DIR="${REMOTE_DIR}/deploy"
 REMOTE_ENV_FILE="${REMOTE_DEPLOY_DIR}/.env"
 
 SSH_ID_FILE="${SSH_IDENTITY_FILE:-}"
-SSH_EXTRA_OPTS="${SSH_EXTRA_OPTS:-}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+KNOWN_HOSTS_FILE="${SSH_KNOWN_HOSTS_FILE:-${REPO_ROOT}/deploy/known_hosts}"
+SSH_EXTRA_OPTS="${SSH_EXTRA_OPTS:-} -o UserKnownHostsFile=${KNOWN_HOSTS_FILE} -o StrictHostKeyChecking=accept-new"
 SSH_ID_ARGS=()
 TMP_KEY_FILE=""
 cleanup_tmp_key() {
@@ -93,16 +95,15 @@ ensure_registry_login() {
       exit 0; \
     fi; \
     if [[ -z \"\$REGISTRY_USERNAME\" ]]; then \
-      echo 'REGISTRY_USERNAME is not set in env file (needed for ghcr login)'; exit 2; \
+      echo '[warn] REGISTRY_USERNAME is not set; skipping ghcr login'; exit 0; \
     fi; \
     if [[ -z \"\$SECRETS_DIR\" ]]; then \
-      echo 'SECRETS_DIR is not set in env file'; exit 2; \
+      echo '[warn] SECRETS_DIR is not set; skipping ghcr login'; exit 0; \
     fi; \
     TOKEN_FILE=\"\$SECRETS_DIR/ghcr_token\"; \
     if [[ ! -f \"\$TOKEN_FILE\" ]]; then \
-      echo \"Missing GHCR token file: \$TOKEN_FILE\"; \
-      echo 'Create it on the VM with a GitHub PAT (read:packages).'; \
-      exit 2; \
+      echo \"[warn] Missing GHCR token file: \$TOKEN_FILE (skipping login; pull will fail if registry is private)\"; \
+      exit 0; \
     fi; \
     # Login is idempotent; it updates ~/.docker/config.json
     cat \"\$TOKEN_FILE\" | docker login ghcr.io -u \"\$REGISTRY_USERNAME\" --password-stdin >/dev/null; \

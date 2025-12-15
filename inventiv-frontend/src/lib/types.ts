@@ -185,3 +185,102 @@ export type FinopsCostsDashboardResponse = {
     by_instance_type_minute: FinopsInstanceTypeCostRow[];
     by_instance_minute: FinopsInstanceCostRow[];
 };
+
+// -----------------------------
+// FinOps Dashboard v2 (FinOps chantier)
+// -----------------------------
+
+export type FinopsWindowSpendRow = {
+    window: string; // "minute" | "hour" | "day" | "month_30d" | "year_365d"
+    minutes: number;
+    actual_spend_eur: number;
+};
+
+export type FinopsForecastTotalsRow = {
+    burn_rate_eur_per_hour: number;
+    forecast_eur_per_minute: number;
+    forecast_eur_per_hour: number;
+    forecast_eur_per_day: number;
+    forecast_eur_per_month_30d: number;
+    forecast_eur_per_year_365d: number;
+};
+
+export type FinopsAllocationProviderRow = {
+    provider_id: string;
+    provider_code: string | null;
+    provider_name: string;
+    burn_rate_eur_per_hour: number;
+    forecast_eur_per_minute: number;
+    forecast_eur_per_hour: number;
+    forecast_eur_per_day: number;
+    forecast_eur_per_month_30d: number;
+};
+
+export type FinopsAllocationRegionRow = {
+    provider_id: string;
+    provider_code: string | null;
+    region_id: string | null;
+    region_code: string | null;
+    region_name: string | null;
+    burn_rate_eur_per_hour: number;
+    forecast_eur_per_minute: number;
+    forecast_eur_per_hour: number;
+    forecast_eur_per_day: number;
+    forecast_eur_per_month_30d: number;
+};
+
+export type FinopsAllocationInstanceTypeRow = {
+    provider_id: string;
+    provider_code: string | null;
+    instance_type_id: string | null;
+    instance_type_code: string | null;
+    instance_type_name: string | null;
+    burn_rate_eur_per_hour: number;
+    forecast_eur_per_minute: number;
+    forecast_eur_per_hour: number;
+    forecast_eur_per_day: number;
+    forecast_eur_per_month_30d: number;
+};
+
+export type FinopsAllocationInstanceRow = {
+    instance_id: string;
+    provider_id: string;
+    provider_code: string | null;
+    provider_name: string;
+    region_name: string | null;
+    zone_name: string | null;
+    instance_type_name: string | null;
+    burn_rate_eur_per_hour: number;
+    forecast_eur_per_minute: number;
+    forecast_eur_per_hour: number;
+    forecast_eur_per_day: number;
+    forecast_eur_per_month_30d: number;
+};
+
+export type FinopsAllocationDashboardResponse = {
+    at_minute: string;
+    total: FinopsForecastTotalsRow;
+    by_provider: FinopsAllocationProviderRow[];
+    by_region: FinopsAllocationRegionRow[];
+    by_instance_type: FinopsAllocationInstanceTypeRow[];
+    by_instance: FinopsAllocationInstanceRow[];
+};
+
+export type FinopsCostsDashboardSummaryResponse = {
+    latest_bucket_minute: string | null;
+    allocation: FinopsAllocationDashboardResponse;
+    actual_spend_windows: FinopsWindowSpendRow[];
+    cumulative_total: FinopsCumulativeMinuteRow | null;
+};
+
+export type FinopsCostsDashboardWindowResponse = {
+    window: string;
+    window_minutes: number;
+    bucket_end_minute: string | null;
+    bucket_start_minute: string | null;
+    total_eur: number;
+    by_provider_eur: FinopsProviderCostRow[];
+    by_region_eur: FinopsRegionCostRow[];
+    by_instance_type_eur: FinopsInstanceTypeCostRow[];
+    by_instance_eur: FinopsInstanceCostRow[];
+};

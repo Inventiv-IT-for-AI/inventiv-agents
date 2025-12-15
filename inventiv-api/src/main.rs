@@ -107,6 +107,8 @@ async fn main() {
         // FINOPS (dashboard)
         .route("/finops/cost/current", get(finops::get_cost_current))
         .route("/finops/dashboard/costs/current", get(finops::get_costs_dashboard_current))
+        .route("/finops/dashboard/costs/summary", get(finops::get_costs_dashboard_summary))
+        .route("/finops/dashboard/costs/window", get(finops::get_costs_dashboard_window))
         .route("/finops/cost/forecast/minute", get(finops::get_cost_forecast_series))
         .route("/finops/cost/actual/minute", get(finops::get_cost_actual_series))
         .route("/finops/cost/cumulative/minute", get(finops::get_cost_cumulative_series))
@@ -194,16 +196,9 @@ async fn maybe_seed_catalog(pool: &Pool<Postgres>) {
     if !enabled {
         return;
     }
-
-    let providers_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM providers")
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
-
-    if providers_count > 0 {
-        println!("🌱 AUTO_SEED_CATALOG enabled but providers already exist (count={}), skipping", providers_count);
-        return;
-    }
+    // Important: do NOT skip seeding based on one table (e.g. providers).
+    // We want seeding to be re-runnable and idempotent (the seed file should use ON CONFLICT),
+    // otherwise partial resets (like TRUNCATE action_types) would leave the UI broken.
 
     let seed_path = std::env::var("SEED_CATALOG_PATH")
         .ok()

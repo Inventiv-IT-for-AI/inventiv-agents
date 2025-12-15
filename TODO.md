@@ -79,19 +79,27 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et les 
 ## 🧭 Phase 0.2.1 — Worker ready (priorité)
 
 ### Worker (vLLM + agent sidecar)
-- [ ] Finaliser un **contrat minimal** Worker:
+- [x] Finaliser un **contrat minimal** Worker:
   - `/healthz` (liveness)
   - `/readyz` (readiness: modèle chargé / vLLM prêt)
   - `/metrics` (prometheus)
-- [ ] Implémenter le **protocole d’enrôlement** (worker → control-plane):
-  - registration (instance_id, ip, model, gpu specs)
-  - heartbeat (status, queue depth, gpu utilization)
+- [x] Implémenter le **protocole d’enrôlement** (worker → control-plane):
+  - registration: `POST /internal/worker/register` (instance_id, model_id, ports, metadata)
+  - heartbeat: `POST /internal/worker/heartbeat` (status, gpu util, metadata)
+- [x] Auth worker (MVP): **token par instance** + **bootstrap** (DB `worker_auth_tokens` hashé)
 - [ ] Déploiement “simple” multi-machines:
   - Docker Compose par machine + réseau privé (Tailscale/WireGuard)
-  - volume cache modèles
-- [ ] Health-check côté Orchestrator:
+  - volume cache modèles local
+- [x] Health-check côté Orchestrator:
   - remplacer progressivement “SSH:22” par `GET http://<worker-ip>:<port>/readyz`
   - garder un fallback SSH tant que le worker n’est pas déployé partout
+- [x] Harness local no-GPU: `scripts/dev_worker_local.sh` + profile compose `worker-local`
+
+### Hardening (ensuite)
+- [ ] Rotation / révocation des tokens worker (champs déjà présents: `revoked_at`, `rotated_at`)
+- [ ] Trust boundary X-Forwarded-For: n’accepter XFF que depuis la gateway / réseau interne
+- [ ] Option: `WORKER_AUTH_TOKEN_FILE` monté (ex: `/run/secrets/worker_token`) sur VMs GPU
+- [ ] End-to-end staging Scaleway: vrai worker (vLLM) + register/heartbeat vers API domain
 
 ## 🧭 Phase 0.2.2 — Router MVP (data plane)
 
@@ -116,8 +124,8 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et les 
 - [ ] RBAC minimal (admin) + stockage sécurisé (hash/rotation).
 
 ### Worker agent
-- [ ] `inventiv-worker/agent.py`: implémenter heartbeat/metrics + protocole d’enrôlement.
-- [ ] Readiness réelle (pas juste SSH:22): health endpoint du worker/vLLM.
+- [x] `inventiv-worker/agent.py`: implémenter heartbeat/metrics + protocole d’enrôlement.
+- [x] Readiness réelle (pas juste SSH:22): health endpoint du worker/vLLM.
 
 ### Router / Data plane (à trancher)
 - [ ] Décision: **réintroduire un Router** (OpenAI-compatible) OU supprimer la mention du router de la doc/scripts tant qu’il n’existe pas.

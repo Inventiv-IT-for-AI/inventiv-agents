@@ -42,7 +42,9 @@ fi
 echo "==> Bootstrapping ${REMOTE_SSH} (REMOTE_DIR=${REMOTE_DIR}, SECRETS_DIR=${SECRETS_DIR})"
 
 SSH_ID_FILE="${SSH_IDENTITY_FILE:-}"
-SSH_EXTRA_OPTS="${SSH_EXTRA_OPTS:-}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+KNOWN_HOSTS_FILE="${SSH_KNOWN_HOSTS_FILE:-${REPO_ROOT}/deploy/known_hosts}"
+SSH_EXTRA_OPTS="${SSH_EXTRA_OPTS:-} -o UserKnownHostsFile=${KNOWN_HOSTS_FILE} -o StrictHostKeyChecking=accept-new"
 SSH_ID_ARGS=()
 TMP_KEY_FILE=""
 cleanup_tmp_key() {

@@ -31,8 +31,9 @@ Sur chaque VM GPU provisionnée par l’orchestrator, un conteneur Worker doit:
   - `WORKER_ID` (uuid worker/agent)
   - `PROVIDER_INSTANCE_ID` (uuid provider)
 - **Control plane**
-  - `CONTROL_PLANE_URL` (ex: `http://inventiv-orchestrator:8001` ou IP privée tailnet)
-  - `WORKER_AUTH_TOKEN` (clé d’agent, rotation possible)
+  - `CONTROL_PLANE_URL` (recommandé: URL de l’API/Gateway, ex `https://api.<domain>` ou `http://api:8003` en local)
+  - `WORKER_AUTH_TOKEN` (optionnel: si vide, bootstrap automatique au `register`)
+  - `WORKER_AUTH_TOKEN_FILE` (optionnel: chemin fichier pour persister/recharger le token après bootstrap)
 - **Model runtime**
   - `MODEL_ID` (ex: `meta-llama/Llama-3.1-8B-Instruct`)
   - `TENSOR_PARALLEL_SIZE`
@@ -40,18 +41,33 @@ Sur chaque VM GPU provisionnée par l’orchestrator, un conteneur Worker doit:
 
 ### Enrôlement (MVP)
 1. Worker démarre vLLM + agent.
-2. Une fois `readyz` OK, l’agent POST un `register` au control plane.
+2. L’agent POST `register` au control plane:
+   - si `WORKER_AUTH_TOKEN` est vide et qu’aucun token n’existe encore en DB pour `instance_id`, l’orchestrator peut renvoyer un `bootstrap_token`.
+   - l’agent conserve ensuite ce token (en mémoire et optionnellement via `WORKER_AUTH_TOKEN_FILE`).
 3. Heartbeat périodique (10s) avec:
    - status: `starting|ready|draining`
    - queue_depth
    - gpu_util
    - model_id
 
+#### Stockage & sécurité (MVP)
+- Le token est stocké **hashé** dans la table `worker_auth_tokens` (clé = `instance_id`).
+- En staging/prod, le worker passe par l’API/Gateway (proxy vers orchestrator) afin de ne pas exposer l’orchestrator publiquement.
+
 ### Déploiement multi-machines (Docker Compose)
 Pour le scénario “simple” (quelques machines), Docker Compose est utilisé **par machine**.
 Comme Compose ne gère pas l’overlay multi-host, on utilise un réseau privé type **Tailscale/WireGuard** afin que:
 - le control-plane contacte les workers,
 - et/ou que les workers envoient heartbeats/metrics au control-plane.
+
+### Test local (sans GPU)
+Un scénario local “worker-ready” existe:
+- `mock-vllm` sert `GET /v1/models`
+- `worker-agent` parle au control plane via `CONTROL_PLANE_URL=http://api:8003` (proxy → orchestrator)
+
+```bash
+bash scripts/dev_worker_local.sh
+```
 
 ---
 

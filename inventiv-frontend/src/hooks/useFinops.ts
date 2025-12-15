@@ -1,48 +1,35 @@
 import { useEffect, useState } from "react";
 import { apiUrl } from "@/lib/api";
 import {
-    FinopsActualMinuteRow,
-    FinopsCostCurrentResponse,
-    FinopsCumulativeMinuteRow,
-    FinopsCostsDashboardResponse,
+    FinopsCostsDashboardSummaryResponse,
+    FinopsCostsDashboardWindowResponse,
 } from "@/lib/types";
 
 export function useFinopsCosts() {
-    const [current, setCurrent] = useState<FinopsCostCurrentResponse | null>(null);
-    const [actualTotalSeries, setActualTotalSeries] = useState<FinopsActualMinuteRow[]>([]);
-    const [cumulativeTotalSeries, setCumulativeTotalSeries] = useState<FinopsCumulativeMinuteRow[]>([]);
-    const [dashboardCurrent, setDashboardCurrent] = useState<FinopsCostsDashboardResponse | null>(null);
+    const [summary, setSummary] = useState<FinopsCostsDashboardSummaryResponse | null>(null);
+    const [window, setWindow] = useState<string>("hour");
+    const [breakdown, setBreakdown] = useState<FinopsCostsDashboardWindowResponse | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
     const fetchAll = async () => {
         try {
             setLoading(true);
-            const [currentRes, actualRes, cumulativeRes, dashboardRes] = await Promise.all([
-                fetch(apiUrl("finops/cost/current")),
-                fetch(apiUrl("finops/cost/actual/minute?minutes=60")),
-                fetch(apiUrl("finops/cost/cumulative/minute?minutes=60")),
-                fetch(apiUrl("finops/dashboard/costs/current?limit_instances=20")),
+            const [summaryRes, breakdownRes] = await Promise.all([
+                fetch(apiUrl("finops/dashboard/costs/summary?limit_instances=20")),
+                fetch(apiUrl(`finops/dashboard/costs/window?window=${encodeURIComponent(window)}&limit_instances=20`)),
             ]);
 
-            if (currentRes.ok) {
-                const data: FinopsCostCurrentResponse = await currentRes.json();
-                setCurrent(data);
+            if (summaryRes.ok) {
+                const data: FinopsCostsDashboardSummaryResponse = await summaryRes.json();
+                setSummary(data);
             }
-            if (actualRes.ok) {
-                const data: FinopsActualMinuteRow[] = await actualRes.json();
-                setActualTotalSeries(data);
-            }
-            if (cumulativeRes.ok) {
-                const data: FinopsCumulativeMinuteRow[] = await cumulativeRes.json();
-                setCumulativeTotalSeries(data);
-            }
-            if (dashboardRes.ok) {
-                const data: FinopsCostsDashboardResponse = await dashboardRes.json();
-                setDashboardCurrent(data);
+            if (breakdownRes.ok) {
+                const data: FinopsCostsDashboardWindowResponse = await breakdownRes.json();
+                setBreakdown(data);
             }
 
-            if (!currentRes.ok || !actualRes.ok || !cumulativeRes.ok || !dashboardRes.ok) {
+            if (!summaryRes.ok || !breakdownRes.ok) {
                 setError("Failed to fetch FinOps data");
             } else {
                 setError(null);
@@ -59,13 +46,13 @@ export function useFinopsCosts() {
         fetchAll(); // initial
         const interval = setInterval(fetchAll, 10000); // every 10s
         return () => clearInterval(interval);
-    }, []);
+    }, [window]);
 
     return {
-        current,
-        actualTotalSeries,
-        cumulativeTotalSeries,
-        dashboardCurrent,
+        summary,
+        window,
+        setWindow,
+        breakdown,
         loading,
         error,
         refresh: fetchAll,

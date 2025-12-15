@@ -137,5 +137,16 @@ done
 
 api DELETE "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/servers/${SERVER_ID}" >/dev/null || true
 
+# Wait until deleted (avoid immediate recreate reusing same server id).
+for _ in $(seq 1 60); do
+  code="$(curl -sS -o /dev/null -w "%{http_code}" \
+    -H "X-Auth-Token: ${SCW_SECRET_KEY}" \
+    "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/servers/${SERVER_ID}" || true)"
+  if [[ "${code}" == "404" ]]; then
+    break
+  fi
+  sleep 2
+done
+
 echo "✅ Destroy done (server deleted, IP kept)"
 

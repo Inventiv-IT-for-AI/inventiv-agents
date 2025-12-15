@@ -54,7 +54,9 @@ if [[ -f ".env" ]]; then
 fi
 
 SSH_ID_FILE="${SSH_IDENTITY_FILE:-}"
-SSH_EXTRA_OPTS="${SSH_EXTRA_OPTS:-}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+KNOWN_HOSTS_FILE="${SSH_KNOWN_HOSTS_FILE:-${REPO_ROOT}/deploy/known_hosts}"
+SSH_EXTRA_OPTS="${SSH_EXTRA_OPTS:-} -o UserKnownHostsFile=${KNOWN_HOSTS_FILE} -o StrictHostKeyChecking=accept-new"
 SSH_ID_ARGS=()
 if [[ -n "${SSH_ID_FILE}" ]]; then
   SSH_ID_ARGS=(-i "${SSH_ID_FILE}")
@@ -114,7 +116,10 @@ fi
 
 # 3) GHCR pull token (if registry is private)
 if ! upload_secret_file "ghcr_token" "${LOCAL_SECRETS_DIR}/ghcr_token"; then
-  upload_secret_value "ghcr_token" "${GHCR_TOKEN:-}"
+  # Optional: only required when pulling from a private registry.
+  if ! upload_secret_value "ghcr_token" "${GHCR_TOKEN:-}"; then
+    echo "[warn] ghcr_token not provided; skipping (pull will fail if GHCR packages are private)" >&2
+  fi
 fi
 
 echo "==> secrets sync done (remote: ${SECRETS_DIR})"

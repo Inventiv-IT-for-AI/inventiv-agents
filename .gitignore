@@ -13,6 +13,8 @@ venv/
 # Deploy (local-only)
 deploy/.env.*
 deploy/secrets/
+deploy/known_hosts
+deploy/known_hosts.*
 
 # Env files (per-environment configuration)
 env/*.env

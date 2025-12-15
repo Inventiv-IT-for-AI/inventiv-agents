@@ -49,6 +49,29 @@ Dans le scénario “simple” (Docker Compose sur quelques machines), l’Orche
 *   Pilote localement le moteur d'inférence (vLLM).
 *   **Objectif 0.2.1**: exposer une **readiness fiable** (`/readyz`) et remonter des **heartbeats/capacity** au control plane.
 
+##### Worker ↔ Control Plane (via API / Gateway)
+Dans l’architecture cible (staging/prod), le Worker **ne parle pas directement** à l’orchestrator:
+- Le Worker appelle le **domaine API** (gateway) sur:
+  - `POST /internal/worker/register`
+  - `POST /internal/worker/heartbeat`
+- L’API (ou l’edge: Nginx/Caddy) **proxy** ces endpoints vers `inventiv-orchestrator`.
+
+Cela permet:
+- d’éviter d’exposer l’orchestrator publiquement,
+- de garder un `CONTROL_PLANE_URL` stable (API domain) en dev/staging/prod.
+
+##### Auth Worker (token par instance + bootstrap)
+Le Worker s’authentifie avec un token associé à une **instance** (`instances.id`):
+- **Stockage DB**: table `worker_auth_tokens` (hash du token, prefix, timestamps).
+- **Bootstrap**: lors du 1er `register`, si aucun token n’existe encore pour `instance_id`,
+  l’orchestrator peut générer un token et le renvoyer au worker (plaintext **uniquement** dans la réponse).
+- **Requêtes suivantes**: `Authorization: Bearer <token>` requis (register/heartbeat).
+
+Important:
+- derrière un proxy, l’orchestrator utilise `X-Forwarded-For` (sinon fallback sur l’IP socket).
+- l’edge/gateway doit être configuré pour **écraser** `X-Forwarded-For` côté client (anti-spoofing),
+  ou pour ne faire confiance à `X-Forwarded-For` que depuis le réseau interne.
+
 ### Flux de Communication & Données
 
 1.  **Backend -> Orchestrator** :

@@ -14,9 +14,10 @@ COMPOSE_FILE ?= deploy/docker-compose.nginx.yml
 COMPOSE ?= docker compose
 
 # Local env files (not committed) should live in env/*.env
-DEV_ENV_FILE ?= env/dev.env
+# Defaults to *.env.example so commands remain runnable on fresh clones.
+DEV_ENV_FILE ?= env/dev.env.example
 STG_ENV_FILE ?= env/staging.env
-PRD_ENV_FILE ?= env/prod.env
+PRD_ENV_FILE ?= env/prod.env.example
 
 # Remote deploy
 REMOTE_DIR ?= /opt/inventiv-agents
@@ -26,6 +27,8 @@ PRD_REMOTE_SSH ?=
 .PHONY: help \
 	images-build images-push images-pull images-promote-stg images-promote-prod \
 	images-build-version images-push-version images-build-latest images-push-latest \
+	images-publish-stg images-publish-prod \
+	ghcr-token-local \
 	dev-create dev-create-edge dev-start dev-start-edge dev-stop dev-delete dev-ps dev-logs dev-cert \
 	stg-provision stg-destroy stg-bootstrap stg-secrets-sync stg-rebuild stg-create stg-update stg-start stg-stop stg-delete stg-status stg-logs stg-cert stg-renew stg-ghcr-token \
 	prod-provision prod-destroy prod-bootstrap prod-secrets-sync prod-rebuild prod-create prod-update prod-start prod-stop prod-delete prod-status prod-logs prod-cert prod-renew prod-ghcr-token \
@@ -48,10 +51,13 @@ help:
 	@echo "  make images-push-version     # IMAGE_TAG=v$(VERSION)"
 	@echo "  make images-build-latest     # IMAGE_TAG=latest (dev only)"
 	@echo "  make images-push-latest      # IMAGE_TAG=latest (dev only)"
+	@echo "  make ghcr-token-local        # writes deploy/secrets/ghcr_token (gitignored) from gh auth token"
 	@echo ""
 	@echo "## Promotion (same digest)"
 	@echo "  make images-promote-stg  IMAGE_TAG=<sha|vX.Y.Z>"
 	@echo "  make images-promote-prod IMAGE_TAG=<sha|vX.Y.Z>"
+	@echo "  make images-publish-stg  # build+push v$(VERSION) then retag to :staging"
+	@echo "  make images-publish-prod # build+push v$(VERSION) then retag to :prod"
 	@echo ""
 	@echo "## DEV local (docker compose)"
 	@echo "  make dev-create        [IMAGE_TAG=<sha|dev|latest>]"
@@ -101,6 +107,26 @@ images-build-latest:
 
 images-push-latest:
 	@$(MAKE) images-push IMAGE_TAG=$(IMAGE_TAG_LATEST)
+
+images-publish-stg:
+	@echo "🚢 Publishing images to :staging"
+	@$(MAKE) images-build-version
+	@$(MAKE) images-push-version
+	@$(MAKE) images-promote-stg IMAGE_TAG=$(IMAGE_TAG_VERSION)
+
+images-publish-prod:
+	@echo "🚢 Publishing images to :prod"
+	@$(MAKE) images-build-version
+	@$(MAKE) images-push-version
+	@$(MAKE) images-promote-prod IMAGE_TAG=$(IMAGE_TAG_VERSION)
+
+ghcr-token-local:
+	@mkdir -p deploy/secrets
+	@echo "==> Ensuring gh auth has packages scope"
+	@gh auth refresh -h github.com -s read:packages -s write:packages >/dev/null 2>&1 || true
+	@echo "==> Writing deploy/secrets/ghcr_token (gitignored)"
+	@gh auth token > deploy/secrets/ghcr_token
+	@chmod 600 deploy/secrets/ghcr_token
 
 images-push:
 	@echo "📦 Pushing images (tag=$(IMAGE_TAG))"
@@ -199,24 +225,54 @@ stg-update:
 	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/deploy_remote.sh staging update
 
 stg-start:
-	REMOTE_SSH=$(STG_REMOTE_SSH) REMOTE_DIR=$(REMOTE_DIR) \
-	  ./scripts/deploy_remote.sh staging start
+	@set -e; \
+	HOST=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
+	PORT=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
+	USER=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_USER:-}'); \
+	KEY=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${SSH_IDENTITY_FILE:-}'); \
+	REMOTE=$${STG_REMOTE_SSH:-$${USER:+$$USER@$$HOST}}; \
+	if [ -z "$$REMOTE" ]; then REMOTE=$$(SSH_IDENTITY_FILE="$$KEY" ./scripts/ssh_detect_user.sh $$HOST $$PORT); fi; \
+	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/deploy_remote.sh staging start
 
 stg-stop:
-	REMOTE_SSH=$(STG_REMOTE_SSH) REMOTE_DIR=$(REMOTE_DIR) \
-	  ./scripts/deploy_remote.sh staging stop
+	@set -e; \
+	HOST=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
+	PORT=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
+	USER=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_USER:-}'); \
+	KEY=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${SSH_IDENTITY_FILE:-}'); \
+	REMOTE=$${STG_REMOTE_SSH:-$${USER:+$$USER@$$HOST}}; \
+	if [ -z "$$REMOTE" ]; then REMOTE=$$(SSH_IDENTITY_FILE="$$KEY" ./scripts/ssh_detect_user.sh $$HOST $$PORT); fi; \
+	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/deploy_remote.sh staging stop
 
 stg-delete:
-	REMOTE_SSH=$(STG_REMOTE_SSH) REMOTE_DIR=$(REMOTE_DIR) \
-	  ./scripts/deploy_remote.sh staging delete
+	@set -e; \
+	HOST=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
+	PORT=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
+	USER=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_USER:-}'); \
+	KEY=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${SSH_IDENTITY_FILE:-}'); \
+	REMOTE=$${STG_REMOTE_SSH:-$${USER:+$$USER@$$HOST}}; \
+	if [ -z "$$REMOTE" ]; then REMOTE=$$(SSH_IDENTITY_FILE="$$KEY" ./scripts/ssh_detect_user.sh $$HOST $$PORT); fi; \
+	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/deploy_remote.sh staging delete
 
 stg-status:
-	REMOTE_SSH=$(STG_REMOTE_SSH) REMOTE_DIR=$(REMOTE_DIR) \
-	  ./scripts/deploy_remote.sh staging status
+	@set -e; \
+	HOST=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
+	PORT=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
+	USER=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_USER:-}'); \
+	KEY=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${SSH_IDENTITY_FILE:-}'); \
+	REMOTE=$${STG_REMOTE_SSH:-$${USER:+$$USER@$$HOST}}; \
+	if [ -z "$$REMOTE" ]; then REMOTE=$$(SSH_IDENTITY_FILE="$$KEY" ./scripts/ssh_detect_user.sh $$HOST $$PORT); fi; \
+	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/deploy_remote.sh staging status
 
 stg-logs:
-	REMOTE_SSH=$(STG_REMOTE_SSH) REMOTE_DIR=$(REMOTE_DIR) \
-	  ./scripts/deploy_remote.sh staging logs
+	@set -e; \
+	HOST=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
+	PORT=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
+	USER=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_USER:-}'); \
+	KEY=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${SSH_IDENTITY_FILE:-}'); \
+	REMOTE=$${STG_REMOTE_SSH:-$${USER:+$$USER@$$HOST}}; \
+	if [ -z "$$REMOTE" ]; then REMOTE=$$(SSH_IDENTITY_FILE="$$KEY" ./scripts/ssh_detect_user.sh $$HOST $$PORT); fi; \
+	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/deploy_remote.sh staging logs
 
 stg-bootstrap:
 	@set -e; \

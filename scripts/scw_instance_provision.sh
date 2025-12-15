@@ -323,7 +323,14 @@ echo "==> Attaching Flexible IP ${FLEX_IP_ADDR} (id=${FLEX_IP_ID}) to server ${S
 api_patch "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/ips/${FLEX_IP_ID}" "{\"server\":\"${SERVER_ID}\"}" >/dev/null
 
 echo "==> Waiting for SSH on ${FLEX_IP_ADDR}:22 (using ${SSH_KEY_FILE})"
-for i in $(seq 1 120); do
+S_JSON="$(api_get "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/servers/${SERVER_ID}")" || true
+DYN_IP="$(printf '%s' "${S_JSON}" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(((d.get("server") or {}).get("public_ip") or {}).get("address",""))' 2>/dev/null || true)"
+if [[ -n "${DYN_IP}" ]]; then
+  echo "==> Dynamic IP (fallback SSH): ${DYN_IP}"
+fi
+
+forced_flexip=0
+for i in $(seq 1 60); do
   if SSH_IDENTITY_FILE="${SSH_KEY_FILE}" ./scripts/ssh_detect_user.sh "${FLEX_IP_ADDR}" 22 >/dev/null 2>&1; then
     USER_AT_HOST="$(SSH_IDENTITY_FILE="${SSH_KEY_FILE}" ./scripts/ssh_detect_user.sh "${FLEX_IP_ADDR}" 22)"
     echo "✅ SSH OK: ${USER_AT_HOST}"
@@ -331,6 +338,27 @@ for i in $(seq 1 120); do
     echo "SSH_TARGET=${USER_AT_HOST}"
     exit 0
   fi
+
+  # If SSH doesn't come up on the Flexible IP quickly, force the in-guest config once via dynamic IP.
+  if [[ "${forced_flexip}" == "0" && -n "${DYN_IP}" && "${i}" -ge 6 ]]; then
+    if SSH_IDENTITY_FILE="${SSH_KEY_FILE}" ./scripts/ssh_detect_user.sh "${DYN_IP}" 22 >/dev/null 2>&1; then
+      USER_DYN="$(SSH_IDENTITY_FILE="${SSH_KEY_FILE}" ./scripts/ssh_detect_user.sh "${DYN_IP}" 22)"
+      echo "==> Forcing flex IP config via ${USER_DYN} (routed_ipv4/manual)"
+      ssh -i "${SSH_KEY_FILE}" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$(cd "$(dirname "$0")/.." && pwd)/deploy/known_hosts" \
+        "${USER_DYN}" \
+        "set -euo pipefail
+IFACE=\$(ip route show default | awk '{print \$5}' | head -n1 || true)
+if [ -z \"\$IFACE\" ]; then IFACE=\$(ip -o link show | awk -F': ' '\$2!=\"lo\"{print \$2; exit}'); fi
+sudo /usr/local/bin/inventiv-flexip.sh >/dev/null 2>&1 || true
+sudo ip addr add ${FLEX_IP_ADDR}/32 dev \"\$IFACE\" 2>/dev/null || true
+sudo sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1 || true
+sudo sysctl -w net.ipv4.conf.\"\\\$IFACE\".rp_filter=0 >/dev/null 2>&1 || true
+ip -o -4 addr show | grep -F \"${FLEX_IP_ADDR}\" >/dev/null && echo '[ok] flex ip present' || echo '[warn] flex ip missing'
+" >/dev/null 2>&1 || true
+      forced_flexip=1
+    fi
+  fi
+
   sleep 5
 done
 
