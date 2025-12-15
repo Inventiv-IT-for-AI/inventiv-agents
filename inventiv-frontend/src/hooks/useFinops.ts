@@ -28,7 +28,6 @@ export function useFinopsCosts() {
                 const data: FinopsCostsDashboardWindowResponse = await breakdownRes.json();
                 setBreakdown(data);
             }
-
             if (!summaryRes.ok || !breakdownRes.ok) {
                 setError("Failed to fetch FinOps data");
             } else {

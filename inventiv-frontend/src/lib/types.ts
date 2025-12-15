@@ -185,7 +185,6 @@ export type FinopsCostsDashboardResponse = {
     by_instance_type_minute: FinopsInstanceTypeCostRow[];
     by_instance_minute: FinopsInstanceCostRow[];
 };
-
 // -----------------------------
 // FinOps Dashboard v2 (FinOps chantier)
 // -----------------------------
