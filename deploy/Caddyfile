@@ -1,0 +1,18 @@
+{
+	# Email can be provided by env if you want ACME notifications:
+	# email {$ACME_EMAIL}
+}
+
+{$FRONTEND_DOMAIN} {
+	encode gzip
+	reverse_proxy frontend:3000
+}
+
+{$API_DOMAIN} {
+	encode gzip
+	# Worker internal control-plane endpoints (proxy to orchestrator).
+	handle_path /internal/worker/* {
+		reverse_proxy orchestrator:8001
+	}
+	reverse_proxy api:8003
+}

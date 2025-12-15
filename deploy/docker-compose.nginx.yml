@@ -1,0 +1,153 @@
+name: inventiv-agents
+
+services:
+  # --- EDGE (NGINX + wildcard cert via DNS-01) ---
+  nginx:
+    image: nginx:1.27-alpine
+    profiles: ["edge"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - ROOT_DOMAIN=${ROOT_DOMAIN:?set ROOT_DOMAIN (e.g. example.com)}
+      - FRONTEND_DOMAIN=${FRONTEND_DOMAIN:?set FRONTEND_DOMAIN (e.g. app.example.com)}
+      - API_DOMAIN=${API_DOMAIN:?set API_DOMAIN (e.g. api.example.com)}
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates:ro
+      # lego output (contains private key) - nginx reads it
+      - lego_data:/etc/ssl/lego:ro
+    depends_on:
+      - frontend
+      - api
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        apk add --no-cache gettext >/dev/null 2>&1
+        envsubst '$$ROOT_DOMAIN $$FRONTEND_DOMAIN $$API_DOMAIN' \
+          < /etc/nginx/templates/default.conf.template \
+          > /etc/nginx/conf.d/default.conf
+        nginx -g 'daemon off;'
+
+  # Issue/renew wildcard cert using Scaleway DNS API (DNS-01).
+  # Run manually once to issue, then via cron for renew:
+  # docker compose -f deploy/docker-compose.nginx.yml run --rm lego renew --days 30
+  lego:
+    image: goacme/lego:v4.16.1
+    profiles: ["edge"]
+    restart: "no"
+    environment:
+      - ROOT_DOMAIN=${ROOT_DOMAIN:?set ROOT_DOMAIN (e.g. example.com)}
+      - ACME_EMAIL=${ACME_EMAIL:?set ACME_EMAIL}
+      - LEGO_PATH=/var/lib/lego
+      - LEGO_DNS=scaleway
+      # Optional tuning:
+      # - SCW_PROPAGATION_TIMEOUT=300
+      # - SCW_POLLING_INTERVAL=10
+    volumes:
+      - lego_data:/var/lib/lego
+      - ${SECRETS_DIR:-./secrets}:/run/secrets:ro
+    entrypoint:
+      - /bin/sh
+      - -lc
+    command: >-
+      export SCW_ACCESS_KEY="$$(cat /run/secrets/scaleway_access_key)";
+      export SCW_SECRET_KEY="$$(cat /run/secrets/scaleway_secret_key)";
+      # Wildcard cert (subdomains). Add "--domains $$ROOT_DOMAIN" if you also need the apex.
+      lego --path "$$LEGO_PATH"
+           --email "$$ACME_EMAIL"
+           --dns "$$LEGO_DNS"
+           --domains "*.$$ROOT_DOMAIN"
+           run
+
+  # --- INFRA ---
+  redis:
+    image: redis:alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+  db:
+    image: timescale/timescaledb:latest-pg14
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD (or use DATABASE_URL directly)}
+      - POSTGRES_DB=${POSTGRES_DB:-llminfra}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  # --- APPS ---
+  api:
+    image: ${IMAGE_REPO:-inventiv-agents}/inventiv-api:${IMAGE_TAG:-dev}
+    build:
+      context: ..
+      dockerfile: Dockerfile.rust.prod
+      args:
+        SERVICE_NAME: inventiv-api
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-llminfra}}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - RUST_LOG=${RUST_LOG:-info}
+    depends_on:
+      - db
+      - redis
+
+  orchestrator:
+    image: ${IMAGE_REPO:-inventiv-agents}/inventiv-orchestrator:${IMAGE_TAG:-dev}
+    build:
+      context: ..
+      dockerfile: Dockerfile.rust.prod
+      args:
+        SERVICE_NAME: inventiv-orchestrator
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-llminfra}}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - RUST_LOG=${RUST_LOG:-info}
+      - PROVIDER=${PROVIDER:-mock}
+      - SCALEWAY_PROJECT_ID=${SCALEWAY_PROJECT_ID:-}
+      - WORKER_AUTH_TOKEN=${WORKER_AUTH_TOKEN:-}
+      # Prefer *_FILE (mounted from secrets dir); fallback handled by code.
+      - SCALEWAY_SECRET_KEY_FILE=${SCALEWAY_SECRET_KEY_FILE:-/run/secrets/scaleway_secret_key}
+      - SCALEWAY_SSH_PUBLIC_KEY_FILE=${SCALEWAY_SSH_PUBLIC_KEY_FILE:-/run/secrets/llm-studio-key.pub}
+    volumes:
+      - ${SECRETS_DIR:-./secrets}:/run/secrets:ro
+    depends_on:
+      - db
+      - redis
+
+  finops:
+    image: ${IMAGE_REPO:-inventiv-agents}/inventiv-finops:${IMAGE_TAG:-dev}
+    build:
+      context: ..
+      dockerfile: Dockerfile.rust.prod
+      args:
+        SERVICE_NAME: inventiv-finops
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-llminfra}}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - RUST_LOG=${RUST_LOG:-info}
+    depends_on:
+      - db
+      - redis
+
+  frontend:
+    image: ${IMAGE_REPO:-inventiv-agents}/inventiv-frontend:${IMAGE_TAG:-dev}
+    build:
+      context: ../inventiv-frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - API_INTERNAL_URL=http://api:8003
+      - NEXT_PUBLIC_API_URL=https://${API_DOMAIN}
+    depends_on:
+      - api
+
+volumes:
+  redis_data:
+  db_data:
+  lego_data:
