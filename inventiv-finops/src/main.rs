@@ -212,6 +212,7 @@ async fn run_finops_events_consumer(redis_url: &str, db: &Pool<Postgres>) -> any
 async fn compute_and_store_forecast(db: &Pool<Postgres>, bucket: DateTime<Utc>) -> anyhow::Result<()> {
     // Active statuses: anything not terminal/failure/archived.
     // We treat terminating as still allocated (still costing) until terminated_at is set.
+    // We only count allocated resources (provider_instance_id present).
     //
     // per provider
     let rows: Vec<(Option<uuid::Uuid>, BigDecimal)> = sqlx::query_as(
@@ -222,6 +223,7 @@ async fn compute_and_store_forecast(db: &Pool<Postgres>, bucket: DateTime<Utc>) 
         FROM instances i
         LEFT JOIN instance_types it ON it.id = i.instance_type_id
         WHERE i.is_archived = false
+          AND i.provider_instance_id IS NOT NULL
           AND (i.status::text NOT IN ('terminated','failed','provisioning_failed','startup_failed','archived'))
           AND i.created_at <= $1
           AND (i.terminated_at IS NULL OR i.terminated_at > $1)
@@ -241,6 +243,7 @@ async fn compute_and_store_forecast(db: &Pool<Postgres>, bucket: DateTime<Utc>) 
         FROM instances i
         LEFT JOIN instance_types it ON it.id = i.instance_type_id
         WHERE i.is_archived = false
+          AND i.provider_instance_id IS NOT NULL
           AND (i.status::text NOT IN ('terminated','failed','provisioning_failed','startup_failed','archived'))
           AND i.created_at <= $1
           AND (i.terminated_at IS NULL OR i.terminated_at > $1)
@@ -274,33 +277,40 @@ async fn upsert_forecast_row(
     let sixty = BigDecimal::from(60);
     let twenty_four = BigDecimal::from(24);
     let thirty = BigDecimal::from(30);
+    let three_sixty_five = BigDecimal::from(365);
 
     let per_minute = &burn_rate_per_hour / &sixty;
+    let per_hour = burn_rate_per_hour.clone();
     let per_day = &burn_rate_per_hour * &twenty_four;
     let per_month_30 = &per_day * &thirty;
+    let per_year_365 = &per_day * &three_sixty_five;
 
     sqlx::query(
         r#"
         INSERT INTO finops.cost_forecast_minute (
           bucket_minute, provider_id,
           burn_rate_usd_per_hour,
-          forecast_usd_per_minute, forecast_usd_per_day, forecast_usd_per_month_30d
+          forecast_usd_per_minute, forecast_usd_per_hour, forecast_usd_per_day, forecast_usd_per_month_30d, forecast_usd_per_year_365d
         )
-        VALUES ($1, $2, $3, $4, $5, $6)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (bucket_minute, provider_id_key)
         DO UPDATE SET
           burn_rate_usd_per_hour = EXCLUDED.burn_rate_usd_per_hour,
           forecast_usd_per_minute = EXCLUDED.forecast_usd_per_minute,
+          forecast_usd_per_hour = EXCLUDED.forecast_usd_per_hour,
           forecast_usd_per_day = EXCLUDED.forecast_usd_per_day,
-          forecast_usd_per_month_30d = EXCLUDED.forecast_usd_per_month_30d
+          forecast_usd_per_month_30d = EXCLUDED.forecast_usd_per_month_30d,
+          forecast_usd_per_year_365d = EXCLUDED.forecast_usd_per_year_365d
         "#
     )
     .bind(bucket)
     .bind(provider_id)
     .bind(burn_rate_per_hour)
     .bind(per_minute)
+    .bind(per_hour)
     .bind(per_day)
     .bind(per_month_30)
+    .bind(per_year_365)
     .execute(db)
     .await?;
 
@@ -333,6 +343,7 @@ async fn compute_and_store_actual_minute(
           FROM instances i
           LEFT JOIN instance_types it ON it.id = i.instance_type_id
           WHERE i.is_archived = false
+            AND i.provider_instance_id IS NOT NULL
             AND (i.status::text NOT IN ('terminated','failed','provisioning_failed','startup_failed','archived'))
             AND i.created_at < $2
             AND (i.terminated_at IS NULL OR i.terminated_at > $1)
@@ -362,6 +373,7 @@ async fn compute_and_store_actual_minute(
           FROM instances i
           LEFT JOIN instance_types it ON it.id = i.instance_type_id
           WHERE i.is_archived = false
+            AND i.provider_instance_id IS NOT NULL
             AND (i.status::text NOT IN ('terminated','failed','provisioning_failed','startup_failed','archived'))
             AND i.created_at < $2
             AND (i.terminated_at IS NULL OR i.terminated_at > $1)
@@ -396,6 +408,7 @@ async fn compute_and_store_actual_minute(
           FROM instances i
           LEFT JOIN instance_types it ON it.id = i.instance_type_id
           WHERE i.is_archived = false
+            AND i.provider_instance_id IS NOT NULL
             AND (i.status::text NOT IN ('terminated','failed','provisioning_failed','startup_failed','archived'))
             AND i.created_at < $2
             AND (i.terminated_at IS NULL OR i.terminated_at > $1)

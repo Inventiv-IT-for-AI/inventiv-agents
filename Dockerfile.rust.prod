@@ -1,0 +1,38 @@
+FROM rust:1.88-bookworm AS builder
+WORKDIR /app
+
+# Copy workspace manifests first (better build cache)
+COPY Cargo.toml Cargo.lock ./
+COPY inventiv-api/Cargo.toml ./inventiv-api/Cargo.toml
+COPY inventiv-common/Cargo.toml ./inventiv-common/Cargo.toml
+COPY inventiv-orchestrator/Cargo.toml ./inventiv-orchestrator/Cargo.toml
+COPY inventiv-finops/Cargo.toml ./inventiv-finops/Cargo.toml
+
+# Build dependencies (dummy sources for cache)
+RUN mkdir -p inventiv-api/src inventiv-common/src inventiv-orchestrator/src inventiv-finops/src && \
+    echo "fn main() {}" > inventiv-api/src/main.rs && \
+    echo "fn main() {}" > inventiv-orchestrator/src/main.rs && \
+    echo "fn main() {}" > inventiv-finops/src/main.rs && \
+    echo "" > inventiv-common/src/lib.rs && \
+    cargo build --release && \
+    rm -rf inventiv-*/src
+
+# Copy full source and build the selected binary
+COPY . .
+
+ARG SERVICE_NAME
+RUN cargo build --release -p "${SERVICE_NAME}" && \
+    strip "target/release/${SERVICE_NAME}" || true
+
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+
+ARG SERVICE_NAME
+ENV SERVICE_NAME="${SERVICE_NAME}"
+ENV RUST_LOG=info
+
+COPY --from=builder "/app/target/release/${SERVICE_NAME}" "/usr/local/bin/${SERVICE_NAME}"
+
+EXPOSE 8001 8003 8005
+ENTRYPOINT ["sh", "-c", "/usr/local/bin/$SERVICE_NAME"]

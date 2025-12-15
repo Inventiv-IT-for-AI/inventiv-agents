@@ -133,7 +133,6 @@ export default function InstancesPage() {
                 providers={catalog.providers}
                 regions={catalog.regions}
                 allZones={catalog.zones}
-                initialInstanceTypes={catalog.instanceTypes}
             />
 
             {/* Terminate Instance Modal */}

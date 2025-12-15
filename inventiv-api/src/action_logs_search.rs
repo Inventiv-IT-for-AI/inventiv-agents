@@ -27,6 +27,8 @@ pub struct ActionLogRow {
     pub action_type: String,
     pub component: String,
     pub status: String,
+    pub provider_name: Option<String>,
+    pub instance_type: Option<String>,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
     pub instance_id: Option<Uuid>,
@@ -57,28 +59,28 @@ pub struct ActionLogsSearchResponse {
 
 fn push_filters(qb: &mut QueryBuilder<'_, Postgres>, params: &ActionLogsSearchQuery) {
     if let Some(instance_id) = params.instance_id {
-        qb.push(" AND instance_id = ");
+        qb.push(" AND al.instance_id = ");
         qb.push_bind(instance_id);
     }
     if let Some(component) = params.component.as_deref().filter(|s| !s.trim().is_empty()) {
         // Backward compatible: some rows use 'backend', but canonical is now 'api'.
         if component == "api" || component == "backend" {
-            qb.push(" AND component IN (");
+            qb.push(" AND al.component IN (");
             qb.push_bind("api".to_string());
             qb.push(", ");
             qb.push_bind("backend".to_string());
             qb.push(")");
         } else {
-            qb.push(" AND component = ");
+            qb.push(" AND al.component = ");
             qb.push_bind(component.to_string());
         }
     }
     if let Some(status) = params.status.as_deref().filter(|s| !s.trim().is_empty()) {
-        qb.push(" AND status = ");
+        qb.push(" AND al.status = ");
         qb.push_bind(status.to_string());
     }
     if let Some(action_type) = params.action_type.as_deref().filter(|s| !s.trim().is_empty()) {
-        qb.push(" AND action_type = ");
+        qb.push(" AND al.action_type = ");
         qb.push_bind(action_type.to_string());
     }
 }
@@ -109,7 +111,7 @@ pub async fn search_action_logs(
 
     // Filtered count
     let mut filtered_count_qb: QueryBuilder<Postgres> =
-        QueryBuilder::new("SELECT COUNT(*) FROM action_logs WHERE 1=1");
+        QueryBuilder::new("SELECT COUNT(*) FROM action_logs al WHERE 1=1");
     push_filters(&mut filtered_count_qb, &params);
     let filtered_count: i64 = filtered_count_qb
         .build_query_scalar()
@@ -123,10 +125,15 @@ pub async fn search_action_logs(
             id, action_type,
             CASE WHEN component = 'backend' THEN 'api' ELSE component END as component,
             status,
+            p.name as provider_name,
+            it.name as instance_type,
             error_code, error_message, instance_id, duration_ms,
             created_at, completed_at, metadata,
             instance_status_before, instance_status_after
-           FROM action_logs
+           FROM action_logs al
+           LEFT JOIN instances i ON i.id = al.instance_id
+           LEFT JOIN providers p ON p.id = i.provider_id
+           LEFT JOIN instance_types it ON it.id = i.instance_type_id
            WHERE 1=1"#,
     );
     push_filters(&mut rows_qb, &params);
@@ -145,7 +152,7 @@ pub async fn search_action_logs(
     // Optional stats for the filtered set
     let status_counts = if include_stats {
         let mut qb: QueryBuilder<Postgres> =
-            QueryBuilder::new("SELECT status, COUNT(*) FROM action_logs WHERE 1=1");
+            QueryBuilder::new("SELECT al.status, COUNT(*) FROM action_logs al WHERE 1=1");
         push_filters(&mut qb, &params);
         qb.push(" GROUP BY status");
         let pairs: Vec<(String, i64)> = qb

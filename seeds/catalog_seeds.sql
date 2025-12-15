@@ -2,26 +2,22 @@
 
 -- Mock Provider
 INSERT INTO providers (id, name, code, description, is_active) VALUES 
-    ('00000000-0000-0000-0000-000000000002', 'mock', 'mock', 'Mock provider (dev) - no real allocations', true)
-ON CONFLICT (code) DO UPDATE
-SET name = EXCLUDED.name,
-    description = EXCLUDED.description,
-    is_active = EXCLUDED.is_active;
-
+    (gen_random_uuid(), 'Mock', 'mock', 'Mock provider (dev) - no real allocations', true)
+ON CONFLICT (code) DO NOTHING;
 -- Mock Provider Regions
 INSERT INTO regions (id, provider_id, name, code, is_active) VALUES
-    ('00000000-0000-0000-0000-000000000012', '00000000-0000-0000-0000-000000000002', 'mock-eu', 'mock-eu', true)
+    (gen_random_uuid(), (SELECT id FROM providers WHERE code='mock' LIMIT 1), 'Mock EU', 'mock-eu', true)
 ON CONFLICT (provider_id, code) DO NOTHING;
 
 -- Mock Provider Zones
 INSERT INTO zones (id, region_id, name, code, is_active) VALUES
-    ('00000000-0000-0000-0000-000000000022', '00000000-0000-0000-0000-000000000012', 'mock-eu-1', 'mock-eu-1', true)
+    (gen_random_uuid(), (SELECT id FROM regions WHERE code='mock-eu' LIMIT 1), 'Mock EU 1', 'mock-eu-1', true)
 ON CONFLICT (region_id, code) DO NOTHING;
 
 -- Mock Provider Instance Types
 INSERT INTO instance_types (id, provider_id, name, code, gpu_count, vram_per_gpu_gb, cpu_count, ram_gb, bandwidth_bps, is_active, cost_per_hour) VALUES
-    ('00000000-0000-0000-0000-000000000032', '00000000-0000-0000-0000-000000000002', 'MOCK-GPU-S', 'MOCK-GPU-S', 1, 24, 8, 32, 1000000000, true, 0.2500),
-    ('00000000-0000-0000-0000-000000000033', '00000000-0000-0000-0000-000000000002', 'MOCK-GPU-M', 'MOCK-GPU-M', 1, 48, 16, 64, 2000000000, true, 0.7500)
+    (gen_random_uuid(), (SELECT id FROM providers WHERE code='mock' LIMIT 1), 'MOCK-GPU-S', 'MOCK-GPU-S', 1, 24, 8, 32, 1000000000, true, 0.2500),
+    (gen_random_uuid(), (SELECT id FROM providers WHERE code='mock' LIMIT 1), 'MOCK-4GPU-M', 'MOCK-4GPU-M', 4, 48, 16, 64, 2000000000, true, 10.0000)
 ON CONFLICT (provider_id, code) DO NOTHING;
 
 -- Availability: link ALL Mock types to zone mock-eu-1
@@ -34,12 +30,8 @@ ON CONFLICT (instance_type_id, zone_id) DO NOTHING;
 
 -- Scaleway Provider
 INSERT INTO providers (id, name, code, description, is_active) VALUES 
-    ('00000000-0000-0000-0000-000000000001', 'Scaleway', 'scaleway', 'Scaleway Cloud Provider', true)
-ON CONFLICT (code) DO UPDATE
-SET name = EXCLUDED.name,
-    description = EXCLUDED.description,
-    is_active = EXCLUDED.is_active;
-
+    (gen_random_uuid(), 'Scaleway', 'scaleway', 'Scaleway Cloud Provider', true)
+ON CONFLICT (code) DO NOTHING;
 -- Regions
 INSERT INTO regions (id, provider_id, name, code, is_active) VALUES
     (gen_random_uuid(), (SELECT id FROM providers WHERE code='scaleway' LIMIT 1), 'Paris', 'fr-par', true),
@@ -93,9 +85,5 @@ ON CONFLICT (instance_type_id, zone_id) DO NOTHING;
 -- OVH Provider
 INSERT INTO providers (id, name, code, description, is_active) VALUES 
     (gen_random_uuid(), 'OVH', 'ovh', 'OVH Cloud Provider', true)
-ON CONFLICT (code) DO UPDATE
-SET name = EXCLUDED.name,
-    description = EXCLUDED.description,
-    is_active = EXCLUDED.is_active;
-
+ON CONFLICT (code) DO NOTHING;
 -- To be implemented

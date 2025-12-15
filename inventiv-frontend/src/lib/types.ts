@@ -37,6 +37,8 @@ export type Provider = {
 export type Region = {
     id: string;
     provider_id?: string;
+    provider_name?: string;
+    provider_code?: string | null;
     name: string;
     code: string;
     is_active: boolean;
@@ -45,6 +47,11 @@ export type Region = {
 export type Zone = {
     id: string;
     region_id?: string;
+    region_name?: string;
+    region_code?: string | null;
+    provider_id?: string;
+    provider_name?: string;
+    provider_code?: string | null;
     name: string;
     code: string;
     is_active: boolean;
@@ -69,6 +76,8 @@ export type ActionLog = {
     action_type: string;
     component: string;
     status: string;
+    provider_name?: string | null;
+    instance_type?: string | null;
     error_message: string | null;
     instance_id: string | null;
     duration_ms: number | null;

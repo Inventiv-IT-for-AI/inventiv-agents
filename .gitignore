@@ -10,6 +10,16 @@ venv/
 .venv/
 .env
 
+# Deploy (local-only)
+deploy/.env.*
+deploy/secrets/
+
+# Env files (per-environment configuration)
+env/*.env
+
+# Local SSH keys (never commit)
+.ssh/
+
 # OS
 .DS_Store
 

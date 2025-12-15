@@ -2,6 +2,7 @@ use axum::{
     extract::{State, Path},
     Json,
     http::StatusCode,
+    response::IntoResponse,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -90,7 +91,44 @@ pub async fn associate_zones_to_instance_type(
     State(state): State<Arc<AppState>>,
     Path(instance_type_id): Path<Uuid>,
     Json(req): Json<AssociateZoneRequest>,
-) -> StatusCode {
+) -> impl IntoResponse {
+    // Domain safety: instance types are provider-scoped.
+    // Reject any association where zones are not from the same provider as the instance type.
+    let it_provider: Option<Uuid> = sqlx::query_scalar("SELECT provider_id FROM instance_types WHERE id = $1")
+        .bind(instance_type_id)
+        .fetch_optional(&state.db)
+        .await
+        .unwrap_or(None);
+
+    let Some(it_provider) = it_provider else {
+        return (StatusCode::NOT_FOUND, "Instance type not found".to_string());
+    };
+
+    if !req.zone_ids.is_empty() {
+        // Count zones that belong to the instance type provider.
+        let ok_count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM zones z
+            JOIN regions r ON r.id = z.region_id
+            WHERE z.id = ANY($1)
+              AND r.provider_id = $2
+            "#,
+        )
+        .bind(&req.zone_ids)
+        .bind(it_provider)
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0);
+
+        if ok_count != req.zone_ids.len() as i64 {
+            return (
+                StatusCode::BAD_REQUEST,
+                "Invalid zone_ids: zones must belong to the same provider as the instance type".to_string(),
+            );
+        }
+    }
+
     // Delete existing associations
     let delete_result = sqlx::query("DELETE FROM instance_type_zones WHERE instance_type_id = $1")
         .bind(instance_type_id)
@@ -99,7 +137,7 @@ pub async fn associate_zones_to_instance_type(
 
     if delete_result.is_err() {
         eprintln!("Error deleting existing associations: {:?}", delete_result.err());
-        return StatusCode::INTERNAL_SERVER_ERROR;
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to update associations".to_string());
     }
 
     // Insert new associations
@@ -114,12 +152,12 @@ pub async fn associate_zones_to_instance_type(
 
         if insert_new.is_err() {
             eprintln!("Error inserting instance_type_zones association: {:?}", insert_new.err());
-            return StatusCode::INTERNAL_SERVER_ERROR;
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to update associations".to_string());
         }
 
     }
 
-    StatusCode::OK
+    (StatusCode::OK, "OK".to_string())
 }
 
 // Get instance types available in a specific zone (for dashboard filtering)

@@ -5,14 +5,14 @@ use sqlx::{Pool, Postgres};
 
 pub struct MockProvider {
     db: Pool<Postgres>,
-    provider_id: uuid::Uuid,
+    provider_code: &'static str,
 }
 
 impl MockProvider {
     pub fn new(db: Pool<Postgres>) -> Self {
         Self {
             db,
-            provider_id: uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap(),
+            provider_code: "mock",
         }
     }
 
@@ -38,6 +38,13 @@ impl MockProvider {
     }
 
     async fn validate_zone_and_type(&self, zone: &str, instance_type: &str) -> Result<()> {
+        // Resolve provider id from code (no hardcoded UUIDs)
+        let provider_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM providers WHERE code = $1 LIMIT 1")
+            .bind(self.provider_code)
+            .fetch_optional(&self.db)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("MockProvider: provider '{}' not found in DB", self.provider_code))?;
+
         // Ensure zone exists for mock provider
         let zone_ok: bool = sqlx::query_scalar(
             r#"
@@ -51,7 +58,7 @@ impl MockProvider {
             )
             "#,
         )
-        .bind(self.provider_id)
+        .bind(provider_id)
         .bind(zone)
         .fetch_one(&self.db)
         .await
@@ -78,7 +85,7 @@ impl MockProvider {
             )
             "#,
         )
-        .bind(self.provider_id)
+        .bind(provider_id)
         .bind(instance_type)
         .bind(zone)
         .fetch_one(&self.db)
@@ -113,6 +120,13 @@ impl CloudProvider for MockProvider {
         let third_octet = (((seq / 250) % 250) + 1) as i64;
         let ip = format!("10.{}.{}.{}", 10, third_octet, last_octet);
 
+        // Resolve provider id again (cheap) to persist the mock instance row
+        let provider_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM providers WHERE code = $1 LIMIT 1")
+            .bind(self.provider_code)
+            .fetch_optional(&self.db)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("MockProvider: provider '{}' not found in DB", self.provider_code))?;
+
         sqlx::query(
             r#"
             INSERT INTO mock_provider_instances (
@@ -123,7 +137,7 @@ impl CloudProvider for MockProvider {
             "#,
         )
         .bind(&server_id)
-        .bind(self.provider_id)
+        .bind(provider_id)
         .bind(zone)
         .bind(instance_type)
         .bind(&ip)
@@ -234,12 +248,12 @@ impl CloudProvider for MockProvider {
                 bandwidth_bps: 1_000_000_000,
             },
             inventory::CatalogItem {
-                name: "MOCK-GPU-M".to_string(),
-                code: "MOCK-GPU-M".to_string(),
+                name: "MOCK-4GPU-M".to_string(),
+                code: "MOCK-4GPU-M".to_string(),
                 cost_per_hour: 0.7500,
                 cpu_count: 16,
                 ram_gb: 64,
-                gpu_count: 1,
+                gpu_count: 4,
                 vram_per_gpu_gb: 48,
                 bandwidth_bps: 2_000_000_000,
             },
@@ -277,6 +291,25 @@ impl CloudProvider for MockProvider {
                 created_at,
             })
             .collect())
+    }
+
+    async fn create_volume(
+        &self,
+        _zone: &str,
+        _name: &str,
+        _size_bytes: i64,
+        _volume_type: &str,
+        _perf_iops: Option<i32>,
+    ) -> Result<Option<String>> {
+        Ok(Some(format!("mock-vol-{}", uuid::Uuid::new_v4())))
+    }
+
+    async fn attach_volume(&self, _zone: &str, _server_id: &str, _volume_id: &str) -> Result<bool> {
+        Ok(true)
+    }
+
+    async fn delete_volume(&self, _zone: &str, _volume_id: &str) -> Result<bool> {
+        Ok(true)
     }
 }
 

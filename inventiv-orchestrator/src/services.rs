@@ -9,6 +9,11 @@ use crate::logger;
 use bigdecimal::FromPrimitive;
 use crate::finops_events;
 
+fn gb_to_bytes(gb: i64) -> i64 {
+    // Scaleway APIs use bytes; use decimal GB.
+    gb.saturating_mul(1_000_000_000)
+}
+
 pub async fn process_termination(
     pool: Pool<Postgres>,
     _redis_client: redis::Client,
@@ -81,15 +86,15 @@ pub async fn process_termination(
                     ).await.ok();
                     
                     let result = provider.terminate_instance(&zone, &provider_instance_id).await;
-                    
-                    match &result {
+
+                    let termination_ok: bool = match &result {
                         Ok(true) => {
                             println!("✅ Successfully terminated instance on Provider");
-                            
                             if let Some(log_id) = log_id_provider {
                                 let api_duration = api_start.elapsed().as_millis() as i32;
                                 logger::log_event_complete(&pool, log_id, "success", api_duration, None).await.ok();
                             }
+                            true
                         }
                         Ok(false) => {
                             let err_msg = "Provider termination call returned non-success status";
@@ -114,6 +119,7 @@ pub async fn process_termination(
                                     let api_duration = api_start.elapsed().as_millis() as i32;
                                     logger::log_event_complete(&pool, log_id, "success", api_duration, Some("Instance already deleted")).await.ok();
                                 }
+                                true
                             } else {
                                 println!("⚠️ Error terminating on Provider: {:?}", e);
                                 if let Some(log_id) = log_id_provider {
@@ -126,6 +132,56 @@ pub async fn process_termination(
                                     logger::log_event_complete(&pool, log_id, "failed", duration, Some(&err_msg)).await.ok();
                                 }
                                 return;
+                            }
+                        }
+                    };
+
+                    // Optional: delete attached volumes (if configured) after termination is accepted or already done.
+                    if termination_ok {
+                        let volumes: Vec<(Uuid, String, bool)> = sqlx::query_as(
+                            r#"
+                            SELECT id, provider_volume_id, delete_on_terminate
+                            FROM instance_volumes
+                            WHERE instance_id = $1
+                              AND deleted_at IS NULL
+                            "#,
+                        )
+                        .bind(id_uuid)
+                        .fetch_all(&pool)
+                        .await
+                        .unwrap_or_default();
+
+                        for (vol_row_id, provider_volume_id, delete_on_terminate) in volumes {
+                            if !delete_on_terminate {
+                                continue;
+                            }
+                            let log_id_vol = logger::log_event_with_metadata(
+                                &pool,
+                                "PROVIDER_DELETE_VOLUME",
+                                "in_progress",
+                                id_uuid,
+                                None,
+                                Some(json!({"zone": zone, "volume_id": provider_volume_id, "correlation_id": correlation_id_meta})),
+                            )
+                            .await
+                            .ok();
+                            let vol_start = Instant::now();
+                            let del_res = provider.delete_volume(&zone, &provider_volume_id).await;
+                            if let Some(lid) = log_id_vol {
+                                let dur = vol_start.elapsed().as_millis() as i32;
+                                match &del_res {
+                                    Ok(true) => logger::log_event_complete(&pool, lid, "success", dur, None).await.ok(),
+                                    Ok(false) => logger::log_event_complete(&pool, lid, "failed", dur, Some("Provider returned false")).await.ok(),
+                                    Err(e) => logger::log_event_complete(&pool, lid, "failed", dur, Some(&e.to_string())).await.ok(),
+                                };
+                            }
+                            if del_res.unwrap_or(false) {
+                                let _ = sqlx::query(
+                                    "UPDATE instance_volumes SET status='deleted', deleted_at=NOW() WHERE id=$1"
+                                )
+                                .bind(vol_row_id)
+                                .execute(&pool)
+                                .await;
                             }
                         }
                     }
@@ -271,12 +327,19 @@ pub async fn process_provisioning(
     println!("🔨 [Orchestrator] Processing Provision for instance: {}", instance_uuid);
     
     // 0. Resolve provider from the instance row (supports multiple providers)
-    let provider_id: Uuid = sqlx::query_scalar("SELECT provider_id FROM instances WHERE id = $1")
+    // No hardcoded UUID fallbacks: the DB catalog must contain the provider referenced by the instance.
+    let provider_id: Uuid = match sqlx::query_scalar::<_, Uuid>("SELECT provider_id FROM instances WHERE id = $1")
         .bind(instance_uuid)
         .fetch_optional(&pool)
         .await
         .unwrap_or(None)
-        .unwrap_or_else(|| Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap()); // default scaleway
+    {
+        Some(v) => v,
+        None => {
+            println!("❌ Error: instance {} not found (cannot resolve provider_id).", instance_uuid);
+            return;
+        }
+    };
 
     let provider_name: String = sqlx::query_scalar("SELECT code FROM providers WHERE id = $1")
         .bind(provider_id)
@@ -285,8 +348,19 @@ pub async fn process_provisioning(
         .unwrap_or(None)
         .unwrap_or_else(|| ProviderManager::current_provider_name());
 
-    let zone_id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM zones WHERE code = $1 AND is_active = true")
+    let zone_id: Option<Uuid> = sqlx::query_scalar(
+        r#"
+        SELECT z.id
+        FROM zones z
+        JOIN regions r ON r.id = z.region_id
+        WHERE z.code = $1
+          AND z.is_active = true
+          AND r.provider_id = $2
+        LIMIT 1
+        "#,
+    )
         .bind(&zone)
+        .bind(provider_id)
         .fetch_optional(&pool)
         .await
         .unwrap_or(None);
@@ -409,7 +483,144 @@ pub async fn process_provisioning(
     }
     
     // 2. Create Server
-    let image_id = "8e0da557-5d75-40ba-b928-5984075aa255"; 
+    //
+    // NOTE: Some provider + instance type combos require extra allocation parameters
+    // (disk profile, boot image, security group, etc.). Today we only enforce the
+    // Scaleway L4 constraint (no local volumes) by requiring a compatible boot image id
+    // to be configured per instance type.
+    let mut image_id = "8e0da557-5d75-40ba-b928-5984075aa255".to_string();
+
+    // Provider-specific image override (e.g. GPU-optimized images).
+    // Expected: instance_types.allocation_params = {"scaleway":{"image_id":"<uuid>"}}.
+    if provider_name.to_ascii_lowercase() == "scaleway" {
+        let override_image: Option<String> = sqlx::query_scalar(
+            r#"
+            SELECT NULLIF(TRIM(it.allocation_params->'scaleway'->>'image_id'), '')
+            FROM instance_types it
+            WHERE it.id = $1
+            "#,
+        )
+        .bind(type_id.unwrap())
+        .fetch_optional(&pool)
+        .await
+        .unwrap_or(None);
+        if let Some(img) = override_image {
+            image_id = img;
+        }
+    }
+
+    if provider_name.to_ascii_lowercase() == "scaleway"
+        && instance_type.to_ascii_uppercase().starts_with("L4-")
+    {
+        // Prefer a provider-specific boot image configured on the instance type.
+        // Expected shape: instance_types.allocation_params = {"scaleway": {"boot_image_id": "<uuid>" }}
+        let configured: Option<String> = sqlx::query_scalar(
+            r#"
+            SELECT NULLIF(TRIM(it.allocation_params->'scaleway'->>'boot_image_id'), '')
+            FROM instance_types it
+            WHERE it.id = $1
+            "#,
+        )
+        .bind(type_id.unwrap())
+        .fetch_optional(&pool)
+        .await
+        .unwrap_or(None);
+
+        if let Some(img) = configured {
+            // L4 override has priority.
+            image_id = img;
+        } else {
+            // Try provider-side auto-discovery.
+            if let Some(provider) = ProviderManager::get_provider(&provider_name, pool.clone()) {
+                match provider.resolve_boot_image(&zone, &instance_type).await {
+                    Ok(Some(img)) => {
+                        println!(
+                            "ℹ️ Scaleway L4: auto-resolved boot image '{}' for zone '{}' (type '{}')",
+                            img, zone, instance_type
+                        );
+                        image_id = img;
+
+                        // Make subsequent L4 provisions deterministic: persist the resolved boot image
+                        // onto the instance type allocation_params if it isn't set already.
+                        let _ = sqlx::query(
+                            r#"
+                            UPDATE instance_types
+                            SET allocation_params =
+                                jsonb_set(
+                                    allocation_params,
+                                    '{scaleway}',
+                                    COALESCE(allocation_params->'scaleway', '{}'::jsonb)
+                                      || jsonb_build_object('boot_image_id', to_jsonb($2::text)),
+                                    true
+                                )
+                            WHERE id = $1
+                              AND NULLIF(TRIM(allocation_params->'scaleway'->>'boot_image_id'), '') IS NULL
+                            "#,
+                        )
+                        .bind(type_id.unwrap())
+                        .bind(&image_id)
+                        .execute(&pool)
+                        .await;
+                    }
+                    Ok(None) => {
+                        let msg = "Scaleway L4 requires a diskless/compatible boot image. Auto-discovery did not find a suitable image. Configure instance_types.allocation_params.scaleway.boot_image_id for this L4 type.".to_string();
+                        eprintln!("❌ {}", msg);
+                        if let Some(log_id) = log_id_execute {
+                            let duration = start.elapsed().as_millis() as i32;
+                            logger::log_event_complete(&pool, log_id, "failed", duration, Some(&msg)).await.ok();
+                        }
+                        let _ = sqlx::query(
+                            "UPDATE instances
+                             SET status = 'failed',
+                                 error_code = COALESCE(error_code, 'SCW_L4_BOOT_IMAGE_REQUIRED'),
+                                 error_message = COALESCE($2, error_message),
+                                 failed_at = COALESCE(failed_at, NOW())
+                             WHERE id = $1"
+                        )
+                        .bind(instance_uuid)
+                        .bind(&msg)
+                        .execute(&pool)
+                        .await;
+                        return;
+                    }
+                    Err(e) => {
+                        let msg = format!("Scaleway L4 boot image auto-discovery failed: {}", e);
+                        eprintln!("❌ {}", msg);
+                        if let Some(log_id) = log_id_execute {
+                            let duration = start.elapsed().as_millis() as i32;
+                            logger::log_event_complete(&pool, log_id, "failed", duration, Some(&msg)).await.ok();
+                        }
+                        let _ = sqlx::query(
+                            "UPDATE instances
+                             SET status = 'failed',
+                                 error_code = COALESCE(error_code, 'SCW_L4_BOOT_IMAGE_RESOLVE_FAILED'),
+                                 error_message = COALESCE($2, error_message),
+                                 failed_at = COALESCE(failed_at, NOW())
+                             WHERE id = $1"
+                        )
+                        .bind(instance_uuid)
+                        .bind(&msg)
+                        .execute(&pool)
+                        .await;
+                        return;
+                    }
+                }
+            } else {
+                let msg = "Missing Provider Credentials".to_string();
+                eprintln!("❌ {}", msg);
+                if let Some(log_id) = log_id_execute {
+                    let duration = start.elapsed().as_millis() as i32;
+                    logger::log_event_complete(&pool, log_id, "failed", duration, Some(&msg)).await.ok();
+                }
+                let _ = sqlx::query("UPDATE instances SET status = 'failed', error_message = COALESCE($2, error_message), failed_at = COALESCE(failed_at, NOW()) WHERE id = $1")
+                    .bind(instance_uuid)
+                    .bind(&msg)
+                    .execute(&pool)
+                    .await;
+                return;
+            }
+        }
+    }
     
     // LOG 3: PROVIDER_CREATE (API call)
     let api_start = Instant::now();
@@ -418,7 +629,7 @@ pub async fn process_provisioning(
         Some(json!({"zone": zone, "instance_type": instance_type, "correlation_id": correlation_id_meta})),
     ).await.ok();
     
-    let server_id_result = provider.create_instance(&zone, &instance_type, image_id).await;
+    let server_id_result = provider.create_instance(&zone, &instance_type, &image_id).await;
 
     match server_id_result {
         Ok(server_id) => {
@@ -467,6 +678,168 @@ pub async fn process_provisioning(
                 }
                 return;
             }
+
+            // Optional: create + attach a data volume (SBS) based on instance type allocation params.
+            // allocation_params shape:
+            // {
+            //   "<provider_code>": {
+            //     "data_volume_gb": 200,
+            //     "data_volume_perf_iops": 5000,
+            //     "data_volume_delete_on_terminate": true
+            //   }
+            // }
+            let data_conf_row: Option<(Option<i64>, Option<i32>, bool)> = sqlx::query_as(
+                r#"
+                SELECT
+                  NULLIF(TRIM(it.allocation_params->($2::text)->>'data_volume_gb'), '')::bigint AS gb,
+                  NULLIF(TRIM(it.allocation_params->($2::text)->>'data_volume_perf_iops'), '')::int AS perf,
+                  COALESCE((it.allocation_params->($2::text)->>'data_volume_delete_on_terminate')::bool, TRUE) AS del
+                FROM instance_types it
+                WHERE it.id = $1
+                "#,
+            )
+            .bind(type_id.unwrap())
+            .bind(&provider_name)
+            .fetch_optional(&pool)
+            .await
+            .unwrap_or(None)
+            ;
+
+            let data_conf: Option<(i64, Option<i32>, bool)> = data_conf_row
+                .and_then(|(gb_opt, perf_opt, del)| gb_opt.map(|gb| (gb, perf_opt, del)));
+
+            if let Some((gb, perf_iops, delete_on_terminate)) = data_conf {
+                if gb > 0 {
+                    let vol_name = format!("inventiv-data-{}", instance_uuid);
+                    let create_log = logger::log_event_with_metadata(
+                        &pool,
+                        "PROVIDER_CREATE_VOLUME",
+                        "in_progress",
+                        instance_uuid,
+                        None,
+                        Some(json!({"zone": zone, "server_id": server_id, "name": vol_name, "size_gb": gb, "correlation_id": correlation_id_meta})),
+                    )
+                    .await
+                    .ok();
+                    let vol_start = Instant::now();
+                    let created = provider
+                        .create_volume(&zone, &vol_name, gb_to_bytes(gb), "sbs_volume", perf_iops)
+                        .await;
+                    let vol_id = match created {
+                        Ok(Some(id)) => id,
+                        Ok(None) => {
+                            let msg = "Provider does not support volume creation".to_string();
+                            if let Some(lid) = create_log {
+                                let dur = vol_start.elapsed().as_millis() as i32;
+                                logger::log_event_complete(&pool, lid, "failed", dur, Some(&msg)).await.ok();
+                            }
+                            // Don't fail provisioning for providers without volume support.
+                            String::new()
+                        }
+                        Err(e) => {
+                            let msg = format!("Failed to create data volume: {}", e);
+                            if let Some(lid) = create_log {
+                                let dur = vol_start.elapsed().as_millis() as i32;
+                                logger::log_event_complete(&pool, lid, "failed", dur, Some(&msg)).await.ok();
+                            }
+                            // Cleanup created server to avoid leak.
+                            let _ = provider.terminate_instance(&zone, &server_id).await;
+                            let _ = sqlx::query(
+                                "UPDATE instances SET status='failed', error_code=COALESCE(error_code,'PROVIDER_VOLUME_CREATE_FAILED'), error_message=COALESCE($2,error_message), failed_at=COALESCE(failed_at,NOW()) WHERE id=$1"
+                            )
+                            .bind(instance_uuid)
+                            .bind(&msg)
+                            .execute(&pool)
+                            .await;
+                            if let Some(log_id) = log_id_execute {
+                                let duration = start.elapsed().as_millis() as i32;
+                                logger::log_event_complete(&pool, log_id, "failed", duration, Some(&msg)).await.ok();
+                            }
+                            return;
+                        }
+                    };
+                    if !vol_id.is_empty() {
+                        if let Some(lid) = create_log {
+                            let dur = vol_start.elapsed().as_millis() as i32;
+                            logger::log_event_complete(&pool, lid, "success", dur, None).await.ok();
+                        }
+
+                        let row_id = Uuid::new_v4();
+                        let _ = sqlx::query(
+                            "INSERT INTO instance_volumes (id, instance_id, provider_id, zone_code, provider_volume_id, volume_type, size_bytes, perf_iops, delete_on_terminate, status, attached_at)
+                             VALUES ($1,$2,$3,$4,$5,'sbs_volume',$6,$7,$8,'creating',NULL)"
+                        )
+                        .bind(row_id)
+                        .bind(instance_uuid)
+                        .bind(provider_id)
+                        .bind(&zone)
+                        .bind(&vol_id)
+                        .bind(gb_to_bytes(gb))
+                        .bind(perf_iops)
+                        .bind(delete_on_terminate)
+                        .execute(&pool)
+                        .await;
+
+                        let attach_log = logger::log_event_with_metadata(
+                            &pool,
+                            "PROVIDER_ATTACH_VOLUME",
+                            "in_progress",
+                            instance_uuid,
+                            None,
+                            Some(json!({"zone": zone, "server_id": server_id, "volume_id": vol_id, "correlation_id": correlation_id_meta})),
+                        )
+                        .await
+                        .ok();
+                        let attach_start = Instant::now();
+                        let attach_res = provider.attach_volume(&zone, &server_id, &vol_id).await;
+                        if let Some(lid) = attach_log {
+                            let dur = attach_start.elapsed().as_millis() as i32;
+                            match &attach_res {
+                                Ok(true) => logger::log_event_complete(&pool, lid, "success", dur, None).await.ok(),
+                                Ok(false) => logger::log_event_complete(&pool, lid, "failed", dur, Some("Provider returned false")).await.ok(),
+                                Err(e) => logger::log_event_complete(&pool, lid, "failed", dur, Some(&e.to_string())).await.ok(),
+                            };
+                        }
+                        if attach_res.unwrap_or(false) {
+                            let _ = sqlx::query(
+                                "UPDATE instance_volumes SET status='attached', attached_at=NOW() WHERE id=$1"
+                            )
+                            .bind(row_id)
+                            .execute(&pool)
+                            .await;
+                        } else {
+                            let msg = "Failed to attach data volume".to_string();
+                            let _ = sqlx::query("UPDATE instance_volumes SET status='failed', error_message=$2 WHERE id=$1")
+                                .bind(row_id)
+                                .bind(&msg)
+                                .execute(&pool)
+                                .await;
+                            // Best-effort cleanup of the created volume to avoid cost leak.
+                            let _ = provider.delete_volume(&zone, &vol_id).await;
+                            let _ = sqlx::query(
+                                "UPDATE instance_volumes SET status='deleted', deleted_at=NOW() WHERE id=$1"
+                            )
+                            .bind(row_id)
+                            .execute(&pool)
+                            .await;
+                            // Cleanup server to avoid leak
+                            let _ = provider.terminate_instance(&zone, &server_id).await;
+                            let _ = sqlx::query(
+                                "UPDATE instances SET status='failed', error_code=COALESCE(error_code,'PROVIDER_VOLUME_ATTACH_FAILED'), error_message=COALESCE($2,error_message), failed_at=COALESCE(failed_at,NOW()) WHERE id=$1"
+                            )
+                            .bind(instance_uuid)
+                            .bind(&msg)
+                            .execute(&pool)
+                            .await;
+                            if let Some(log_id) = log_id_execute {
+                                let duration = start.elapsed().as_millis() as i32;
+                                logger::log_event_complete(&pool, log_id, "failed", duration, Some(&msg)).await.ok();
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
              
             // LOG 3.1: PROVIDER_START (API call)
             let start_api = Instant::now();
@@ -491,10 +864,75 @@ pub async fn process_provisioning(
                     let duration = start.elapsed().as_millis() as i32;
                     logger::log_event_complete(&pool, log_id, "failed", duration, Some(&msg)).await.ok();
                 }
-                let _ = sqlx::query("UPDATE instances SET status = 'provisioning_failed' WHERE id = $1")
-                    .bind(instance_uuid)
+
+                // Best-effort cleanup: if create succeeded but start failed, we must not leak provider resources.
+                let terminate_log = logger::log_event_with_metadata(
+                    &pool,
+                    "PROVIDER_TERMINATE",
+                    "in_progress",
+                    instance_uuid,
+                    None,
+                    Some(json!({"zone": zone, "server_id": server_id, "correlation_id": correlation_id_meta, "reason": "start_failed_cleanup"})),
+                )
+                .await
+                .ok();
+                let terminate_start = Instant::now();
+                let terminate_res = provider.terminate_instance(&zone, &server_id).await;
+                if let Some(lid) = terminate_log {
+                    let dur = terminate_start.elapsed().as_millis() as i32;
+                    match &terminate_res {
+                        Ok(true) => logger::log_event_complete(&pool, lid, "success", dur, None).await.ok(),
+                        Ok(false) => logger::log_event_complete(&pool, lid, "failed", dur, Some("Provider terminate returned false")).await.ok(),
+                        Err(err) => logger::log_event_complete(&pool, lid, "failed", dur, Some(&err.to_string())).await.ok(),
+                    };
+                }
+
+                // Best-effort cleanup: delete volumes if any were created.
+                let vols: Vec<(Uuid, String, bool)> = sqlx::query_as(
+                    r#"
+                    SELECT id, provider_volume_id, delete_on_terminate
+                    FROM instance_volumes
+                    WHERE instance_id = $1
+                      AND deleted_at IS NULL
+                    "#,
+                )
+                .bind(instance_uuid)
+                .fetch_all(&pool)
+                .await
+                .unwrap_or_default();
+                for (vol_row_id, provider_volume_id, delete_on_terminate) in vols {
+                    if !delete_on_terminate {
+                        continue;
+                    }
+                    let _ = provider.delete_volume(&zone, &provider_volume_id).await;
+                    let _ = sqlx::query(
+                        "UPDATE instance_volumes SET status='deleted', deleted_at=NOW() WHERE id=$1"
+                    )
+                    .bind(vol_row_id)
                     .execute(&pool)
                     .await;
+                }
+
+                // Persist error on the instance row, and move it to terminating if cleanup was requested.
+                // This ensures the terminator job can confirm provider deletion and finalize termination.
+                let next_status = match terminate_res {
+                    Ok(true) => "terminating",
+                    _ => "provisioning_failed",
+                };
+                let _ = sqlx::query(
+                    "UPDATE instances
+                     SET status = $2::instance_status,
+                         error_code = COALESCE(error_code, 'PROVIDER_START_FAILED'),
+                         error_message = COALESCE($3, error_message),
+                         failed_at = COALESCE(failed_at, NOW()),
+                         deletion_reason = COALESCE(deletion_reason, 'provider_start_failed_cleanup')
+                     WHERE id = $1"
+                )
+                .bind(instance_uuid)
+                .bind(next_status)
+                .bind(&msg)
+                .execute(&pool)
+                .await;
                 return;
             } else if let Some(lid) = log_id_start {
                 let duration = start_api.elapsed().as_millis() as i32;
@@ -598,8 +1036,18 @@ pub async fn process_provisioning(
                 let duration = start.elapsed().as_millis() as i32;
                 logger::log_event_complete(&pool, log_id, "failed", duration, Some(&msg)).await.ok();
              }
-             sqlx::query("UPDATE instances SET status = 'failed' WHERE id = $1")
-                 .bind(instance_uuid).execute(&pool).await.ok();
+             let _ = sqlx::query(
+                 "UPDATE instances
+                  SET status = 'failed',
+                      error_code = COALESCE(error_code, 'PROVIDER_CREATE_FAILED'),
+                      error_message = COALESCE($2, error_message),
+                      failed_at = COALESCE(failed_at, NOW())
+                  WHERE id = $1"
+             )
+             .bind(instance_uuid)
+             .bind(&msg)
+             .execute(&pool)
+             .await;
         }
     }
 }
@@ -762,17 +1210,56 @@ pub async fn process_full_reconciliation(pool: Pool<Postgres>) {
                          if !exists && inst.status != "terminated" && inst.status != "archived" {
                              println!("🔍 [Full Reconciliation] Found orphan: {} ({}) Status: {}", inst.name, inst.provider_id, inst.status);
                              
-                             // Resolve Zone ID
-                             let zone_id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM zones WHERE code = $1 OR name = $1 LIMIT 1")
-                                 .bind(&zone)
-                                 .fetch_optional(&pool)
-                                 .await
-                                 .unwrap_or(None);
+                            // Resolve Provider ID (by code) + Zone ID (by provider + zone code)
+                            let provider_id: Option<Uuid> = sqlx::query_scalar(
+                                "SELECT id FROM providers WHERE code = $1 LIMIT 1"
+                            )
+                            .bind(&provider_name)
+                            .fetch_optional(&pool)
+                            .await
+                            .unwrap_or(None);
+
+                            let zone_id: Option<Uuid> = if let Some(pid) = provider_id {
+                                sqlx::query_scalar(
+                                    r#"
+                                    SELECT z.id
+                                    FROM zones z
+                                    JOIN regions r ON r.id = z.region_id
+                                    WHERE z.code = $1
+                                      AND r.provider_id = $2
+                                    LIMIT 1
+                                    "#,
+                                )
+                                .bind(&zone)
+                                .bind(pid)
+                                .fetch_optional(&pool)
+                                .await
+                                .unwrap_or(None)
+                            } else {
+                                None
+                            };
                                  
-                            if let Some(zid) = zone_id {
+                            if let (Some(pid), Some(zid)) = (provider_id, zone_id) {
                                  let new_id = Uuid::new_v4();
-                                 let provider_uuid = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap_or_default(); // Scaleway
-                                 let type_id = Uuid::parse_str("00000000-0000-0000-0000-000000000030").unwrap_or_default(); // Default RENDER-S
+                                let type_id: Option<Uuid> = sqlx::query_scalar(
+                                    r#"
+                                    SELECT it.id
+                                    FROM instance_types it
+                                    WHERE it.provider_id = $1
+                                      AND it.is_active = true
+                                    ORDER BY it.gpu_count DESC, it.vram_per_gpu_gb DESC, it.name ASC
+                                    LIMIT 1
+                                    "#,
+                                )
+                                .bind(pid)
+                                .fetch_optional(&pool)
+                                .await
+                                .unwrap_or(None);
+
+                                let Some(type_id) = type_id else {
+                                    println!("⚠️ [Full Reconciliation] No instance_types found for provider '{}', skipping orphan import.", provider_name);
+                                    continue;
+                                };
 
                                  // Map Status (Simplistic)
                                  let status = match inst.status.as_str() {
@@ -787,7 +1274,7 @@ pub async fn process_full_reconciliation(pool: Pool<Postgres>) {
                                      VALUES ($1, $2, $3, $4, $5::instance_status, $6, $7::inet, NOW(), '{}')"
                                  )
                                  .bind(new_id)
-                                 .bind(provider_uuid)
+                                .bind(pid)
                                  .bind(zid)
                                  .bind(type_id)
                                  .bind(status)

@@ -2,7 +2,7 @@ use axum::{
     extract::{State, Path},
     routing::{get, post},
     Router, Json,
-    http::StatusCode,
+    http::{StatusCode, HeaderMap},
     response::IntoResponse,
 };
 use tower_http::cors::{CorsLayer, Any};
@@ -13,6 +13,7 @@ use std::sync::Arc;
 use redis::AsyncCommands;
 use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
 use std::fs;
+use axum::body::Bytes;
 
 // Swagger
 use utoipa::{OpenApi, IntoParams};
@@ -74,6 +75,9 @@ async fn main() {
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", api_docs::ApiDoc::openapi()))
         .route("/", get(root))
         .route("/deployments", post(create_deployment))
+        // Worker control-plane proxy (dev/local convenience; staging/prod handled by edge too)
+        .route("/internal/worker/register", post(proxy_worker_register))
+        .route("/internal/worker/heartbeat", post(proxy_worker_heartbeat))
         // NEW READ ENDPOINTS
         .route("/instances", get(list_instances))
         .route("/instances/:id/archive", axum::routing::put(archive_instance))
@@ -102,6 +106,7 @@ async fn main() {
         .route("/zones/:zone_id/instance_types", get(instance_type_zones::list_instance_types_for_zone))
         // FINOPS (dashboard)
         .route("/finops/cost/current", get(finops::get_cost_current))
+        .route("/finops/dashboard/costs/current", get(finops::get_costs_dashboard_current))
         .route("/finops/cost/forecast/minute", get(finops::get_cost_forecast_series))
         .route("/finops/cost/actual/minute", get(finops::get_cost_actual_series))
         .route("/finops/cost/cumulative/minute", get(finops::get_cost_cumulative_series))
@@ -112,6 +117,60 @@ async fn main() {
     println!("Backend listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+fn orchestrator_internal_url() -> String {
+    std::env::var("ORCHESTRATOR_INTERNAL_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "http://orchestrator:8001".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+async fn proxy_post_to_orchestrator(
+    path: &str,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    let base = orchestrator_internal_url();
+    let url = format!("{}/{}", base, path.trim_start_matches('/'));
+
+    let mut req = reqwest::Client::new().post(url).body(body.to_vec());
+    // Forward Authorization header (worker auth token)
+    if let Some(auth) = headers.get(axum::http::header::AUTHORIZATION) {
+        if let Ok(s) = auth.to_str() {
+            req = req.header(axum::http::header::AUTHORIZATION, s);
+        }
+    }
+    // Preserve content-type if present
+    if let Some(ct) = headers.get(axum::http::header::CONTENT_TYPE) {
+        if let Ok(s) = ct.to_str() {
+            req = req.header(axum::http::header::CONTENT_TYPE, s);
+        }
+    }
+
+    match req.send().await {
+        Ok(resp) => {
+            let status = StatusCode::from_u16(resp.status().as_u16())
+                .unwrap_or(StatusCode::BAD_GATEWAY);
+            let bytes = resp.bytes().await.unwrap_or_default();
+            (status, bytes).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error":"orchestrator_unreachable","message": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn proxy_worker_register(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
+    proxy_post_to_orchestrator("/internal/worker/register", headers, body).await
+}
+
+async fn proxy_worker_heartbeat(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
+    proxy_post_to_orchestrator("/internal/worker/heartbeat", headers, body).await
 }
 
 async fn maybe_seed_catalog(pool: &Pool<Postgres>) {

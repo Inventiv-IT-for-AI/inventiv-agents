@@ -210,6 +210,18 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
                 cell: ({ row }) => getActionTypeBadge(row.action_type),
             },
             {
+                id: "provider",
+                label: "Provider",
+                width: 140,
+                cell: ({ row }) => <span className="truncate">{row.provider_name ?? "-"}</span>,
+            },
+            {
+                id: "type",
+                label: "Type",
+                width: 180,
+                cell: ({ row }) => <span className="truncate">{row.instance_type ?? "-"}</span>,
+            },
+            {
                 id: "component",
                 label: "Composant",
                 width: 140,

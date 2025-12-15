@@ -10,8 +10,34 @@ use std::sync::Arc;
 use uuid::Uuid;
 use inventiv_common::{Provider, Region, Zone, InstanceType};
 use crate::AppState;
+use sqlx::FromRow;
 
 // --- DTOs ---
+
+#[derive(Debug, Serialize, Deserialize, FromRow, utoipa::ToSchema)]
+pub struct RegionSearchRow {
+    pub id: Uuid,
+    pub provider_id: Uuid,
+    pub provider_name: String,
+    pub provider_code: Option<String>,
+    pub name: String,
+    pub code: Option<String>,
+    pub is_active: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, FromRow, utoipa::ToSchema)]
+pub struct ZoneSearchRow {
+    pub id: Uuid,
+    pub region_id: Uuid,
+    pub region_name: String,
+    pub region_code: Option<String>,
+    pub provider_id: Uuid,
+    pub provider_name: String,
+    pub provider_code: Option<String>,
+    pub name: String,
+    pub code: Option<String>,
+    pub is_active: bool,
+}
 
 #[derive(Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct SearchQuery {
@@ -33,6 +59,27 @@ pub struct SearchResponse<T> {
     pub total_count: i64,
     pub filtered_count: i64,
     pub rows: Vec<T>,
+}
+
+#[derive(Debug, Serialize, Deserialize, FromRow, utoipa::ToSchema)]
+pub struct InstanceTypeSearchRow {
+    pub id: Uuid,
+    pub provider_id: Uuid,
+    pub provider_name: String,
+    pub provider_code: Option<String>,
+    pub name: String,
+    pub code: Option<String>,
+    pub gpu_count: i32,
+    pub vram_per_gpu_gb: i32,
+    pub is_active: bool,
+    #[serde(default)]
+    pub cost_per_hour: Option<f64>,
+    #[serde(default)]
+    pub cpu_count: i32,
+    #[serde(default)]
+    pub ram_gb: i32,
+    #[serde(default)]
+    pub bandwidth_bps: i64,
 }
 
 fn dir_sql(dir: Option<&str>) -> &'static str {
@@ -62,6 +109,9 @@ pub struct UpdateInstanceTypeRequest {
     pub name: Option<String>,
     pub is_active: Option<bool>,
     pub cost_per_hour: Option<f64>,
+    /// Provider-specific allocation parameters (JSON).
+    /// Example for Scaleway L4: {"scaleway":{"boot_image_id":"<uuid>"}}.
+    pub allocation_params: Option<serde_json::Value>,
 }
 
 // --- Handlers ---
@@ -91,12 +141,12 @@ pub async fn list_regions(State(state): State<Arc<AppState>>) -> Json<Vec<Region
     path = "/regions/search",
     tag = "Settings",
     params(SearchQuery),
-    responses((status = 200, description = "Search regions", body = SearchResponse<Region>))
+    responses((status = 200, description = "Search regions", body = SearchResponse<RegionSearchRow>))
 )]
 pub async fn search_regions(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SearchQuery>,
-) -> Json<SearchResponse<Region>> {
+) -> Json<SearchResponse<RegionSearchRow>> {
     let offset = params.offset.unwrap_or(0).max(0);
     let limit = params.limit.unwrap_or(200).clamp(1, 500);
     let q_like: Option<String> = params
@@ -114,10 +164,11 @@ pub async fn search_regions(
     let filtered_count: i64 = sqlx::query_scalar(
         r#"
         SELECT COUNT(*)
-        FROM regions
-        WHERE ($1::uuid IS NULL OR provider_id = $1)
-          AND ($2::bool IS NULL OR is_active = $2)
-          AND ($3::text IS NULL OR name ILIKE $3 OR code ILIKE $3)
+        FROM regions r
+        JOIN providers p ON p.id = r.provider_id
+        WHERE ($1::uuid IS NULL OR r.provider_id = $1)
+          AND ($2::bool IS NULL OR r.is_active = $2)
+          AND ($3::text IS NULL OR r.name ILIKE $3 OR r.code ILIKE $3)
         "#,
     )
     .bind(params.provider_id)
@@ -136,16 +187,24 @@ pub async fn search_regions(
 
     let sql = format!(
         r#"
-        SELECT id, provider_id, name, code, is_active
-        FROM regions
-        WHERE ($1::uuid IS NULL OR provider_id = $1)
-          AND ($2::bool IS NULL OR is_active = $2)
-          AND ($3::text IS NULL OR name ILIKE $3 OR code ILIKE $3)
+        SELECT
+          r.id,
+          r.provider_id,
+          p.name as provider_name,
+          p.code as provider_code,
+          r.name,
+          r.code,
+          r.is_active
+        FROM regions r
+        JOIN providers p ON p.id = r.provider_id
+        WHERE ($1::uuid IS NULL OR r.provider_id = $1)
+          AND ($2::bool IS NULL OR r.is_active = $2)
+          AND ($3::text IS NULL OR r.name ILIKE $3 OR r.code ILIKE $3)
         ORDER BY {order_by} {dir}, id {dir}
         LIMIT $4 OFFSET $5
         "#
     );
-    let rows: Vec<Region> = sqlx::query_as(&sql)
+    let rows: Vec<RegionSearchRow> = sqlx::query_as(&sql)
         .bind(params.provider_id)
         .bind(params.is_active)
         .bind(q_like.as_deref())
@@ -228,12 +287,12 @@ pub async fn list_zones(State(state): State<Arc<AppState>>) -> Json<Vec<Zone>> {
     path = "/zones/search",
     tag = "Settings",
     params(SearchQuery),
-    responses((status = 200, description = "Search zones", body = SearchResponse<Zone>))
+    responses((status = 200, description = "Search zones", body = SearchResponse<ZoneSearchRow>))
 )]
 pub async fn search_zones(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SearchQuery>,
-) -> Json<SearchResponse<Zone>> {
+) -> Json<SearchResponse<ZoneSearchRow>> {
     let offset = params.offset.unwrap_or(0).max(0);
     let limit = params.limit.unwrap_or(200).clamp(1, 500);
     let q_like: Option<String> = params
@@ -251,13 +310,17 @@ pub async fn search_zones(
     let filtered_count: i64 = sqlx::query_scalar(
         r#"
         SELECT COUNT(*)
-        FROM zones
-        WHERE ($1::uuid IS NULL OR region_id = $1)
-          AND ($2::bool IS NULL OR is_active = $2)
-          AND ($3::text IS NULL OR name ILIKE $3 OR code ILIKE $3)
+        FROM zones z
+        JOIN regions r ON r.id = z.region_id
+        JOIN providers p ON p.id = r.provider_id
+        WHERE ($1::uuid IS NULL OR z.region_id = $1)
+          AND ($2::uuid IS NULL OR r.provider_id = $2)
+          AND ($3::bool IS NULL OR z.is_active = $3)
+          AND ($4::text IS NULL OR z.name ILIKE $4 OR z.code ILIKE $4)
         "#,
     )
     .bind(params.region_id)
+    .bind(params.provider_id)
     .bind(params.is_active)
     .bind(q_like.as_deref())
     .fetch_one(&state.db)
@@ -273,17 +336,31 @@ pub async fn search_zones(
 
     let sql = format!(
         r#"
-        SELECT id, region_id, name, code, is_active
-        FROM zones
-        WHERE ($1::uuid IS NULL OR region_id = $1)
-          AND ($2::bool IS NULL OR is_active = $2)
-          AND ($3::text IS NULL OR name ILIKE $3 OR code ILIKE $3)
+        SELECT
+          z.id,
+          z.region_id,
+          r.name as region_name,
+          r.code as region_code,
+          r.provider_id,
+          p.name as provider_name,
+          p.code as provider_code,
+          z.name,
+          z.code,
+          z.is_active
+        FROM zones z
+        JOIN regions r ON r.id = z.region_id
+        JOIN providers p ON p.id = r.provider_id
+        WHERE ($1::uuid IS NULL OR z.region_id = $1)
+          AND ($2::uuid IS NULL OR r.provider_id = $2)
+          AND ($3::bool IS NULL OR z.is_active = $3)
+          AND ($4::text IS NULL OR z.name ILIKE $4 OR z.code ILIKE $4)
         ORDER BY {order_by} {dir}, id {dir}
-        LIMIT $4 OFFSET $5
+        LIMIT $5 OFFSET $6
         "#
     );
-    let rows: Vec<Zone> = sqlx::query_as(&sql)
+    let rows: Vec<ZoneSearchRow> = sqlx::query_as(&sql)
         .bind(params.region_id)
+        .bind(params.provider_id)
         .bind(params.is_active)
         .bind(q_like.as_deref())
         .bind(limit)
@@ -370,12 +447,12 @@ pub async fn list_instance_types(State(state): State<Arc<AppState>>) -> Json<Vec
     path = "/instance_types/search",
     tag = "Settings",
     params(SearchQuery),
-    responses((status = 200, description = "Search instance types", body = SearchResponse<InstanceType>))
+    responses((status = 200, description = "Search instance types", body = SearchResponse<InstanceTypeSearchRow>))
 )]
 pub async fn search_instance_types(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SearchQuery>,
-) -> Json<SearchResponse<InstanceType>> {
+) -> Json<SearchResponse<InstanceTypeSearchRow>> {
     let offset = params.offset.unwrap_or(0).max(0);
     let limit = params.limit.unwrap_or(200).clamp(1, 500);
     let q_like: Option<String> = params
@@ -393,10 +470,11 @@ pub async fn search_instance_types(
     let filtered_count: i64 = sqlx::query_scalar(
         r#"
         SELECT COUNT(*)
-        FROM instance_types
-        WHERE ($1::uuid IS NULL OR provider_id = $1)
-          AND ($2::bool IS NULL OR is_active = $2)
-          AND ($3::text IS NULL OR name ILIKE $3 OR code ILIKE $3)
+        FROM instance_types it
+        JOIN providers p ON p.id = it.provider_id
+        WHERE ($1::uuid IS NULL OR it.provider_id = $1)
+          AND ($2::bool IS NULL OR it.is_active = $2)
+          AND ($3::text IS NULL OR it.name ILIKE $3 OR it.code ILIKE $3)
         "#,
     )
     .bind(params.provider_id)
@@ -419,20 +497,29 @@ pub async fn search_instance_types(
     let sql = format!(
         r#"
         SELECT
-          id, provider_id, name, code,
-          gpu_count, vram_per_gpu_gb,
-          cpu_count, ram_gb, bandwidth_bps,
-          is_active,
-          CAST(cost_per_hour AS DOUBLE PRECISION) as "cost_per_hour"
-        FROM instance_types
-        WHERE ($1::uuid IS NULL OR provider_id = $1)
-          AND ($2::bool IS NULL OR is_active = $2)
-          AND ($3::text IS NULL OR name ILIKE $3 OR code ILIKE $3)
+          it.id,
+          it.provider_id,
+          p.name as provider_name,
+          p.code as provider_code,
+          it.name,
+          it.code,
+          it.gpu_count,
+          it.vram_per_gpu_gb,
+          it.cpu_count,
+          it.ram_gb,
+          it.bandwidth_bps,
+          it.is_active,
+          CAST(it.cost_per_hour AS DOUBLE PRECISION) as "cost_per_hour"
+        FROM instance_types it
+        JOIN providers p ON p.id = it.provider_id
+        WHERE ($1::uuid IS NULL OR it.provider_id = $1)
+          AND ($2::bool IS NULL OR it.is_active = $2)
+          AND ($3::text IS NULL OR it.name ILIKE $3 OR it.code ILIKE $3)
         ORDER BY {order_by} {dir}, id {dir}
         LIMIT $4 OFFSET $5
         "#
     );
-    let rows: Vec<InstanceType> = sqlx::query_as(&sql)
+    let rows: Vec<InstanceTypeSearchRow> = sqlx::query_as(&sql)
         .bind(params.provider_id)
         .bind(params.is_active)
         .bind(q_like.as_deref())
@@ -465,13 +552,15 @@ pub async fn update_instance_type(
             code = COALESCE($1, code), 
             name = COALESCE($2, name), 
             is_active = COALESCE($3, is_active),
-            cost_per_hour = COALESCE($4, cost_per_hour)
-         WHERE id = $5"
+            cost_per_hour = COALESCE($4, cost_per_hour),
+            allocation_params = COALESCE($5, allocation_params)
+         WHERE id = $6"
     )
     .bind(req.code)
     .bind(req.name)
     .bind(req.is_active)
     .bind(req.cost_per_hour)
+    .bind(req.allocation_params)
     .bind(id)
     .execute(&state.db)
     .await;

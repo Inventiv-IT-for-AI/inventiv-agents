@@ -41,7 +41,7 @@ services:
       dockerfile: Dockerfile.agent
     profiles: ["worker-local"]
     environment:
-      - CONTROL_PLANE_URL=http://orchestrator:8001
+      - CONTROL_PLANE_URL=http://api:8003
       - WORKER_AUTH_TOKEN=${WORKER_AUTH_TOKEN:-dev-worker-token}
       - INSTANCE_ID=${INSTANCE_ID:-}
       - MODEL_ID=demo-model
