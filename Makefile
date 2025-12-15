@@ -28,7 +28,7 @@ PRD_REMOTE_SSH ?=
 	images-build images-push images-pull images-promote-stg images-promote-prod \
 	images-build-version images-push-version images-build-latest images-push-latest \
 	images-publish-stg images-publish-prod \
-	ghcr-token-local \
+	ghcr-token-local ghcr-login \
 	dev-create dev-create-edge dev-start dev-start-edge dev-stop dev-delete dev-ps dev-logs dev-cert \
 	stg-provision stg-destroy stg-bootstrap stg-secrets-sync stg-rebuild stg-create stg-update stg-start stg-stop stg-delete stg-status stg-logs stg-cert stg-renew stg-ghcr-token \
 	prod-provision prod-destroy prod-bootstrap prod-secrets-sync prod-rebuild prod-create prod-update prod-start prod-stop prod-delete prod-status prod-logs prod-cert prod-renew prod-ghcr-token \
@@ -122,13 +122,23 @@ images-publish-prod:
 
 ghcr-token-local:
 	@mkdir -p deploy/secrets
-	@echo "==> Ensuring gh auth has packages scope"
-	@gh auth refresh -h github.com -s read:packages -s write:packages >/dev/null 2>&1 || true
 	@echo "==> Writing deploy/secrets/ghcr_token (gitignored)"
-	@gh auth token > deploy/secrets/ghcr_token
+	@# Non-interactive: prefer GHCR_TOKEN if provided, otherwise use gh auth token (may lack read:packages).
+	@if [ -n "$${GHCR_TOKEN:-}" ]; then \
+	  printf "%s" "$${GHCR_TOKEN}" > deploy/secrets/ghcr_token; \
+	else \
+	  gh auth token > deploy/secrets/ghcr_token; \
+	fi
 	@chmod 600 deploy/secrets/ghcr_token
+	@echo "==> Note: token must have read:packages for private GHCR pulls"
+
+ghcr-login:
+	@# Only needed for GHCR/private pulls & pushes
+	@./scripts/ghcr_login.sh
 
 images-push:
+	@# Ensure docker is logged in for private registry pushes.
+	@if echo "$(IMAGE_REPO)" | grep -q "^ghcr.io/"; then $(MAKE) ghcr-login; fi
 	@echo "📦 Pushing images (tag=$(IMAGE_TAG))"
 	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
 	  $(COMPOSE) -f $(COMPOSE_FILE) --env-file $(DEV_ENV_FILE) push api orchestrator finops frontend
@@ -140,6 +150,7 @@ images-pull:
 
 # Optional convenience tags (staging/prod) that point to the same digest as IMAGE_TAG.
 images-promote-stg:
+	@if echo "$(IMAGE_REPO)" | grep -q "^ghcr.io/"; then $(MAKE) ghcr-login; fi
 	@echo "🏷️  Promoting $(IMAGE_TAG) -> staging (same digest)"
 	docker buildx imagetools create -t $(IMAGE_REPO)/inventiv-api:staging $(IMAGE_REPO)/inventiv-api:$(IMAGE_TAG)
 	docker buildx imagetools create -t $(IMAGE_REPO)/inventiv-orchestrator:staging $(IMAGE_REPO)/inventiv-orchestrator:$(IMAGE_TAG)
@@ -147,6 +158,7 @@ images-promote-stg:
 	docker buildx imagetools create -t $(IMAGE_REPO)/inventiv-frontend:staging $(IMAGE_REPO)/inventiv-frontend:$(IMAGE_TAG)
 
 images-promote-prod:
+	@if echo "$(IMAGE_REPO)" | grep -q "^ghcr.io/"; then $(MAKE) ghcr-login; fi
 	@echo "🏷️  Promoting $(IMAGE_TAG) -> prod (same digest)"
 	docker buildx imagetools create -t $(IMAGE_REPO)/inventiv-api:prod $(IMAGE_REPO)/inventiv-api:$(IMAGE_TAG)
 	docker buildx imagetools create -t $(IMAGE_REPO)/inventiv-orchestrator:prod $(IMAGE_REPO)/inventiv-orchestrator:$(IMAGE_TAG)
