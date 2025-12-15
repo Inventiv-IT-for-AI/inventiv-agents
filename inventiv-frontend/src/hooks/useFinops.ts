@@ -4,22 +4,25 @@ import {
     FinopsActualMinuteRow,
     FinopsCostCurrentResponse,
     FinopsCumulativeMinuteRow,
+    FinopsCostsDashboardResponse,
 } from "@/lib/types";
 
 export function useFinopsCosts() {
     const [current, setCurrent] = useState<FinopsCostCurrentResponse | null>(null);
     const [actualTotalSeries, setActualTotalSeries] = useState<FinopsActualMinuteRow[]>([]);
     const [cumulativeTotalSeries, setCumulativeTotalSeries] = useState<FinopsCumulativeMinuteRow[]>([]);
+    const [dashboardCurrent, setDashboardCurrent] = useState<FinopsCostsDashboardResponse | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
     const fetchAll = async () => {
         try {
             setLoading(true);
-            const [currentRes, actualRes, cumulativeRes] = await Promise.all([
+            const [currentRes, actualRes, cumulativeRes, dashboardRes] = await Promise.all([
                 fetch(apiUrl("finops/cost/current")),
                 fetch(apiUrl("finops/cost/actual/minute?minutes=60")),
                 fetch(apiUrl("finops/cost/cumulative/minute?minutes=60")),
+                fetch(apiUrl("finops/dashboard/costs/current?limit_instances=20")),
             ]);
 
             if (currentRes.ok) {
@@ -34,8 +37,12 @@ export function useFinopsCosts() {
                 const data: FinopsCumulativeMinuteRow[] = await cumulativeRes.json();
                 setCumulativeTotalSeries(data);
             }
+            if (dashboardRes.ok) {
+                const data: FinopsCostsDashboardResponse = await dashboardRes.json();
+                setDashboardCurrent(data);
+            }
 
-            if (!currentRes.ok || !actualRes.ok || !cumulativeRes.ok) {
+            if (!currentRes.ok || !actualRes.ok || !cumulativeRes.ok || !dashboardRes.ok) {
                 setError("Failed to fetch FinOps data");
             } else {
                 setError(null);
@@ -58,6 +65,7 @@ export function useFinopsCosts() {
         current,
         actualTotalSeries,
         cumulativeTotalSeries,
+        dashboardCurrent,
         loading,
         error,
         refresh: fetchAll,

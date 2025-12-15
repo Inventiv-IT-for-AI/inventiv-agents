@@ -47,12 +47,12 @@ export default function DashboardPage() {
     const rows = finops.current?.forecast ?? [];
     return rows
       .filter((r) => r.provider_id !== null)
-      .sort((a, b) => (b.burn_rate_usd_per_hour ?? 0) - (a.burn_rate_usd_per_hour ?? 0));
+      .sort((a, b) => (b.burn_rate_eur_per_hour ?? 0) - (a.burn_rate_eur_per_hour ?? 0));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [finops.current]);
 
-  const latestActualTotal = finops.actualTotalSeries?.[0]?.amount_usd ?? null;
-  const cumulativeTotal = finops.current?.cumulative_total?.cumulative_amount_usd ?? null;
+  const latestActualTotal = finops.actualTotalSeries?.[0]?.amount_eur ?? null;
+  const cumulativeTotal = finops.current?.cumulative_total?.cumulative_amount_eur ?? null;
 
   // Recent instances (last 5)
   const recentInstances = [...instances]
@@ -90,7 +90,7 @@ export default function DashboardPage() {
         />
         <StatsCard
           title="Burn Rate"
-          value={forecastTotal ? `${formatEur(forecastTotal.burn_rate_usd_per_hour, { minFrac: 4, maxFrac: 4 })}/h` : "-"}
+          value={forecastTotal ? `${formatEur(forecastTotal.burn_rate_eur_per_hour, { minFrac: 4, maxFrac: 4 })}/h` : "-"}
           description="Current allocation (forecast)"
           icon={DollarSign}
           valueClassName="text-blue-600"
@@ -190,7 +190,7 @@ export default function DashboardPage() {
       {/* FinOps breakdown */}
       <Card>
         <CardHeader>
-          <CardTitle>FinOps – Provider Breakdown</CardTitle>
+          <CardTitle>FinOps – Costs & Forecast</CardTitle>
         </CardHeader>
         <CardContent>
           {finops.loading && !finops.current ? (
@@ -199,23 +199,29 @@ export default function DashboardPage() {
             <p className="text-sm text-red-600">{finops.error}</p>
           ) : (
             <div className="space-y-3">
-              <div className="grid gap-3 md:grid-cols-3">
+              <div className="grid gap-3 md:grid-cols-4">
                 <div className="p-3 border rounded-lg">
                   <div className="text-xs text-muted-foreground">Forecast / day</div>
                   <div className="text-xl font-bold">
-                    {forecastTotal ? formatEur(forecastTotal.forecast_usd_per_day, { minFrac: 4, maxFrac: 4 }) : "-"}
+                    {forecastTotal ? formatEur(forecastTotal.forecast_eur_per_day, { minFrac: 4, maxFrac: 4 }) : "-"}
                   </div>
                 </div>
                 <div className="p-3 border rounded-lg">
                   <div className="text-xs text-muted-foreground">Forecast / month (30d)</div>
                   <div className="text-xl font-bold">
-                    {forecastTotal ? formatEur(forecastTotal.forecast_usd_per_month_30d, { minFrac: 4, maxFrac: 4 }) : "-"}
+                    {forecastTotal ? formatEur(forecastTotal.forecast_eur_per_month_30d, { minFrac: 4, maxFrac: 4 }) : "-"}
                   </div>
                 </div>
                 <div className="p-3 border rounded-lg">
                   <div className="text-xs text-muted-foreground">Forecast / minute</div>
                   <div className="text-xl font-bold">
-                    {forecastTotal ? formatEur(forecastTotal.forecast_usd_per_minute, { minFrac: 6, maxFrac: 6 }) : "-"}
+                    {forecastTotal ? formatEur(forecastTotal.forecast_eur_per_minute, { minFrac: 6, maxFrac: 6 }) : "-"}
+                  </div>
+                </div>
+                <div className="p-3 border rounded-lg">
+                  <div className="text-xs text-muted-foreground">Forecast / year (365d)</div>
+                  <div className="text-xl font-bold">
+                    {forecastTotal ? formatEur(forecastTotal.forecast_eur_per_year_365d, { minFrac: 2, maxFrac: 2 }) : "-"}
                   </div>
                 </div>
               </div>
@@ -235,21 +241,44 @@ export default function DashboardPage() {
                             (r.provider_id as string)}
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          Burn rate: {formatEur(r.burn_rate_usd_per_hour, { minFrac: 4, maxFrac: 4 })}/h
+                          Burn rate: {formatEur(r.burn_rate_eur_per_hour, { minFrac: 4, maxFrac: 4 })}/h
                         </div>
                       </div>
                       <div className="text-right">
                         <div className="text-sm font-semibold">
-                          {formatEur(r.forecast_usd_per_month_30d, { minFrac: 4, maxFrac: 4 })}/mo
+                          {formatEur(r.forecast_eur_per_month_30d, { minFrac: 4, maxFrac: 4 })}/mo
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          {formatEur(r.forecast_usd_per_day, { minFrac: 4, maxFrac: 4 })}/day
+                          {formatEur(r.forecast_eur_per_day, { minFrac: 4, maxFrac: 4 })}/day
                         </div>
                       </div>
                     </div>
                   ))}
                 </div>
               )}
+
+              <div className="pt-2">
+                <div className="text-sm font-medium mb-2">Current costs (last full minute)</div>
+                {finops.dashboardCurrent?.by_provider_minute?.length ? (
+                  <div className="space-y-2">
+                    {finops.dashboardCurrent.by_provider_minute.slice(0, 6).map((p) => (
+                      <div key={p.provider_id} className="flex items-center justify-between p-3 border rounded-lg">
+                        <div className="text-sm">
+                          {p.provider_name}{" "}
+                          <span className="text-xs text-muted-foreground">
+                            ({p.provider_code ?? p.provider_id.slice(0, 8)})
+                          </span>
+                        </div>
+                        <div className="font-semibold">
+                          {formatEur(p.amount_eur, { minFrac: 6, maxFrac: 6 })}/min
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No cost data yet.</p>
+                )}
+              </div>
             </div>
           )}
         </CardContent>

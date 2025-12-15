@@ -105,34 +105,83 @@ export type InstanceStats = {
 };
 
 // -----------------------------
-// FinOps (costs)
+// FinOps (costs) - EUR
 // -----------------------------
 
 export type FinopsForecastMinuteRow = {
     bucket_minute: string;
     provider_id: string | null;
-    burn_rate_usd_per_hour: number;
-    forecast_usd_per_minute: number;
-    forecast_usd_per_day: number;
-    forecast_usd_per_month_30d: number;
+
+    burn_rate_eur_per_hour: number;
+
+    forecast_eur_per_minute: number;
+    forecast_eur_per_hour: number;
+    forecast_eur_per_day: number;
+    forecast_eur_per_month_30d: number;
+    forecast_eur_per_year_365d: number;
 };
 
 export type FinopsActualMinuteRow = {
     bucket_minute: string;
     provider_id: string | null;
     instance_id: string | null;
-    amount_usd: number;
+    amount_eur: number;
 };
 
 export type FinopsCumulativeMinuteRow = {
     bucket_minute: string;
     provider_id: string | null;
     instance_id: string | null;
-    cumulative_amount_usd: number;
+    cumulative_amount_eur: number;
 };
 
 export type FinopsCostCurrentResponse = {
     latest_bucket_minute: string | null;
     forecast: FinopsForecastMinuteRow[];
     cumulative_total: FinopsCumulativeMinuteRow | null;
+};
+
+export type FinopsProviderCostRow = {
+    provider_id: string;
+    provider_code: string | null;
+    provider_name: string;
+    amount_eur: number;
+};
+
+export type FinopsRegionCostRow = {
+    provider_id: string;
+    provider_code: string | null;
+    region_id: string;
+    region_code: string | null;
+    region_name: string;
+    amount_eur: number;
+};
+
+export type FinopsInstanceTypeCostRow = {
+    provider_id: string;
+    provider_code: string | null;
+    instance_type_id: string;
+    instance_type_code: string | null;
+    instance_type_name: string;
+    amount_eur: number;
+};
+
+export type FinopsInstanceCostRow = {
+    instance_id: string;
+    provider_id: string;
+    provider_code: string | null;
+    provider_name: string;
+    region_name: string | null;
+    zone_name: string | null;
+    instance_type_name: string | null;
+    amount_eur: number;
+};
+
+export type FinopsCostsDashboardResponse = {
+    bucket_minute: string | null;
+    total_minute_eur: number;
+    by_provider_minute: FinopsProviderCostRow[];
+    by_region_minute: FinopsRegionCostRow[];
+    by_instance_type_minute: FinopsInstanceTypeCostRow[];
+    by_instance_minute: FinopsInstanceCostRow[];
 };
