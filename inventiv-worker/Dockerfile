@@ -13,8 +13,10 @@ COPY run_worker.sh .
 RUN chmod +x run_worker.sh
 
 # Environment variables
-ENV ORCHESTRATOR_URL="http://orchestrator:8000"
+ENV CONTROL_PLANE_URL="http://orchestrator:8001"
 ENV WORKER_ID="worker-uuid"
+ENV WORKER_HEALTH_PORT="8080"
+ENV WORKER_VLLM_PORT="8000"
 
 # The entrypoint launches both vLLM and the Agent Sidecar
 ENTRYPOINT ["./run_worker.sh"]

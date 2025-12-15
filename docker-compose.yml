@@ -20,6 +20,42 @@ services:
     volumes:
       - db_data:/var/lib/postgresql/data
 
+  # --- LOCAL WORKER TEST (NO GPU) ---
+  # Lightweight fake vLLM that serves GET /v1/models for readiness checks.
+  mock-vllm:
+    image: python:3.11-slim
+    profiles: ["worker-local"]
+    command: ["python", "-u", "/app/mock_vllm.py"]
+    environment:
+      - MODEL_ID=demo-model
+      - PORT=8000
+    volumes:
+      - ./inventiv-worker/mock_vllm.py:/app/mock_vllm.py:ro
+    ports:
+      - "${MOCK_VLLM_HOST_PORT:-18000}:8000"
+
+  # Agent-only worker (no vLLM) for local testing.
+  worker-agent:
+    build:
+      context: ./inventiv-worker
+      dockerfile: Dockerfile.agent
+    profiles: ["worker-local"]
+    environment:
+      - CONTROL_PLANE_URL=http://orchestrator:8001
+      - WORKER_AUTH_TOKEN=${WORKER_AUTH_TOKEN:-dev-worker-token}
+      - INSTANCE_ID=${INSTANCE_ID:-}
+      - MODEL_ID=demo-model
+      - VLLM_BASE_URL=http://mock-vllm:8000
+      - WORKER_HEALTH_PORT=8080
+      - WORKER_HEARTBEAT_INTERVAL_S=5
+      - PYTHONUNBUFFERED=1
+      # INSTANCE_ID must be provided at runtime (docker compose run -e INSTANCE_ID=...)
+    ports:
+      - "${WORKER_AGENT_HOST_PORT:-18080}:8080"
+    depends_on:
+      - mock-vllm
+      - orchestrator
+
   # --- SERVICES (RUST) ---
   orchestrator:
     build:
@@ -32,16 +68,17 @@ services:
       - "8001:8001"
     volumes:
       - .:/app # Source code mount for hot reload
-      - cargo_cache:/usr/local/cargo/registry # Cache dependencies
-      - target_cache:/app/target # Cache compiled artifacts
     environment:
       - DATABASE_URL=postgresql://postgres:password@db:5432/llminfra
       - REDIS_URL=redis://redis:6379
       - CARGO_TARGET_DIR=/app/target/inventiv-orchestrator
-      - PROVIDER=scaleway
+      - PROVIDER=${PROVIDER:-scaleway}
       - SCALEWAY_PROJECT_ID=${SCALEWAY_PROJECT_ID}
       - SCALEWAY_ACCESS_KEY=${SCALEWAY_ACCESS_KEY}
       - SCALEWAY_SECRET_KEY=${SCALEWAY_SECRET_KEY}
+      - SCALEWAY_SSH_PUBLIC_KEY_FILE=/app/.ssh/llm-studio-key.pub
+      - WORKER_AUTH_TOKEN=${WORKER_AUTH_TOKEN:-dev-worker-token}
+      - WORKER_HEALTH_PORT=${WORKER_HEALTH_PORT:-8080}
       - RUST_LOG=debug
     depends_on:
       - db
@@ -58,12 +95,12 @@ services:
       - "8003:8003"
     volumes:
       - .:/app # Source code mount for hot reload
-      - cargo_cache:/usr/local/cargo/registry # Cache dependencies
-      - target_cache:/app/target # Cache compiled artifacts
     environment:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://postgres:password@db:5432/llminfra
       - CARGO_TARGET_DIR=/app/target/inventiv-api
+      - AUTO_SEED_CATALOG=1
+      - SEED_CATALOG_PATH=/app/seeds/catalog_seeds.sql
       - RUST_LOG=debug
     depends_on:
       - redis
@@ -80,8 +117,6 @@ services:
       - "8005:8005"
     volumes:
       - .:/app # Source code mount for hot reload
-      - cargo_cache:/usr/local/cargo/registry # Cache dependencies
-      - target_cache:/app/target # Cache compiled artifacts
     environment:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://postgres:password@db:5432/llminfra
@@ -94,5 +129,3 @@ services:
 volumes:
   redis_data:
   db_data:
-  cargo_cache: # NEW: Cache Cargo dependencies
-  target_cache: # NEW: Cache compilation artifacts

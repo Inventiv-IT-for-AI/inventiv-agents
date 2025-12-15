@@ -1,12 +1,15 @@
 use axum::{
     extract::{State},
     response::{IntoResponse, Json},
-    routing::{get},
+    routing::{get, post},
     Router,
 };
+use axum::http::{HeaderMap, StatusCode};
 use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use serde::Deserialize;
+use uuid::Uuid;
 mod provider;
 mod provider_manager; // NEW
 mod providers; // NEW
@@ -15,6 +18,7 @@ mod logger;
 mod health_check_job;
 mod terminator_job;
 mod watch_dog_job;
+mod provisioning_job;
 mod services; // NEW
 mod finops_events;
 use tokio::time::{sleep, Duration};
@@ -25,6 +29,43 @@ use sqlx::{Pool, Postgres};
 struct AppState {
     db: Pool<Postgres>,
     redis_client: redis::Client,
+}
+
+#[derive(Deserialize, Debug)]
+struct WorkerRegisterRequest {
+    instance_id: Uuid,
+    worker_id: Option<Uuid>,
+    model_id: Option<String>,
+    vllm_port: Option<i32>,
+    health_port: Option<i32>,
+    metadata: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize, Debug)]
+struct WorkerHeartbeatRequest {
+    instance_id: Uuid,
+    worker_id: Option<Uuid>,
+    status: String, // starting|ready|draining (lowercase)
+    model_id: Option<String>,
+    queue_depth: Option<i32>,
+    gpu_utilization: Option<f64>,
+    gpu_mem_used_mb: Option<f64>,
+    metadata: Option<serde_json::Value>,
+}
+
+fn worker_auth_ok(headers: &HeaderMap) -> bool {
+    // If token is not configured, accept (dev mode)
+    let expected = std::env::var("WORKER_AUTH_TOKEN").unwrap_or_default();
+    if expected.trim().is_empty() {
+        return true;
+    }
+    let Some(auth) = headers.get(axum::http::header::AUTHORIZATION) else {
+        return false;
+    };
+    let Ok(auth) = auth.to_str() else {
+        return false;
+    };
+    auth.trim() == format!("Bearer {}", expected.trim())
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -148,10 +189,17 @@ async fn main() {
     let db_health = state.db.clone();
     tokio::spawn(async move { health_check_job::run(db_health).await; });
 
+    // job-provisioning (requeue PROVISIONING when pubsub events were missed)
+    let db_prov = state.db.clone();
+    let redis_prov = state.redis_client.clone();
+    tokio::spawn(async move { provisioning_job::run(db_prov, redis_prov).await; });
+
     // 5. Start HTTP Server (Admin API - Simplified for internal health/debug only)
     let app = Router::new()
         .route("/", get(root))
         .route("/admin/status", get(get_status))
+        .route("/internal/worker/register", post(worker_register))
+        .route("/internal/worker/heartbeat", post(worker_heartbeat))
         // NO MORE PUBLIC API FOR INSTANCES
         // .route("/instances", get(list_instances))
         // .route("/instances/:id", axum::routing::delete(delete_instance_handler))
@@ -185,6 +233,97 @@ async fn get_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         "cloud_instances_count": count,
         "message": "Full details available via GET /instances"
     })).into_response()
+}
+
+async fn worker_register(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<WorkerRegisterRequest>,
+) -> impl IntoResponse {
+    if !worker_auth_ok(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized"}))).into_response();
+    }
+    println!(
+        "🧩 worker_register: instance_id={} model_id={:?} health_port={:?} vllm_port={:?}",
+        payload.instance_id, payload.model_id, payload.health_port, payload.vllm_port
+    );
+
+    let res = sqlx::query(
+        r#"
+        UPDATE instances
+        SET worker_status = COALESCE(worker_status, 'starting'),
+            worker_model_id = COALESCE($2, worker_model_id),
+            worker_vllm_port = COALESCE($3, worker_vllm_port),
+            worker_health_port = COALESCE($4, worker_health_port),
+            worker_metadata = COALESCE($5, worker_metadata),
+            worker_last_heartbeat = NOW()
+        WHERE id = $1
+        "#,
+    )
+    .bind(payload.instance_id)
+    .bind(payload.model_id)
+    .bind(payload.vllm_port)
+    .bind(payload.health_port)
+    .bind(payload.metadata)
+    .execute(&state.db)
+    .await;
+
+    match res {
+        Ok(r) if r.rows_affected() > 0 => (StatusCode::OK, Json(json!({"status": "ok"}))).into_response(),
+        Ok(_) => (StatusCode::NOT_FOUND, Json(json!({"error": "instance_not_found"}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "db_error", "message": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn worker_heartbeat(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<WorkerHeartbeatRequest>,
+) -> impl IntoResponse {
+    if !worker_auth_ok(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let status = payload.status.to_ascii_lowercase();
+    println!(
+        "💓 worker_heartbeat: instance_id={} status={} model_id={:?} gpu_util={:?}",
+        payload.instance_id, status, payload.model_id, payload.gpu_utilization
+    );
+
+    let res = sqlx::query(
+        r#"
+        UPDATE instances
+        SET worker_last_heartbeat = NOW(),
+            worker_status = $2,
+            worker_model_id = COALESCE($3, worker_model_id),
+            worker_queue_depth = COALESCE($4, worker_queue_depth),
+            worker_gpu_utilization = COALESCE($5, worker_gpu_utilization),
+            worker_metadata = COALESCE($6, worker_metadata)
+        WHERE id = $1
+        "#,
+    )
+    .bind(payload.instance_id)
+    .bind(status)
+    .bind(payload.model_id)
+    .bind(payload.queue_depth)
+    .bind(payload.gpu_utilization)
+    .bind(payload.metadata)
+    .execute(&state.db)
+    .await;
+
+    match res {
+        Ok(r) if r.rows_affected() > 0 => (StatusCode::OK, Json(json!({"status": "ok"}))).into_response(),
+        Ok(_) => (StatusCode::NOT_FOUND, Json(json!({"error": "instance_not_found"}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "db_error", "message": e.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 async fn scaling_engine_loop(state: Arc<AppState>) {

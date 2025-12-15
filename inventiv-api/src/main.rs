@@ -12,6 +12,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use redis::AsyncCommands;
 use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
+use std::fs;
 
 // Swagger
 use utoipa::{OpenApi, IntoParams};
@@ -54,6 +55,10 @@ async fn main() {
         .run(&pool)
         .await
         .expect("Failed to run migrations");
+
+    // Optional dev convenience: auto-seed catalog when DB is empty.
+    // Guarded by env var to avoid accidental seeding in staging/prod.
+    maybe_seed_catalog(&pool).await;
 
     let state = Arc::new(AppState {
         redis_client: client,
@@ -107,6 +112,73 @@ async fn main() {
     println!("Backend listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+async fn maybe_seed_catalog(pool: &Pool<Postgres>) {
+    let enabled = std::env::var("AUTO_SEED_CATALOG")
+        .ok()
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+
+    if !enabled {
+        return;
+    }
+
+    let providers_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM providers")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+
+    if providers_count > 0 {
+        println!("🌱 AUTO_SEED_CATALOG enabled but providers already exist (count={}), skipping", providers_count);
+        return;
+    }
+
+    let seed_path = std::env::var("SEED_CATALOG_PATH")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "seeds/catalog_seeds.sql".to_string());
+
+    let sql = match fs::read_to_string(&seed_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("⚠️  AUTO_SEED_CATALOG failed to read {}: {}", seed_path, e);
+            return;
+        }
+    };
+
+    // Very simple splitter: seed file is expected to be plain SQL statements separated by ';'
+    // and may contain '--' line comments.
+    let mut cleaned = String::new();
+    for line in sql.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("--") {
+            continue;
+        }
+        cleaned.push_str(line);
+        cleaned.push('\n');
+    }
+
+    let statements: Vec<String> = cleaned
+        .split(';')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("{};", s))
+        .collect();
+
+    if statements.is_empty() {
+        eprintln!("⚠️  AUTO_SEED_CATALOG: no statements found in {}", seed_path);
+        return;
+    }
+
+    println!("🌱 AUTO_SEED_CATALOG: seeding {} statements from {}", statements.len(), seed_path);
+    for (idx, stmt) in statements.iter().enumerate() {
+        if let Err(e) = sqlx::query(stmt).execute(pool).await {
+            eprintln!("❌ AUTO_SEED_CATALOG failed at statement {}: {}", idx + 1, e);
+            return;
+        }
+    }
+    println!("✅ AUTO_SEED_CATALOG done");
 }
 
 #[derive(Serialize, sqlx::FromRow, utoipa::ToSchema)]
@@ -185,9 +257,6 @@ async fn create_deployment(
     let instance_id_uuid = uuid::Uuid::new_v4();  // Create UUID first
     let instance_id = instance_id_uuid.to_string();
 
-    let default_provider_id =
-        uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(); // scaleway
-
     let requested_provider_code: Option<String> = payload
         .provider_code
         .as_deref()
@@ -206,11 +275,30 @@ async fn create_deployment(
             .await
             .unwrap_or(None)
     } else {
-        // No provider specified -> default to scaleway (by ID; stable in our seeds)
-        Some(default_provider_id)
+        // No provider specified -> default to provider code "scaleway"
+        // (no hardcoded UUIDs; seed controls the actual id)
+        sqlx::query_scalar("SELECT id FROM providers WHERE code = 'scaleway' LIMIT 1")
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None)
     };
 
-    let provider_id = provider_id_resolved.unwrap_or(default_provider_id);
+    let provider_id = match provider_id_resolved {
+        Some(id) => id,
+        None => {
+            // Can't resolve provider -> fail early (but still keep instance row traceable).
+            // We'll insert with a dummy provider_id? Not possible due FK, so we must stop here.
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(DeploymentResponse {
+                    status: "failed".to_string(),
+                    instance_id,
+                    message: Some("Unknown provider (provider_code/provider_id not found)".to_string()),
+                }),
+            )
+                .into_response();
+        }
+    };
 
     // We want a durable instance_id from the very first request, even when validation fails.
     // So we insert the instance row first (zone/type can be NULL), then all errors can be logged with instance_id.

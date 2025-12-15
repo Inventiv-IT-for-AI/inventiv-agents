@@ -6,6 +6,23 @@ use sqlx::{Pool, Postgres};
 use crate::state_machine;
 use crate::logger;
 
+async fn check_instance_readyz_http(ip: &str, port: u16) -> bool {
+    let clean_ip = ip.split('/').next().unwrap_or(ip);
+    let url = format!("http://{}:{}/readyz", clean_ip, port);
+    // Use short timeout to avoid stalling the job loop
+    let client = reqwest::Client::builder()
+        .connect_timeout(StdDuration::from_secs(2))
+        .timeout(StdDuration::from_secs(3))
+        .build();
+    let Ok(client) = client else {
+        return false;
+    };
+    match client.get(url).send().await {
+        Ok(resp) => resp.status().is_success(),
+        Err(_) => false,
+    }
+}
+
 /// Check instance health by testing SSH port connectivity.
 async fn check_instance_ssh(ip: &str) -> bool {
     let clean_ip = ip.split('/').next().unwrap_or(ip);
@@ -87,7 +104,18 @@ pub async fn check_and_transition_instance(
         return;
     }
 
-    let is_healthy = check_instance_ssh(&ip).await;
+    // Prefer worker readiness endpoint when available; fallback to SSH to keep backward-compat.
+    let worker_port: u16 = std::env::var("WORKER_HEALTH_PORT")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(8080);
+
+    let is_ready_http = check_instance_readyz_http(&ip, worker_port).await;
+    let is_healthy = if is_ready_http {
+        true
+    } else {
+        check_instance_ssh(&ip).await
+    };
 
     if is_healthy {
         println!("✅ Instance {} health check PASSED! Transitioning to ready", instance_id);
@@ -98,7 +126,13 @@ pub async fn check_and_transition_instance(
             "in_progress",
             instance_id,
             None,
-            Some(serde_json::json!({"ip": ip, "result": "success", "failures": failures})),
+            Some(serde_json::json!({
+                "ip": ip,
+                "result": "success",
+                "failures": failures,
+                "mode": if is_ready_http { "worker_readyz" } else { "ssh_22" },
+                "worker_health_port": worker_port
+            })),
         ).await.ok();
         let _ = state_machine::booting_to_ready(&db, instance_id, "Health check passed").await;
         if let Some(lid) = log_id {
@@ -119,14 +153,20 @@ pub async fn check_and_transition_instance(
             "in_progress",
             instance_id,
             None,
-            Some(serde_json::json!({"ip": ip, "result": "failed", "failures": new_failures})),
+            Some(serde_json::json!({
+                "ip": ip,
+                "result": "failed",
+                "failures": new_failures,
+                "mode": "ssh_22_or_worker_readyz",
+                "worker_health_port": worker_port
+            })),
         ).await.ok();
 
         let _ = state_machine::update_booting_health_failures(&db, instance_id, new_failures).await;
 
         if let Some(lid) = log_id {
             let dur = hc_start.elapsed().as_millis() as i32;
-            let _ = logger::log_event_complete(&db, lid, "failed", dur, Some("SSH port 22 not reachable")).await;
+            let _ = logger::log_event_complete(&db, lid, "failed", dur, Some("Worker readyz not reachable and SSH port 22 not reachable")).await;
         }
 
         if new_failures >= 30 {
