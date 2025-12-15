@@ -102,6 +102,7 @@ async fn main() {
         .route("/zones/:zone_id/instance_types", get(instance_type_zones::list_instance_types_for_zone))
         // FINOPS (dashboard)
         .route("/finops/cost/current", get(finops::get_cost_current))
+        .route("/finops/dashboard/costs/current", get(finops::get_costs_dashboard_current))
         .route("/finops/cost/forecast/minute", get(finops::get_cost_forecast_series))
         .route("/finops/cost/actual/minute", get(finops::get_cost_actual_series))
         .route("/finops/cost/cumulative/minute", get(finops::get_cost_cumulative_series))

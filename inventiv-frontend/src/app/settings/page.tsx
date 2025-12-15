@@ -185,7 +185,28 @@ export default function SettingsPage() {
         },
     ];
 
-    const regionColumns: DataTableColumn<Region>[] = [
+    type RegionRow = Region & { provider_name?: string; provider_code?: string | null };
+    type ZoneRow = Zone & {
+        provider_name?: string;
+        provider_code?: string | null;
+        region_name?: string;
+        region_code?: string | null;
+    };
+
+    const regionColumns: DataTableColumn<RegionRow>[] = [
+        {
+            id: "provider",
+            label: "Provider",
+            width: 180,
+            cell: ({ row }) => (
+                <div className="min-w-0">
+                    <div className="font-medium truncate">{row.provider_name ?? "-"}</div>
+                    <div className="text-xs text-muted-foreground font-mono truncate">
+                        {row.provider_code ?? row.provider_id ?? ""}
+                    </div>
+                </div>
+            ),
+        },
         { id: "name", label: "Name", width: 260, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
         { id: "code", label: "Code", width: 180, cell: ({ row }) => <span className="font-mono text-xs">{row.code}</span> },
         {
@@ -218,7 +239,31 @@ export default function SettingsPage() {
         },
     ];
 
-    const zoneColumns: DataTableColumn<Zone>[] = [
+    const zoneColumns: DataTableColumn<ZoneRow>[] = [
+        {
+            id: "provider",
+            label: "Provider",
+            width: 180,
+            cell: ({ row }) => (
+                <div className="min-w-0">
+                    <div className="font-medium truncate">{row.provider_name ?? "-"}</div>
+                    <div className="text-xs text-muted-foreground font-mono truncate">
+                        {row.provider_code ?? row.provider_id ?? ""}
+                    </div>
+                </div>
+            ),
+        },
+        {
+            id: "region",
+            label: "Region",
+            width: 200,
+            cell: ({ row }) => (
+                <div className="min-w-0">
+                    <div className="font-medium truncate">{row.region_name ?? "-"}</div>
+                    <div className="text-xs text-muted-foreground font-mono truncate">{row.region_code ?? ""}</div>
+                </div>
+            ),
+        },
         { id: "name", label: "Name", width: 260, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
         { id: "code", label: "Code", width: 180, cell: ({ row }) => <span className="font-mono text-xs">{row.code}</span> },
         {
@@ -251,7 +296,22 @@ export default function SettingsPage() {
         },
     ];
 
-    const typeColumns: DataTableColumn<InstanceType>[] = [
+    type InstanceTypeRow = InstanceType & { provider_name?: string; provider_code?: string | null };
+
+    const typeColumns: DataTableColumn<InstanceTypeRow>[] = [
+        {
+            id: "provider",
+            label: "Provider",
+            width: 180,
+            cell: ({ row }) => (
+                <div className="min-w-0">
+                    <div className="font-medium truncate">{row.provider_name ?? "-"}</div>
+                    <div className="text-xs text-muted-foreground font-mono truncate">
+                        {row.provider_code ?? row.provider_id ?? ""}
+                    </div>
+                </div>
+            ),
+        },
         { id: "name", label: "Name", width: 260, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
         { id: "code", label: "Code", width: 180, cell: ({ row }) => <span className="font-mono text-xs">{row.code}</span> },
         {
@@ -283,7 +343,7 @@ export default function SettingsPage() {
                         variant="outline"
                         size="sm"
                         onClick={() => {
-                            setSelectedInstanceType(row);
+                            setSelectedInstanceType(row as unknown as InstanceType);
                             setIsManageZonesOpen(true);
                         }}
                         title="Manage Zones"
@@ -313,21 +373,21 @@ export default function SettingsPage() {
         return { offset: data.offset, items: data.rows, totalCount: data.total_count, filteredCount: data.filtered_count };
     };
 
-    const loadRegions = async (offset: number, limit: number): Promise<LoadRangeResult<Region>> => {
+    const loadRegions = async (offset: number, limit: number): Promise<LoadRangeResult<RegionRow>> => {
         const res = await fetch(apiUrl(`regions/search?offset=${offset}&limit=${limit}`));
-        const data: SearchResponse<Region> = await res.json();
+        const data: SearchResponse<RegionRow> = await res.json();
         return { offset: data.offset, items: data.rows, totalCount: data.total_count, filteredCount: data.filtered_count };
     };
 
-    const loadZones = async (offset: number, limit: number): Promise<LoadRangeResult<Zone>> => {
+    const loadZones = async (offset: number, limit: number): Promise<LoadRangeResult<ZoneRow>> => {
         const res = await fetch(apiUrl(`zones/search?offset=${offset}&limit=${limit}`));
-        const data: SearchResponse<Zone> = await res.json();
+        const data: SearchResponse<ZoneRow> = await res.json();
         return { offset: data.offset, items: data.rows, totalCount: data.total_count, filteredCount: data.filtered_count };
     };
 
     const loadTypes = async (offset: number, limit: number): Promise<LoadRangeResult<InstanceType>> => {
         const res = await fetch(apiUrl(`instance_types/search?offset=${offset}&limit=${limit}`));
-        const data: SearchResponse<InstanceType> = await res.json();
+        const data: SearchResponse<InstanceTypeRow> = await res.json();
         return { offset: data.offset, items: data.rows, totalCount: data.total_count, filteredCount: data.filtered_count };
     };
 

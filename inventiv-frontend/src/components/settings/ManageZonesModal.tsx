@@ -25,7 +25,7 @@ type InstanceTypeZoneAssociation = {
 type ManageZonesModalProps = {
   open: boolean;
   onClose: () => void;
-  instanceType: Pick<InstanceType, "id" | "name" | "code"> | null;
+  instanceType: Pick<InstanceType, "id" | "name" | "code" | "provider_id"> | null;
 };
 
 export function ManageZonesModal({
@@ -44,10 +44,16 @@ export function ManageZonesModal({
     const fetchData = async () => {
       setLoading(true);
       try {
-        // Fetch all zones
-        const zonesRes = await fetch(apiUrl("zones"));
+        // Fetch zones for the same provider only (domain: instance types are provider-scoped)
+        const qs = new URLSearchParams();
+        if (instanceType.provider_id) qs.set("provider_id", instanceType.provider_id);
+        qs.set("is_active", "true");
+        qs.set("offset", "0");
+        qs.set("limit", "500");
+        const zonesRes = await fetch(apiUrl(`zones/search?${qs.toString()}`));
         if (zonesRes.ok) {
-          const zones: Zone[] = await zonesRes.json();
+          const data = (await zonesRes.json()) as { rows?: Zone[] };
+          const zones: Zone[] = data.rows ?? [];
           setAllZones(zones.filter((z) => z.is_active));
         }
 

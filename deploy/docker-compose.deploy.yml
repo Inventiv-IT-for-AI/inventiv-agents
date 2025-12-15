@@ -1,0 +1,115 @@
+name: inventiv-agents
+
+services:
+  # --- EDGE ---
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - FRONTEND_DOMAIN=${FRONTEND_DOMAIN:?set FRONTEND_DOMAIN}
+      - API_DOMAIN=${API_DOMAIN:?set API_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+      - api
+
+  # --- INFRA ---
+  redis:
+    image: redis:alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+  db:
+    image: timescale/timescaledb:latest-pg14
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:-llminfra}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  # --- APPS ---
+  api:
+    image: ${IMAGE_REPO:-inventiv-agents}/inventiv-api:${IMAGE_TAG:-dev}
+    build:
+      context: ..
+      dockerfile: Dockerfile.rust.prod
+      args:
+        SERVICE_NAME: inventiv-api
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-llminfra}}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - RUST_LOG=${RUST_LOG:-info}
+    depends_on:
+      - db
+      - redis
+
+  orchestrator:
+    image: ${IMAGE_REPO:-inventiv-agents}/inventiv-orchestrator:${IMAGE_TAG:-dev}
+    build:
+      context: ..
+      dockerfile: Dockerfile.rust.prod
+      args:
+        SERVICE_NAME: inventiv-orchestrator
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-llminfra}}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - RUST_LOG=${RUST_LOG:-info}
+      - PROVIDER=${PROVIDER:-mock}
+      - WORKER_AUTH_TOKEN=${WORKER_AUTH_TOKEN:-}
+      - SCALEWAY_PROJECT_ID=${SCALEWAY_PROJECT_ID}
+      - SCALEWAY_ACCESS_KEY=${SCALEWAY_ACCESS_KEY}
+      - SCALEWAY_SECRET_KEY_FILE=${SCALEWAY_SECRET_KEY_FILE:-/run/secrets/scaleway_secret_key}
+      - SCALEWAY_SSH_PUBLIC_KEY_FILE=${SCALEWAY_SSH_PUBLIC_KEY_FILE:-/run/secrets/llm-studio-key.pub}
+    volumes:
+      # Put your SSH public key on the host and mount it read-only.
+      - ${SECRETS_DIR:-./secrets}:/run/secrets:ro
+    depends_on:
+      - db
+      - redis
+
+  finops:
+    image: ${IMAGE_REPO:-inventiv-agents}/inventiv-finops:${IMAGE_TAG:-dev}
+    build:
+      context: ..
+      dockerfile: Dockerfile.rust.prod
+      args:
+        SERVICE_NAME: inventiv-finops
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-llminfra}}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - RUST_LOG=${RUST_LOG:-info}
+    depends_on:
+      - db
+      - redis
+
+  frontend:
+    image: ${IMAGE_REPO:-inventiv-agents}/inventiv-frontend:${IMAGE_TAG:-dev}
+    build:
+      context: ../inventiv-frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      # Next rewrites use API_INTERNAL_URL first; keep traffic on the docker network.
+      - API_INTERNAL_URL=http://api:8003
+      # Optional: client-side code can use this if needed in the future.
+      - NEXT_PUBLIC_API_URL=https://${API_DOMAIN}
+    depends_on:
+      - api
+
+volumes:
+  redis_data:
+  db_data:
+  caddy_data:
+  caddy_config:

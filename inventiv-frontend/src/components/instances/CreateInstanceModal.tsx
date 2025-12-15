@@ -5,12 +5,13 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { CheckCircle, Search } from "lucide-react";
+import { CheckCircle, Search, Microchip } from "lucide-react";
 import { apiUrl } from "@/lib/api";
 import { Provider, Region, Zone, InstanceType } from "@/lib/types";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatEur } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
 
 type CreateInstanceModalProps = {
     open: boolean;
@@ -19,7 +20,6 @@ type CreateInstanceModalProps = {
     providers: Provider[];
     regions: Region[];
     allZones: Zone[];
-    initialInstanceTypes: InstanceType[];
 };
 
 export function CreateInstanceModal({
@@ -29,147 +29,187 @@ export function CreateInstanceModal({
     providers,
     regions,
     allZones,
-    initialInstanceTypes,
 }: CreateInstanceModalProps) {
     const [deployStep, setDeployStep] = useState<"form" | "submitting" | "success">("form");
-    const [zones, setZones] = useState<Zone[]>([]);
-    const [instanceTypes, setInstanceTypes] = useState<InstanceType[]>(initialInstanceTypes);
+    type Combo = {
+        key: string; // `${zoneId}:${typeId}`
+        provider: Provider | null;
+        region: Region | null;
+        zone: Zone;
+        type: InstanceType;
+    };
+    const [baseCombos, setBaseCombos] = useState<Combo[]>([]);
 
-    const [selectedProviderCode, setSelectedProviderCode] = useState<string>("");
-    const [selectedRegionId, setSelectedRegionId] = useState<string>("");
-    const [selectedZoneId, setSelectedZoneId] = useState<string>("");
-    const [selectedTypeId, setSelectedTypeId] = useState<string>("");
-    const [isTypePickerOpen, setIsTypePickerOpen] = useState(false);
+    const [selectedProviderCode, setSelectedProviderCode] = useState<string>("all");
+    const [selectedRegionId, setSelectedRegionId] = useState<string>("all");
+    const [selectedZoneId, setSelectedZoneId] = useState<string>("all");
+    const [selectedComboKey, setSelectedComboKey] = useState<string>("");
     const [typeQuery, setTypeQuery] = useState("");
+    const [filterGpuCount, setFilterGpuCount] = useState<string>("all"); // "all" | number as string
+    const [filterVramPerGpu, setFilterVramPerGpu] = useState<string>("all"); // "all" | number as string
 
     const selectedProviderId = useMemo(() => {
+        if (selectedProviderCode === "all") return "";
         const p = providers.find((pp) => pp.code === selectedProviderCode);
         return p?.id ?? "";
     }, [providers, selectedProviderCode]);
 
-    const selectedType = instanceTypes.find((t) => t.id === selectedTypeId);
+    const selectedCombo = useMemo(() => {
+        if (!selectedComboKey) return null;
+        return baseCombos.find((c) => c.key === selectedComboKey) ?? null;
+    }, [baseCombos, selectedComboKey]);
+    // Selection is stored as a complete (provider/region/zone/type) combo.
+    const zones = useMemo(() => {
+        // Hierarchical restriction:
+        // - Provider -> Regions -> Zones
+        // - Region -> Zones
+        let out = allZones.filter((z) => z.is_active);
+
+        if (selectedProviderId) {
+            const regionIds = new Set(
+                regions.filter((r) => r.is_active && r.provider_id === selectedProviderId).map((r) => r.id)
+            );
+            out = out.filter((z) => regionIds.has(z.region_id ?? ""));
+        }
+        if (selectedRegionId !== "all") {
+            out = out.filter((z) => z.region_id === selectedRegionId);
+        }
+        return out;
+    }, [allZones, regions, selectedProviderId, selectedRegionId]);
+
+    const onProviderChange = (code: string) => {
+        setSelectedProviderCode(code);
+        setSelectedRegionId("all");
+        setSelectedZoneId("all");
+        setSelectedComboKey("");
+    };
+
+    const onRegionChange = (id: string) => {
+        setSelectedRegionId(id);
+        setSelectedZoneId("all");
+        setSelectedComboKey("");
+    };
+
+    const onZoneChange = (id: string) => {
+        setSelectedZoneId(id);
+        setSelectedComboKey("");
+    };
 
     const formatMoney = (n: number) => formatEur(n, { maxFrac: 4 });
 
-    const selectedTypePricing = useMemo(() => {
-        if (!selectedType || typeof selectedType.cost_per_hour !== "number") return null;
-        const perHour = selectedType.cost_per_hour;
-        return {
-            perMin: perHour / 60,
-            perHour,
-            perDay: perHour * 24,
-            perMonth: perHour * 24 * 30,
-        };
-    }, [selectedType]);
-
-    const filteredTypesForPicker = useMemo(() => {
+    const filteredCombos = useMemo(() => {
         const q = typeQuery.trim().toLowerCase();
-        if (!q) return instanceTypes;
-        return instanceTypes.filter((t) => {
+        const gpuFilter = filterGpuCount === "all" ? null : Number(filterGpuCount);
+        const vramFilter = filterVramPerGpu === "all" ? null : Number(filterVramPerGpu);
+        return baseCombos.filter((c) => {
+            const t = c.type;
             const hay = `${t.name ?? ""} ${t.code ?? ""}`.toLowerCase();
-            return hay.includes(q);
+            if (q && !hay.includes(q)) return false;
+            const g = t.gpu_count ?? 0;
+            const v = t.vram_per_gpu_gb ?? 0;
+            if (gpuFilter != null && g !== gpuFilter) return false;
+            if (vramFilter != null && v < vramFilter) return false;
+            return true;
         });
-    }, [instanceTypes, typeQuery]);
+    }, [baseCombos, filterGpuCount, filterVramPerGpu, typeQuery]);
 
-    // Initialize provider when modal opens
-    useEffect(() => {
-        if (open && providers.length > 0) {
-            // eslint-disable-next-line react-hooks/set-state-in-effect
-            setSelectedProviderCode(providers[0].code);
+    const gpuCountOptions = useMemo(() => {
+        const set = new Set<number>();
+        for (const c of baseCombos) {
+            const g = c.type.gpu_count ?? 0;
+            if (g > 0) set.add(g);
         }
-    }, [open, providers]);
+        return Array.from(set).sort((a, b) => a - b);
+    }, [baseCombos]);
 
-    // Reset region/zone/type when provider changes
+    const vramOptions = useMemo(() => {
+        const set = new Set<number>();
+        for (const c of baseCombos) {
+            const v = c.type.vram_per_gpu_gb ?? 0;
+            if (v > 0) set.add(v);
+        }
+        return Array.from(set).sort((a, b) => a - b);
+    }, [baseCombos]);
+
+    // Build complete Provider/Region/Zone/Type combinations from backend mappings.
+    // This ensures selection is never "missing zone".
+    const typesByZoneRef = useMemo(() => new Map<string, InstanceType[]>(), []);
+
     useEffect(() => {
         if (!open) return;
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        setSelectedRegionId("");
-        setSelectedZoneId("");
-        setSelectedTypeId("");
-        setZones(allZones);
-        setInstanceTypes(initialInstanceTypes.filter((t) => !selectedProviderId || t.provider_id === selectedProviderId));
-    }, [selectedProviderCode, selectedProviderId, open, allZones, initialInstanceTypes]);
+        let cancelled = false;
 
-    // Filter zones by selected region
-    useEffect(() => {
-        if (!selectedRegionId) {
-            // eslint-disable-next-line react-hooks/set-state-in-effect
-            setZones(allZones);
-            return;
-        }
-
-        const region = regions.find((r) => r.id === selectedRegionId);
-        if (region) {
-            const filteredZones = allZones.filter((z) => z.code.startsWith(region.code));
-            setZones(filteredZones);
-
-            // Reset zone and type selections when region changes
-            setSelectedZoneId("");
-            setSelectedTypeId("");
-        }
-    }, [selectedRegionId, regions, allZones]);
-
-    // Filter instance types by selected zone
-    useEffect(() => {
-        if (!selectedZoneId) {
-            // eslint-disable-next-line react-hooks/set-state-in-effect
-            setInstanceTypes(initialInstanceTypes.filter((t) => !selectedProviderId || t.provider_id === selectedProviderId));
-            return;
-        }
-
-        const fetchTypesForZone = async () => {
-            try {
-                const qs = selectedProviderCode ? `?provider_code=${encodeURIComponent(selectedProviderCode)}` : "";
-                const res = await fetch(apiUrl(`zones/${selectedZoneId}/instance_types${qs}`));
-                if (res.ok) {
-                    const data: InstanceType[] = await res.json();
-                    // Merge zone-filtered types with full provider catalog.
-                    // Reason: availability mappings (instance_type_zones / legacy) can be incomplete,
-                    // but we still want to show all configured types to the user.
-                    const base = initialInstanceTypes.filter((t) => !selectedProviderId || t.provider_id === selectedProviderId);
-                    const byId = new Map<string, InstanceType>();
-                    for (const t of base) byId.set(t.id, t);
-                    for (const t of data) byId.set(t.id, { ...byId.get(t.id), ...t });
-
-                    const merged = Array.from(byId.values()).sort((a, b) => {
-                        const ag = (a.gpu_count ?? 0);
-                        const bg = (b.gpu_count ?? 0);
-                        if (bg !== ag) return bg - ag;
-                        const av = (a.vram_per_gpu_gb ?? 0);
-                        const bv = (b.vram_per_gpu_gb ?? 0);
-                        if (bv !== av) return bv - av;
-                        return (a.name || "").localeCompare(b.name || "");
-                    });
-
-                    setInstanceTypes(merged);
-                    // Reset instance type selection when zone changes
-                    setSelectedTypeId("");
-                }
-            } catch (err) {
-                console.error("Failed to fetch instance types for zone", err);
+        const candidateZones: Zone[] = (() => {
+            if (selectedZoneId !== "all") {
+                const z = zones.find((zz) => zz.id === selectedZoneId);
+                return z ? [z] : [];
             }
+            return zones;
+        })();
+
+        const qs = selectedProviderCode !== "all" ? `?provider_code=${encodeURIComponent(selectedProviderCode)}` : "";
+
+        const run = async () => {
+            const combos: Combo[] = [];
+            for (const z of candidateZones) {
+                const cached = typesByZoneRef.get(z.id);
+                let types = cached;
+                if (!types) {
+                    const res = await fetch(apiUrl(`zones/${z.id}/instance_types${qs}`));
+                    types = res.ok ? ((await res.json()) as InstanceType[]) : [];
+                    typesByZoneRef.set(z.id, types);
+                }
+                for (const t of types) {
+                    if (!t.is_active) continue;
+                    if (selectedProviderId && t.provider_id !== selectedProviderId) continue;
+                    const p = providers.find((pp) => pp.id === t.provider_id) ?? null;
+                    const r = regions.find((rr) => rr.id === z.region_id) ?? null;
+                    combos.push({ key: `${z.id}:${t.id}`, provider: p, region: r, zone: z, type: t });
+                }
+            }
+            combos.sort((a, b) => {
+                const ag = a.type.gpu_count ?? 0;
+                const bg = b.type.gpu_count ?? 0;
+                if (bg !== ag) return bg - ag;
+                const av = a.type.vram_per_gpu_gb ?? 0;
+                const bv = b.type.vram_per_gpu_gb ?? 0;
+                if (bv !== av) return bv - av;
+                const n = (a.type.name || "").localeCompare(b.type.name || "");
+                if (n !== 0) return n;
+                return (a.zone.code || "").localeCompare(b.zone.code || "");
+            });
+
+            if (cancelled) return;
+            setBaseCombos(combos);
+            if (selectedComboKey && !combos.some((c) => c.key === selectedComboKey)) setSelectedComboKey("");
         };
-        fetchTypesForZone();
-    }, [selectedZoneId, initialInstanceTypes, selectedProviderId, selectedProviderCode]);
+
+        void run().catch((e) => console.error("Failed to build combos", e));
+        return () => {
+            cancelled = true;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [open, selectedProviderCode, selectedProviderId, selectedRegionId, selectedZoneId, zones, providers, regions]);
 
     const handleDeploy = async () => {
-        if (!selectedZoneId || !selectedTypeId) {
+        if (!selectedCombo) {
             alert("Please select all required fields");
             return;
         }
 
         setDeployStep("submitting");
         try {
-            const selectedZone = zones.find((z) => z.id === selectedZoneId);
-            const selectedType = instanceTypes.find((t) => t.id === selectedTypeId);
+            const zoneForDeploy = selectedCombo.zone;
+            const typeForDeploy = selectedCombo.type;
+            const providerCodeForDeploy = selectedCombo.provider?.code ?? undefined;
 
             const res = await fetch(apiUrl("deployments"), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    provider_code: selectedProviderCode || undefined,
-                    zone: selectedZone?.code || "",
-                    instance_type: selectedType?.code || "",
+                    provider_code: providerCodeForDeploy,
+                    zone: zoneForDeploy?.code || "",
+                    instance_type: typeForDeploy?.code || "",
                 }),
             });
 
@@ -195,16 +235,16 @@ export function CreateInstanceModal({
 
     const handleClose = () => {
         setDeployStep("form");
-        setSelectedProviderCode("");
-        setSelectedRegionId("");
-        setSelectedZoneId("");
-        setSelectedTypeId("");
+        setSelectedProviderCode("all");
+        setSelectedRegionId("all");
+        setSelectedZoneId("all");
+        setSelectedComboKey("");
         onClose();
     };
 
     return (
         <Dialog open={open} onOpenChange={handleClose}>
-            <DialogContent showCloseButton={false} className="sm:max-w-[500px]">
+            <DialogContent showCloseButton={false} className="w-[calc(100vw-2rem)] max-w-5xl sm:max-w-5xl">
                 <DialogHeader>
                     <DialogTitle>Create New Instance</DialogTitle>
                     <DialogDescription>
@@ -218,15 +258,18 @@ export function CreateInstanceModal({
                         <span className="text-xl font-bold">Demande de création prise en compte</span>
                     </div>
                 ) : (
-                    <div className="grid gap-4 py-4">
-                        <div className="grid grid-cols-4 items-center gap-4">
+                    <div className="grid gap-6 py-4 lg:grid-cols-[360px_1fr]">
+                        {/* Left: Provider/Region/Zone + Selected summary */}
+                        <div className="grid gap-4">
+                            <div className="grid grid-cols-4 items-center gap-4">
                             <Label className="text-right">Provider</Label>
-                            <Select value={selectedProviderCode} onValueChange={setSelectedProviderCode}>
+                            <Select value={selectedProviderCode} onValueChange={onProviderChange}>
                                 <SelectTrigger className="col-span-3">
                                     <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
-                                    {providers.map((p) => (
+                                    <SelectItem value="all">Tout</SelectItem>
+                                    {providers.filter((p) => p.is_active ?? true).map((p) => (
                                         <SelectItem key={p.id} value={p.code}>
                                             {p.name}
                                         </SelectItem>
@@ -239,15 +282,16 @@ export function CreateInstanceModal({
                             <Label className="text-right">Region</Label>
                             <Select
                                 value={selectedRegionId}
-                                onValueChange={(val) => setSelectedRegionId(val)}
-                                disabled={!selectedProviderCode}
+                                onValueChange={onRegionChange}
+                                disabled={deployStep === "submitting"}
                             >
                                 <SelectTrigger className="col-span-3">
-                                    <SelectValue placeholder="Select region" />
+                                    <SelectValue placeholder="Tout" />
                                 </SelectTrigger>
                                 <SelectContent>
+                                    <SelectItem value="all">Tout</SelectItem>
                                     {regions
-                                        .filter((r) => !selectedProviderId || r.provider_id === selectedProviderId)
+                                        .filter((r) => r.is_active && (!selectedProviderId || r.provider_id === selectedProviderId))
                                         .map((r) => (
                                         <SelectItem key={r.id} value={r.id}>
                                             {r.name}
@@ -261,13 +305,14 @@ export function CreateInstanceModal({
                             <Label className="text-right">Zone</Label>
                             <Select
                                 value={selectedZoneId}
-                                onValueChange={setSelectedZoneId}
-                                disabled={!selectedRegionId}
+                                onValueChange={onZoneChange}
+                                disabled={deployStep === "submitting"}
                             >
                                 <SelectTrigger className="col-span-3">
-                                    <SelectValue placeholder="Select zone" />
+                                    <SelectValue placeholder="Tout" />
                                 </SelectTrigger>
                                 <SelectContent>
+                                    <SelectItem value="all">Tout</SelectItem>
                                     {zones.map((z) => (
                                         <SelectItem key={z.id} value={z.id}>
                                             {z.name}
@@ -277,49 +322,148 @@ export function CreateInstanceModal({
                             </Select>
                         </div>
 
-                        <div className="grid grid-cols-4 items-center gap-4">
-                            <Label className="text-right">Instance Type</Label>
-                            <Button
-                                type="button"
-                                variant="outline"
-                                className="col-span-3 justify-between"
-                                onClick={() => setIsTypePickerOpen(true)}
-                                disabled={!selectedZoneId || deployStep === "submitting"}
-                            >
-                                <span className="truncate">
-                                    {selectedType
-                                        ? `${selectedType.name} — ${selectedType.gpu_count ?? "-"} GPU • ${selectedType.vram_per_gpu_gb ?? "-"}GB VRAM/GPU`
-                                        : "Choisir un type"}
-                                </span>
-                                <Search className="h-4 w-4 opacity-60" />
-                            </Button>
+                        {/* No separate details panel: selection highlight is sufficient */}
                         </div>
 
-                        {selectedType && (
-                            <div className="grid grid-cols-4 items-start gap-4 bg-muted/50 p-3 rounded-md">
-                                <Label className="text-right text-muted-foreground">Détails</Label>
-                                <div className="col-span-3 space-y-1">
-                                    <div className="text-sm">
-                                        <span className="font-medium">{selectedType.name}</span>{" "}
-                                        <span className="text-muted-foreground">
-                                            ({selectedType.gpu_count ?? "-"} GPU,{" "}
-                                            {selectedType.vram_per_gpu_gb ?? "-"}GB VRAM/GPU
-                                            {typeof selectedType.vram_per_gpu_gb === "number" && typeof selectedType.gpu_count === "number"
-                                                ? ` — ${(selectedType.vram_per_gpu_gb * selectedType.gpu_count)}GB total`
-                                                : ""}
-                                            )
-                                        </span>
-                                    </div>
-                                    {selectedTypePricing ? (
-                                        <div className="text-xs text-muted-foreground font-mono">
-                                            {formatMoney(selectedTypePricing.perMin)}/min • {formatMoney(selectedTypePricing.perHour)}/h • {formatMoney(selectedTypePricing.perDay)}/j • {formatMoney(selectedTypePricing.perMonth)}/mois
-                                        </div>
+                        {/* Right: Filters + Types cards */}
+                        <div className="grid gap-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <div className="relative flex-1 min-w-[240px]">
+                                    <Search className="h-4 w-4 text-muted-foreground absolute left-3 top-1/2 -translate-y-1/2" />
+                                    <Input
+                                        className="pl-9"
+                                        placeholder="Rechercher (ex: H100, L40S, RENDER...)"
+                                        value={typeQuery}
+                                        onChange={(e) => setTypeQuery(e.target.value)}
+                                        disabled={deployStep === "submitting"}
+                                    />
+                                </div>
+
+                                <Select value={filterGpuCount} onValueChange={setFilterGpuCount}>
+                                    <SelectTrigger className="w-[140px]">
+                                        <SelectValue placeholder="GPU" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="all">GPU: tous</SelectItem>
+                                        {gpuCountOptions.map((g) => (
+                                            <SelectItem key={g} value={String(g)}>{g} GPU</SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+
+                                <Select value={filterVramPerGpu} onValueChange={setFilterVramPerGpu}>
+                                    <SelectTrigger className="w-[160px]">
+                                        <SelectValue placeholder="VRAM/GPU" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="all">VRAM: toutes</SelectItem>
+                                        {vramOptions.map((v) => (
+                                            <SelectItem key={v} value={String(v)}>{`≥ ${v} GB/GPU`}</SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <ScrollArea className="h-[420px] rounded-md border">
+                                <div className="p-2 space-y-2">
+                                    {filteredCombos.length === 0 ? (
+                                        <div className="text-sm text-muted-foreground p-4">Aucun type ne correspond aux filtres.</div>
                                     ) : (
-                                        <div className="text-xs text-muted-foreground">Prix indisponible</div>
+                                        filteredCombos.map((c) => {
+                                            const t = c.type;
+                                            const gpus = t.gpu_count ?? 0;
+                                            const vram = t.vram_per_gpu_gb ?? 0;
+                                            const perHour = typeof t.cost_per_hour === "number" ? t.cost_per_hour : null;
+                                            const isSelected = c.key === selectedComboKey;
+                                            const gpuIconsCount = gpus > 0 ? Math.min(gpus, 8) : 0;
+                                            return (
+                                                <button
+                                                    key={c.key}
+                                                    type="button"
+                                                    onClick={() => setSelectedComboKey(c.key)}
+                                                    className={`w-full text-left rounded-md border p-3 hover:bg-muted/30 transition-colors ${
+                                                        isSelected ? "border-primary bg-muted/20 ring-2 ring-primary/30" : "border-border bg-background"
+                                                    }`}
+                                                >
+                                                    <div className="flex items-start justify-between gap-3">
+                                                        <div className="min-w-0 flex-1">
+                                                            <div className="flex items-center justify-between gap-3">
+                                                                <div className="font-medium truncate">{t.name}</div>
+                                                                <div className="flex items-center gap-1 shrink-0">
+                                                                    <Badge variant="outline" className="text-[11px] font-mono">
+                                                                        {c.provider?.name ?? "-"}
+                                                                    </Badge>
+                                                                    <Badge variant="outline" className="text-[11px] font-mono">
+                                                                        {c.region?.name ?? "-"}
+                                                                    </Badge>
+                                                                    <Badge variant="outline" className="text-[11px] font-mono">
+                                                                        {c.zone?.name ?? "-"}
+                                                                    </Badge>
+                                                                </div>
+                                                            </div>
+
+                                                            <div className="text-xs text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 mt-1">
+                                                                <span className="inline-flex items-center gap-0.5">
+                                                                    {gpuIconsCount > 0 ? (
+                                                                        <>
+                                                                            {Array.from({ length: gpuIconsCount }).map((_, i) => (
+                                                                                <Microchip key={i} className="h-4 w-4 text-emerald-600" />
+                                                                            ))}
+                                                                            {gpus > 8 ? (
+                                                                                <span className="ml-1 font-mono text-[11px] text-muted-foreground/90">×{gpus}</span>
+                                                                            ) : null}
+                                                                            <span className="sr-only">{gpus} GPU</span>
+                                                                        </>
+                                                                    ) : (
+                                                                        <span className="text-muted-foreground/70">—</span>
+                                                                    )}
+                                                                </span>
+                                                                <span>
+                                                                    {gpus} GPU • {vram}GB VRAM/GPU{gpus && vram ? ` • ${gpus * vram}GB total` : ""}
+                                                                </span>
+                                                                {t.cpu_count ? <span>• {t.cpu_count} vCPU</span> : null}
+                                                                {t.ram_gb ? <span>• {t.ram_gb}GB RAM</span> : null}
+                                                            </div>
+
+                                                            <div className="mt-1 text-xs text-muted-foreground font-mono flex flex-wrap items-center gap-x-3 gap-y-1">
+                                                                {perHour != null ? (
+                                                                    <>
+                                                                        <span>
+                                                                            <span className="opacity-70">min</span>{" "}
+                                                                            <span className="text-foreground">{formatMoney(perHour / 60)}</span>
+                                                                        </span>
+                                                                        <span>
+                                                                            <span className="opacity-70">h</span>{" "}
+                                                                            <span className="text-foreground font-semibold">{formatMoney(perHour)}</span>
+                                                                        </span>
+                                                                        <span>
+                                                                            <span className="opacity-70">j</span>{" "}
+                                                                            <span className="text-foreground">{formatMoney(perHour * 24)}</span>
+                                                                        </span>
+                                                                        <span>
+                                                                            <span className="opacity-70">mois</span>{" "}
+                                                                            <span className="text-foreground">{formatMoney(perHour * 24 * 30)}</span>
+                                                                        </span>
+                                                                    </>
+                                                                ) : (
+                                                                    <span className="text-xs text-muted-foreground">Prix indisponible</span>
+                                                                )}
+                                                            </div>
+                                                        </div>
+
+                                                        <div className="shrink-0 text-right">
+                                                            {isSelected ? (
+                                                                <div className="text-xs font-medium text-primary">Sélectionné</div>
+                                                            ) : null}
+                                                        </div>
+                                                    </div>
+                                                </button>
+                                            );
+                                        })
                                     )}
                                 </div>
-                            </div>
-                        )}
+                            </ScrollArea>
+                        </div>
                     </div>
                 )}
 
@@ -340,7 +484,7 @@ export function CreateInstanceModal({
                             <Button
                                 type="submit"
                                 onClick={handleDeploy}
-                                disabled={deployStep === "submitting"}
+                                disabled={deployStep === "submitting" || !selectedComboKey}
                             >
                                 {deployStep === "submitting" ? "Créer..." : "Créer"}
                             </Button>
@@ -348,98 +492,6 @@ export function CreateInstanceModal({
                     )}
                 </DialogFooter>
             </DialogContent>
-
-            {/* Instance Type Picker */}
-            <Dialog open={isTypePickerOpen} onOpenChange={setIsTypePickerOpen}>
-                <DialogContent showCloseButton={false} className="sm:max-w-[720px]">
-                    <DialogHeader>
-                        <DialogTitle>Choisir un type d&apos;instance</DialogTitle>
-                        <DialogDescription>
-                            Rechercher et sélectionner le type le plus adapté (GPU, VRAM, coût).
-                        </DialogDescription>
-                    </DialogHeader>
-
-                    <div className="flex items-center gap-2">
-                        <Input
-                            placeholder="Rechercher (ex: H100, L40S, RENDER...)"
-                            value={typeQuery}
-                            onChange={(e) => setTypeQuery(e.target.value)}
-                        />
-                    </div>
-
-                    <ScrollArea className="h-[420px] rounded-md border">
-                        <div className="p-2 space-y-2">
-                            {filteredTypesForPicker.length === 0 ? (
-                                <div className="text-sm text-muted-foreground p-4">Aucun type ne correspond à la recherche.</div>
-                            ) : (
-                                filteredTypesForPicker.map((t) => {
-                                    const gpus = t.gpu_count ?? 0;
-                                    const vram = t.vram_per_gpu_gb ?? 0;
-                                    const perHour = typeof t.cost_per_hour === "number" ? t.cost_per_hour : null;
-                                    const isSelected = t.id === selectedTypeId;
-                                    return (
-                                        <button
-                                            key={t.id}
-                                            type="button"
-                                            onClick={() => {
-                                                setSelectedTypeId(t.id);
-                                                setIsTypePickerOpen(false);
-                                            }}
-                                            className={`w-full text-left rounded-md border p-3 hover:bg-muted/30 transition-colors ${
-                                                isSelected ? "border-primary bg-muted/20" : "border-border bg-background"
-                                            }`}
-                                        >
-                                            <div className="flex items-start justify-between gap-3">
-                                                <div className="min-w-0">
-                                                    <div className="font-medium truncate">{t.name}</div>
-                                                    <div className="text-xs text-muted-foreground">
-                                                        {gpus} GPU • {vram}GB VRAM/GPU{gpus && vram ? ` • ${gpus * vram}GB total` : ""}
-                                                        {t.cpu_count ? ` • ${t.cpu_count} vCPU` : ""}
-                                                        {t.ram_gb ? ` • ${t.ram_gb}GB RAM` : ""}
-                                                    </div>
-                                                </div>
-                                                <div className="text-right shrink-0">
-                                                    {perHour != null ? (
-                                                        <div className="text-xs font-mono text-muted-foreground">
-                                                            {formatMoney(perHour / 60)}/min
-                                                            <div className="text-sm font-semibold text-foreground">{formatMoney(perHour)}/h</div>
-                                                            <div>{formatMoney(perHour * 24)}/j</div>
-                                                            <div>{formatMoney(perHour * 24 * 30)}/mois</div>
-                                                        </div>
-                                                    ) : (
-                                                        <div className="text-xs text-muted-foreground">Prix indisponible</div>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        </button>
-                                    );
-                                })
-                            )}
-                        </div>
-                    </ScrollArea>
-
-                    <DialogFooter className="sm:justify-between">
-                        <Button
-                            variant="outline"
-                            onClick={() => {
-                                setIsTypePickerOpen(false);
-                                setTypeQuery("");
-                            }}
-                        >
-                            Fermer
-                        </Button>
-                        <Button
-                            onClick={() => {
-                                setIsTypePickerOpen(false);
-                                setTypeQuery("");
-                            }}
-                            disabled={!selectedTypeId}
-                        >
-                            Sélectionner
-                        </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
         </Dialog>
     );
 }

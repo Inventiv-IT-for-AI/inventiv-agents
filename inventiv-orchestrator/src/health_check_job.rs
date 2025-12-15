@@ -59,6 +59,8 @@ pub async fn run(pool: Pool<Postgres>) {
                 for (id, provider_id, provider_instance_id, zone, ip, created_at, health_check_failures) in instances {
                     let db_clone = pool.clone();
                     tokio::spawn(async move {
+                        let created_at = created_at.unwrap_or_else(|| sqlx::types::chrono::Utc::now());
+
                         // If IP is missing, try to fetch it from provider first (bounded by reqwest timeout).
                         if ip.is_none() {
                             if let Some(pid) = provider_instance_id.as_deref() {
@@ -104,6 +106,76 @@ pub async fn run(pool: Pool<Postgres>) {
                                             let dur = start.elapsed().as_millis() as i32;
                                             logger::log_event_complete(&db_clone, lid, "failed", dur, Some("IP not available yet")).await.ok();
                                         }
+
+                                        // If we've been booting for a long time with no IP, try a bounded recovery.
+                                        // Common root cause on GPU instances: provider can't allocate capacity (out_of_stock),
+                                        // leaving the server in `stopped` with no public IP.
+                                        let age_secs = (sqlx::types::chrono::Utc::now() - created_at).num_seconds();
+                                        if age_secs >= 300 {
+                                            let retry_log = logger::log_event_with_metadata(
+                                                &db_clone,
+                                                "PROVIDER_START_RETRY",
+                                                "in_progress",
+                                                id,
+                                                None,
+                                                Some(serde_json::json!({"zone": zone, "server_id": pid, "age_secs": age_secs})),
+                                            )
+                                            .await
+                                            .ok();
+                                            let retry_start = std::time::Instant::now();
+                                            let retry_res = provider.start_instance(&zone, pid).await;
+
+                                            if let Some(lid) = retry_log {
+                                                let dur = retry_start.elapsed().as_millis() as i32;
+                                                match &retry_res {
+                                                    Ok(true) => logger::log_event_complete(&db_clone, lid, "success", dur, Some("Poweron retried")).await.ok(),
+                                                    Ok(false) => logger::log_event_complete(&db_clone, lid, "failed", dur, Some("Provider returned false")).await.ok(),
+                                                    Err(e) => logger::log_event_complete(&db_clone, lid, "failed", dur, Some(&e.to_string())).await.ok(),
+                                                };
+                                            }
+
+                                            // If retry indicates out-of-stock, fail fast and cleanup to avoid infinite booting.
+                                            if let Err(e) = retry_res {
+                                                let msg = e.to_string();
+                                                if msg.contains("out_of_stock") || msg.contains("Out of stock") {
+                                                    let _ = sqlx::query(
+                                                        "UPDATE instances
+                                                         SET status = 'terminating',
+                                                             error_code = COALESCE(error_code, 'PROVIDER_OUT_OF_STOCK'),
+                                                             error_message = COALESCE($2, error_message),
+                                                             failed_at = COALESCE(failed_at, NOW()),
+                                                             deletion_reason = COALESCE(deletion_reason, 'provider_out_of_stock')
+                                                         WHERE id = $1"
+                                                    )
+                                                    .bind(id)
+                                                    .bind(&msg)
+                                                    .execute(&db_clone)
+                                                    .await;
+
+                                                    // Best-effort terminate to avoid leaking a stopped server.
+                                                    let term_log = logger::log_event_with_metadata(
+                                                        &db_clone,
+                                                        "PROVIDER_TERMINATE",
+                                                        "in_progress",
+                                                        id,
+                                                        None,
+                                                        Some(serde_json::json!({"zone": zone, "server_id": pid, "reason": "out_of_stock_cleanup"})),
+                                                    )
+                                                    .await
+                                                    .ok();
+                                                    let t0 = std::time::Instant::now();
+                                                    let term_res = provider.terminate_instance(&zone, pid).await;
+                                                    if let Some(lid) = term_log {
+                                                        let dur = t0.elapsed().as_millis() as i32;
+                                                        match &term_res {
+                                                            Ok(true) => logger::log_event_complete(&db_clone, lid, "success", dur, None).await.ok(),
+                                                            Ok(false) => logger::log_event_complete(&db_clone, lid, "failed", dur, Some("Provider returned false")).await.ok(),
+                                                            Err(e) => logger::log_event_complete(&db_clone, lid, "failed", dur, Some(&e.to_string())).await.ok(),
+                                                        };
+                                                    }
+                                                }
+                                            }
+                                        }
                                         return;
                                     }
                                     Err(e) => {
@@ -120,7 +192,7 @@ pub async fn run(pool: Pool<Postgres>) {
                         check_and_transition_instance(
                             id,
                             ip,
-                            created_at.unwrap_or_else(|| sqlx::types::chrono::Utc::now()),
+                            created_at,
                             health_check_failures.unwrap_or(0),
                             db_clone,
                         )
