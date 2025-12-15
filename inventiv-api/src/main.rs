@@ -150,6 +150,18 @@ async fn proxy_post_to_orchestrator(
         }
     }
 
+    // Forward client IP chain so Orchestrator can apply bootstrap IP checks.
+    if let Some(xff) = headers.get("x-forwarded-for") {
+        if let Ok(s) = xff.to_str() {
+            req = req.header("x-forwarded-for", s);
+        }
+    }
+    if let Some(xri) = headers.get("x-real-ip") {
+        if let Ok(s) = xri.to_str() {
+            req = req.header("x-real-ip", s);
+        }
+    }
+
     match req.send().await {
         Ok(resp) => {
             let status = StatusCode::from_u16(resp.status().as_u16())

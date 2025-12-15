@@ -33,7 +33,21 @@ REMOTE_ENV_FILE="${REMOTE_DEPLOY_DIR}/.env"
 SSH_ID_FILE="${SSH_IDENTITY_FILE:-}"
 SSH_EXTRA_OPTS="${SSH_EXTRA_OPTS:-}"
 SSH_ID_ARGS=()
+TMP_KEY_FILE=""
+cleanup_tmp_key() {
+  if [[ -n "${TMP_KEY_FILE}" ]]; then
+    rm -f "${TMP_KEY_FILE}" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_tmp_key EXIT
 if [[ -n "${SSH_ID_FILE}" ]]; then
+  if [[ ! -f "${SSH_ID_FILE}" && -n "${SSH_PRIVATE_KEY:-}" ]]; then
+    TMP_KEY_FILE="$(mktemp)"
+    umask 077
+    printf '%s\n' "${SSH_PRIVATE_KEY}" > "${TMP_KEY_FILE}"
+    chmod 600 "${TMP_KEY_FILE}" || true
+    SSH_ID_FILE="${TMP_KEY_FILE}"
+  fi
   SSH_ID_ARGS=(-i "${SSH_ID_FILE}")
 fi
 

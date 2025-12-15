@@ -1,5 +1,5 @@
 use axum::{
-    extract::{State},
+    extract::{State, ConnectInfo},
     response::{IntoResponse, Json},
     routing::{get, post},
     Router,
@@ -53,19 +53,161 @@ struct WorkerHeartbeatRequest {
     metadata: Option<serde_json::Value>,
 }
 
-fn worker_auth_ok(headers: &HeaderMap) -> bool {
-    // If token is not configured, accept (dev mode)
-    let expected = std::env::var("WORKER_AUTH_TOKEN").unwrap_or_default();
-    if expected.trim().is_empty() {
-        return true;
-    }
+fn extract_bearer(headers: &HeaderMap) -> Option<String> {
     let Some(auth) = headers.get(axum::http::header::AUTHORIZATION) else {
-        return false;
+        return None;
     };
     let Ok(auth) = auth.to_str() else {
+        return None;
+    };
+    let auth = auth.trim();
+    let prefix = "Bearer ";
+    if auth.len() <= prefix.len() || !auth.starts_with(prefix) {
+        return None;
+    }
+    Some(auth[prefix.len()..].trim().to_string())
+}
+
+fn request_client_ip(headers: &HeaderMap, connect: &SocketAddr) -> String {
+    // Prefer X-Forwarded-For (edge/proxy), fallback to socket addr (direct).
+    if let Some(xff) = headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()) {
+        if let Some(first) = xff.split(',').next().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            return first.to_string();
+        }
+    }
+    connect.ip().to_string()
+}
+
+async fn verify_worker_token_db(db: &Pool<Postgres>, instance_id: Uuid, token: &str) -> bool {
+    // Compare hash in DB using pgcrypto digest; avoids adding crypto deps in Rust.
+    let ok: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS(
+          SELECT 1
+          FROM worker_auth_tokens
+          WHERE instance_id = $1
+            AND revoked_at IS NULL
+            AND token_hash = encode(digest($2::text, 'sha256'), 'hex')
+        )
+        "#,
+    )
+    .bind(instance_id)
+    .bind(token)
+    .fetch_one(db)
+    .await
+    .unwrap_or(false);
+
+    if ok {
+        let _ = sqlx::query("UPDATE worker_auth_tokens SET last_seen_at = NOW() WHERE instance_id = $1")
+            .bind(instance_id)
+            .execute(db)
+            .await;
+    }
+
+    ok
+}
+
+async fn verify_worker_auth(
+    db: &Pool<Postgres>,
+    headers: &HeaderMap,
+    instance_id: Uuid,
+) -> bool {
+    // Backward-compat: allow a global token (useful for early bringup).
+    let expected = std::env::var("WORKER_AUTH_TOKEN").unwrap_or_default();
+    if !expected.trim().is_empty() {
+        if let Some(tok) = extract_bearer(headers) {
+            if tok.trim() == expected.trim() {
+                return true;
+            }
+        }
+    }
+
+    let Some(tok) = extract_bearer(headers) else {
         return false;
     };
-    auth.trim() == format!("Bearer {}", expected.trim())
+    verify_worker_token_db(db, instance_id, &tok).await
+}
+
+async fn instance_bootstrap_allowed(
+    db: &Pool<Postgres>,
+    instance_id: Uuid,
+    client_ip: &str,
+) -> bool {
+    // Allow bootstrap when:
+    // - instance exists
+    // - no token exists yet
+    // - and (provider is mock) OR client_ip matches instance.ip_address
+    let token_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM worker_auth_tokens WHERE instance_id = $1 AND revoked_at IS NULL)",
+    )
+    .bind(instance_id)
+    .fetch_one(db)
+    .await
+    .unwrap_or(false);
+
+    if token_exists {
+        return false;
+    }
+
+    let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT i.ip_address::text as ip, p.code as provider_code
+        FROM instances i
+        JOIN providers p ON p.id = i.provider_id
+        WHERE i.id = $1
+        "#,
+    )
+    .bind(instance_id)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+
+    let Some((ip_opt, provider_code_opt)) = row else {
+        return false;
+    };
+
+    if provider_code_opt.as_deref() == Some("mock") {
+        return true;
+    }
+
+    let Some(ip) = ip_opt else {
+        return false;
+    };
+    let clean_ip = ip.split('/').next().unwrap_or(ip.as_str()).trim();
+    clean_ip == client_ip.trim()
+}
+
+async fn issue_worker_token(
+    db: &Pool<Postgres>,
+    instance_id: Uuid,
+    worker_id: Option<Uuid>,
+    metadata: Option<serde_json::Value>,
+) -> Option<(String, String)> {
+    let token = format!("wk_{}_{}", Uuid::new_v4(), Uuid::new_v4());
+    let prefix = token.chars().take(12).collect::<String>();
+
+    let res = sqlx::query(
+        r#"
+        INSERT INTO worker_auth_tokens (instance_id, token_hash, token_prefix, worker_id, metadata)
+        VALUES ($1, encode(digest($2::text, 'sha256'), 'hex'), $3, $4, $5)
+        ON CONFLICT (instance_id) DO NOTHING
+        "#,
+    )
+    .bind(instance_id)
+    .bind(&token)
+    .bind(&prefix)
+    .bind(worker_id)
+    .bind(metadata)
+    .execute(db)
+    .await
+    .ok()?;
+
+    if res.rows_affected() == 0 {
+        return None;
+    }
+
+    Some((token, prefix))
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -208,7 +350,9 @@ async fn main() {
     let addr = SocketAddr::from(([0, 0, 0, 0], 8001));
     println!("Orchestrator listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+        .await
+        .unwrap();
 }
 
 async fn root() -> &'static str {
@@ -238,11 +382,31 @@ async fn get_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 async fn worker_register(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    ConnectInfo(connect): ConnectInfo<SocketAddr>,
     Json(payload): Json<WorkerRegisterRequest>,
 ) -> impl IntoResponse {
-    if !worker_auth_ok(&headers) {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized"}))).into_response();
+    let client_ip = request_client_ip(&headers, &connect);
+
+    // Either:
+    // - authenticated (existing token or global token), OR
+    // - bootstrap (no token yet + IP matches instance/ip or provider=mock) -> issue token and return it.
+    let authed = verify_worker_auth(&state.db, &headers, payload.instance_id).await;
+    let mut issued_token: Option<(String, String)> = None;
+    if !authed {
+        let can_bootstrap = instance_bootstrap_allowed(&state.db, payload.instance_id, &client_ip).await;
+        if !can_bootstrap {
+            return (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized"}))).into_response();
+        }
+        issued_token = issue_worker_token(&state.db, payload.instance_id, payload.worker_id, payload.metadata.clone()).await;
+        if issued_token.is_none() {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error":"token_already_exists_or_race"})),
+            )
+                .into_response();
+        }
     }
+
     println!(
         "🧩 worker_register: instance_id={} model_id={:?} health_port={:?} vllm_port={:?}",
         payload.instance_id, payload.model_id, payload.health_port, payload.vllm_port
@@ -269,7 +433,17 @@ async fn worker_register(
     .await;
 
     match res {
-        Ok(r) if r.rows_affected() > 0 => (StatusCode::OK, Json(json!({"status": "ok"}))).into_response(),
+        Ok(r) if r.rows_affected() > 0 => {
+            if let Some((token, token_prefix)) = issued_token {
+                (
+                    StatusCode::OK,
+                    Json(json!({"status":"ok","bootstrap_token": token,"bootstrap_token_prefix": token_prefix})),
+                )
+                    .into_response()
+            } else {
+                (StatusCode::OK, Json(json!({"status": "ok"}))).into_response()
+            }
+        }
         Ok(_) => (StatusCode::NOT_FOUND, Json(json!({"error": "instance_not_found"}))).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -284,7 +458,7 @@ async fn worker_heartbeat(
     headers: HeaderMap,
     Json(payload): Json<WorkerHeartbeatRequest>,
 ) -> impl IntoResponse {
-    if !worker_auth_ok(&headers) {
+    if !verify_worker_auth(&state.db, &headers, payload.instance_id).await {
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized"}))).into_response();
     }
 

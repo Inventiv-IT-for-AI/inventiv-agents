@@ -42,7 +42,8 @@ services:
     profiles: ["worker-local"]
     environment:
       - CONTROL_PLANE_URL=http://api:8003
-      - WORKER_AUTH_TOKEN=${WORKER_AUTH_TOKEN:-dev-worker-token}
+      # Leave empty to exercise bootstrap-per-worker flow.
+      - WORKER_AUTH_TOKEN=${WORKER_AUTH_TOKEN:-}
       - INSTANCE_ID=${INSTANCE_ID:-}
       - MODEL_ID=demo-model
       - VLLM_BASE_URL=http://mock-vllm:8000

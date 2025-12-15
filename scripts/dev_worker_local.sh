@@ -7,11 +7,19 @@ cd "$ROOT_DIR"
 echo "== 0. Local worker-ready test (mock provider) =="
 
 export PROVIDER="${PROVIDER:-mock}"
-export WORKER_AUTH_TOKEN="${WORKER_AUTH_TOKEN:-dev-worker-token}"
+# Leave empty by default to test per-worker bootstrap token flow.
+export WORKER_AUTH_TOKEN="${WORKER_AUTH_TOKEN:-}"
 
 echo "== Cleanup (idempotent): stop previous stack (keep volumes) =="
-docker compose down --remove-orphans >/dev/null 2>&1 || true
-docker compose --profile worker-local down --remove-orphans >/dev/null 2>&1 || true
+RESET_VOLUMES="${RESET_VOLUMES:-1}"
+if [ "$RESET_VOLUMES" = "1" ]; then
+  echo "Resetting volumes for deterministic migrations (RESET_VOLUMES=1)"
+  docker compose down -v --remove-orphans >/dev/null 2>&1 || true
+  docker compose --profile worker-local down -v --remove-orphans >/dev/null 2>&1 || true
+else
+  docker compose down --remove-orphans >/dev/null 2>&1 || true
+  docker compose --profile worker-local down --remove-orphans >/dev/null 2>&1 || true
+fi
 
 pick_free_port() {
   local start="${1}"
@@ -98,6 +106,10 @@ docker compose logs --tail=80 orchestrator || true
 echo "-- DB check (worker_status/heartbeat)"
 docker compose exec -T db psql -U postgres -d llminfra -c \
   "select id, status, worker_status, worker_last_heartbeat, worker_model_id, worker_health_port from instances where id='${INSTANCE_ID}';" || true
+
+echo "-- DB check (worker_auth_tokens)"
+docker compose exec -T db psql -U postgres -d llminfra -c \
+  "select instance_id, token_prefix, created_at, last_seen_at, revoked_at from worker_auth_tokens where instance_id='${INSTANCE_ID}';" || true
 
 echo "== Done =="
 echo "To stop: docker compose down -v"

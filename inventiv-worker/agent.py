@@ -10,7 +10,8 @@ import requests
 
 # Configuration
 CONTROL_PLANE_URL = os.getenv("CONTROL_PLANE_URL", "").rstrip("/")
-WORKER_AUTH_TOKEN = os.getenv("WORKER_AUTH_TOKEN", "")
+WORKER_AUTH_TOKEN = os.getenv("WORKER_AUTH_TOKEN", "").strip()
+WORKER_AUTH_TOKEN_FILE = os.getenv("WORKER_AUTH_TOKEN_FILE", "").strip()
 
 INSTANCE_ID = os.getenv("INSTANCE_ID", "").strip()
 WORKER_ID = os.getenv("WORKER_ID", "").strip() or str(uuid4())
@@ -28,6 +29,34 @@ def _auth_headers():
     if not WORKER_AUTH_TOKEN:
         return {}
     return {"Authorization": f"Bearer {WORKER_AUTH_TOKEN}"}
+
+
+def _load_token_from_file():
+    global WORKER_AUTH_TOKEN
+    if WORKER_AUTH_TOKEN or not WORKER_AUTH_TOKEN_FILE:
+        return
+    try:
+        with open(WORKER_AUTH_TOKEN_FILE, "r", encoding="utf-8") as f:
+            tok = (f.read() or "").strip()
+        if tok:
+            WORKER_AUTH_TOKEN = tok
+            print(f"[{WORKER_ID}] loaded WORKER_AUTH_TOKEN from file", flush=True)
+    except FileNotFoundError:
+        return
+    except Exception as e:
+        print(f"[{WORKER_ID}] failed reading WORKER_AUTH_TOKEN_FILE: {e}", flush=True)
+
+
+def _persist_token_to_file(token: str):
+    if not WORKER_AUTH_TOKEN_FILE:
+        return
+    try:
+        os.makedirs(os.path.dirname(WORKER_AUTH_TOKEN_FILE) or ".", exist_ok=True)
+        with open(WORKER_AUTH_TOKEN_FILE, "w", encoding="utf-8") as f:
+            f.write(token.strip() + "\n")
+        print(f"[{WORKER_ID}] wrote WORKER_AUTH_TOKEN_FILE", flush=True)
+    except Exception as e:
+        print(f"[{WORKER_ID}] failed writing WORKER_AUTH_TOKEN_FILE: {e}", flush=True)
 
 def check_vllm_health():
     try:
@@ -151,6 +180,7 @@ def _serve_http():
 
 
 def register_worker_once():
+    global WORKER_AUTH_TOKEN
     if not CONTROL_PLANE_URL or not INSTANCE_ID:
         return False
     payload = {
@@ -169,6 +199,17 @@ def register_worker_once():
             timeout=3,
         )
         ok = resp.status_code // 100 == 2
+        if ok:
+            # Bootstrap flow: orchestrator may return a freshly generated token for this worker.
+            try:
+                data = resp.json() if resp.text else {}
+            except Exception:
+                data = {}
+            tok = (data or {}).get("bootstrap_token")
+            if tok and not WORKER_AUTH_TOKEN:
+                WORKER_AUTH_TOKEN = str(tok).strip()
+                _persist_token_to_file(WORKER_AUTH_TOKEN)
+                print(f"[{WORKER_ID}] received bootstrap_token prefix={(data or {}).get('bootstrap_token_prefix')}", flush=True)
         if not ok:
             print(f"[{WORKER_ID}] register failed: {resp.status_code} {resp.text[:200]}", flush=True)
         return ok
@@ -210,6 +251,8 @@ def loop():
     print(f"Agent Sidecar started for worker_id={WORKER_ID} instance_id={INSTANCE_ID or 'unset'}")
     print(f"Health endpoints on :{WORKER_HEALTH_PORT} (GET /healthz, /readyz, /metrics)")
 
+    _load_token_from_file()
+
     http_thread = threading.Thread(target=_serve_http, daemon=True)
     http_thread.start()
 
@@ -218,10 +261,15 @@ def loop():
         is_ready = check_vllm_ready()
         status = "ready" if is_ready else "starting"
 
-        if is_ready and not registered:
+        if not registered:
+            # Register early to allow token bootstrap before first heartbeat.
             registered = register_worker_once()
 
-        hb_ok = send_heartbeat(status=status)
+        hb_ok = False
+        if WORKER_AUTH_TOKEN or registered:
+            hb_ok = send_heartbeat(status=status)
+        else:
+            print(f"[{WORKER_ID}] skipping heartbeat (no auth token yet)", flush=True)
         print(f"[{WORKER_ID}] vLLM ready={is_ready} status={status} registered={registered} heartbeat={hb_ok}", flush=True)
         time.sleep(HEARTBEAT_INTERVAL_S)
 

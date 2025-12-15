@@ -59,18 +59,37 @@ if [[ -z "${SCW_ARCH}" ]]; then
 fi
 
 SSH_PUB_FILE="${SSH_PUBLIC_KEY_FILE:-./.ssh/llm-studio-key.pub}"
+SSH_PUBLIC_KEY_INLINE="${SSH_PUBLIC_KEY:-}"
 SSH_KEY_FILE="${SSH_IDENTITY_FILE:-}"
+SSH_PRIVATE_KEY_INLINE="${SSH_PRIVATE_KEY:-}"
+
+TMP_KEY_FILE=""
+cleanup_tmp_key() {
+  if [[ -n "${TMP_KEY_FILE}" ]]; then
+    rm -f "${TMP_KEY_FILE}" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_tmp_key EXIT
 if [[ -z "${SSH_KEY_FILE}" ]]; then
   echo "SSH_IDENTITY_FILE must be set (private key), e.g. ./.ssh/llm-studio-key" >&2
   exit 2
 fi
-if [[ ! -f "${SSH_PUB_FILE}" ]]; then
-  echo "SSH public key file not found: ${SSH_PUB_FILE}" >&2
+if [[ ! -f "${SSH_PUB_FILE}" && -z "${SSH_PUBLIC_KEY_INLINE}" ]]; then
+  echo "SSH public key missing. Provide SSH_PUBLIC_KEY_FILE or SSH_PUBLIC_KEY." >&2
   exit 2
 fi
+
 if [[ ! -f "${SSH_KEY_FILE}" ]]; then
-  echo "SSH private key file not found: ${SSH_KEY_FILE}" >&2
-  exit 2
+  if [[ -n "${SSH_PRIVATE_KEY_INLINE}" ]]; then
+    TMP_KEY_FILE="$(mktemp)"
+    umask 077
+    printf '%s\n' "${SSH_PRIVATE_KEY_INLINE}" > "${TMP_KEY_FILE}"
+    chmod 600 "${TMP_KEY_FILE}" || true
+    SSH_KEY_FILE="${TMP_KEY_FILE}"
+  else
+    echo "SSH private key file not found: ${SSH_KEY_FILE}. Provide SSH_IDENTITY_FILE or SSH_PRIVATE_KEY." >&2
+    exit 2
+  fi
 fi
 
 SCW_SECRET_KEY="${SCW_SECRET_KEY:-}"
@@ -235,11 +254,49 @@ else
   echo "==> Reusing server: ${SERVER_ID}"
 fi
 
-echo "==> Setting cloud-init SSH key on server (user_data/cloud-init)"
-PUB_KEY="$(cat "${SSH_PUB_FILE}" | tr -d '\n')"
+echo "==> Setting cloud-init on server (SSH key + flex IP config)"
+if [[ -n "${SSH_PUBLIC_KEY_INLINE}" ]]; then
+  PUB_KEY="$(printf '%s' "${SSH_PUBLIC_KEY_INLINE}" | tr -d '\n')"
+else
+  PUB_KEY="$(cat "${SSH_PUB_FILE}" | tr -d '\n')"
+fi
+
+# For routed_ipv4 (manual), the OS must add the /32 address to an interface.
+# We do it at boot via cloud-init so SSH works on the Flexible IP immediately.
 CLOUD_INIT="#cloud-config
 ssh_authorized_keys:
   - ${PUB_KEY}
+
+write_files:
+  - path: /usr/local/bin/inventiv-flexip.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      FLEX_IP='${FLEX_IP_ADDR}'
+      IFACE=\$(ip route show default | awk '{print \$5}' | head -n1 || true)
+      if [ -z \"\$IFACE\" ]; then
+        IFACE=\$(ip -o link show | awk -F': ' '\$2!=\"lo\"{print \$2; exit}')
+      fi
+      # Immediate config
+      ip addr add \"\${FLEX_IP}/32\" dev \"\$IFACE\" 2>/dev/null || true
+      sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1 || true
+      sysctl -w net.ipv4.conf.\"\\\$IFACE\".rp_filter=0 >/dev/null 2>&1 || true
+      # Persist on Ubuntu via netplan (keep DHCP enabled)
+      mkdir -p /etc/netplan
+      cat > /etc/netplan/99-inventiv-flexip.yaml <<EOF
+      network:
+        version: 2
+        ethernets:
+          \$IFACE:
+            dhcp4: true
+            addresses:
+              - \${FLEX_IP}/32
+      EOF
+      netplan apply || (netplan generate && netplan apply) || true
+
+runcmd:
+  - [ bash, -lc, /usr/local/bin/inventiv-flexip.sh ]
 "
 api_put_text "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/servers/${SERVER_ID}/user_data/cloud-init" "${CLOUD_INIT}" >/dev/null
 

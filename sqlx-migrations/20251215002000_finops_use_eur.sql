@@ -103,7 +103,7 @@ BEGIN
     SELECT 1 FROM information_schema.columns
     WHERE table_schema='finops' AND table_name='provider_costs' AND column_name='currency'
   ) THEN
-    EXECUTE "ALTER TABLE finops.provider_costs ALTER COLUMN currency SET DEFAULT 'EUR'";
+    EXECUTE 'ALTER TABLE finops.provider_costs ALTER COLUMN currency SET DEFAULT ''EUR''';
   END IF;
 
   -- subscription_charges
