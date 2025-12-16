@@ -55,6 +55,11 @@ services:
       # Optional: override domains to request (comma-separated).
       # If unset, defaults to wildcard: *.${ROOT_DOMAIN}
       - LEGO_DOMAINS=${LEGO_DOMAINS:-}
+      # Optional: when requesting SAN certs on frequently rebuilt environments,
+      # append ROOT_DOMAIN to the identifiers set to avoid Let's Encrypt
+      # "exact set of identifiers" rate limit.
+      # 0/empty disables.
+      - LEGO_APPEND_ROOT_DOMAIN=${LEGO_APPEND_ROOT_DOMAIN:-}
       # Optional tuning:
       # - SCW_PROPAGATION_TIMEOUT=300
       # - SCW_POLLING_INTERVAL=10
@@ -88,6 +93,14 @@ services:
         # Domains: default wildcard, or explicit SAN list via LEGO_DOMAINS.
         DOMAINS_ARGS=""
         if [ -n "$${LEGO_DOMAINS:-}" ]; then
+          # Optional: append ROOT_DOMAIN to the SAN list (helps avoid exact-set rate limits).
+          if [ "$${LEGO_APPEND_ROOT_DOMAIN:-0}" = "1" ]; then
+            case ",$${LEGO_DOMAINS}," in
+              *",$${ROOT_DOMAIN},"*) : ;;
+              *) LEGO_DOMAINS="$${LEGO_DOMAINS},$${ROOT_DOMAIN}" ;;
+            esac
+          fi
+
           OLDIFS="$$IFS"
           IFS=','
           for d in $${LEGO_DOMAINS}; do

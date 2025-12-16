@@ -59,7 +59,7 @@ PRD_REMOTE_SSH ?=
 	images-build-version images-push-version images-build-latest images-push-latest \
 	images-publish-stg images-publish-prod \
 	ghcr-token-local ghcr-login \
-	up down ps logs dev-create dev-create-edge dev-start dev-start-edge dev-stop dev-delete dev-ps dev-logs dev-restart-orchestrator dev-cert \
+	up down ps logs ui dev-create dev-create-edge dev-start dev-start-edge dev-stop dev-delete dev-ps dev-logs dev-restart-orchestrator dev-cert \
 	edge-create edge-start edge-stop edge-delete edge-ps edge-logs edge-cert \
 	stg-provision stg-destroy stg-bootstrap stg-secrets-sync stg-rebuild stg-create stg-update stg-start stg-stop stg-delete stg-status stg-logs stg-cert stg-renew stg-ghcr-token \
 	stg-cert-export stg-cert-import \
@@ -95,6 +95,7 @@ help:
 	@echo ""
 	@echo "## DEV local (docker-compose.yml — hot reload)"
 	@echo "  make up | down | ps | logs"
+	@echo "  make ui            # start Next.js UI on http://localhost:3000"
 	@echo "  make dev-create | dev-start | dev-stop | dev-delete"
 	@echo "  make dev-restart-orchestrator"
 	@echo ""
@@ -206,6 +207,22 @@ up: dev-create
 down: dev-delete
 ps: dev-ps
 logs: dev-logs
+
+ui:
+	@$(MAKE) check-dev-env
+	@set -e; \
+	if [ ! -d "inventiv-frontend" ]; then \
+	  echo "❌ inventiv-frontend/ not found" >&2; exit 2; \
+	fi; \
+	if [ ! -d "inventiv-frontend/node_modules" ]; then \
+	  echo "⚠️  inventiv-frontend/node_modules missing. Run:" >&2; \
+	  echo "   cd inventiv-frontend && npm install" >&2; \
+	fi; \
+	if [ ! -f "inventiv-frontend/.env.local" ]; then \
+	  echo "NEXT_PUBLIC_API_URL=http://localhost:8003" > inventiv-frontend/.env.local; \
+	  echo "✅ Created inventiv-frontend/.env.local (NEXT_PUBLIC_API_URL=http://localhost:8003)"; \
+	fi; \
+	cd inventiv-frontend && npm run dev -- --port 3000
 
 dev-create:
 	@echo "🚀 DEV create (docker-compose.yml, hot reload)"

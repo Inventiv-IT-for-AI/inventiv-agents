@@ -76,22 +76,25 @@ compose() {
 }
 
 cert_archive_default() {
-  # Shared between staging/prod for the same ROOT_DOMAIN
-  # (kept local and gitignored).
+  # Per-environment certificate cache file (kept local and gitignored).
+  # This avoids accidental mixing of staging/prod SAN certs.
   local root_domain
   root_domain="$(bash -lc "set -a; source '${LOCAL_ENV_FILE}'; set +a; echo \"\${ROOT_DOMAIN:-}\"")"
   if [[ -z "${root_domain}" ]]; then
     echo ""
     return 0
   fi
-  # Default: use the production cert cache (shared between staging/prod)
-  echo "${REPO_ROOT}/deploy/certs/lego_data_${root_domain}_prod.tar.gz"
+  echo "${REPO_ROOT}/deploy/certs/lego_data_${root_domain}_${ENV_NAME}.tar.gz"
 }
 
 maybe_restore_lego_volume() {
   # Optional: restore previously saved ACME account+certificates into the remote
   # lego_data docker volume, so we reuse wildcard cert instead of re-issuing.
   local archive="${CERT_ARCHIVE_PATH:-}"
+  if [[ -z "${archive}" ]]; then
+    # Allow specifying path in env/<env>.env
+    archive="$(bash -lc "set -a; source '${LOCAL_ENV_FILE}'; set +a; echo \"\${CERT_ARCHIVE_PATH:-}\"")"
+  fi
   if [[ -z "${archive}" ]]; then
     archive="$(cert_archive_default)"
   fi

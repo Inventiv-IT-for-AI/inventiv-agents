@@ -41,6 +41,22 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et les 
 - [x] UI Login + protection via middleware (redirection vers `/login`).
 - [x] “User chip” + profil (édition profil + changement mdp) + logout.
 - [x] Page `/users` (CRUD users).
+- [x] **FinOps Dashboard** : Coûts réels/forecast/cumulatifs, breakdown par provider/instance/region/type, fenêtres temporelles (minute/heure/jour/30j/365j).
+
+### FinOps (inventiv-finops)
+- [x] Service de calcul automatique des coûts (tables TimescaleDB `finops.cost_*_minute`).
+- [x] Calcul coûts réels (`cost_actual_minute`) : basé sur `EVT:INSTANCE_COST_START/STOP`.
+- [x] Calcul coûts prévisionnels (`cost_forecast_minute`) : basé sur burn rate et horizons (1min, 1h, 1j, 30j, 365j).
+- [x] Calcul coûts cumulatifs (`cost_actual_cumulative_minute`) : depuis différentes fenêtres temporelles.
+- [x] Conversion USD → EUR : toutes les colonnes FinOps utilisent EUR (migration `20251215002000_finops_use_eur.sql`).
+
+### API FinOps (inventiv-api)
+- [x] Endpoints dashboard consolidés :
+  - `GET /finops/dashboard/costs/summary` : Allocation totale + breakdown par provider/instance/region/type.
+  - `GET /finops/dashboard/costs/window` : Détails par fenêtre temporelle (minute/heure/jour/30j/365j).
+- [x] Endpoints séries temporelles :
+  - `GET /finops/cost/actual/minute` : Série coûts réels.
+  - `GET /finops/cost/cumulative/minute` : Série coûts cumulatifs.
 
 ---
 
@@ -57,6 +73,8 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et les 
 - [x] Makefile: `make dev-*`/`stg-*`/`prod-*` utilisent automatiquement `env/{env}.env` et échouent avec un message clair si manquant.
 - [x] Secrets sync: `default_admin_password` sync via `scripts/remote_sync_secrets.sh`.
 - [x] Prompt de clôture: `/.cursor/commands/close.md`.
+- [x] Makefile: commande `make ui` pour démarrer le frontend facilement (crée `.env.local` si absent).
+- [x] Deploy scripts: amélioration gestion certificats LEGO (SAN, append ROOT_DOMAIN pour éviter rate limits).
 
 ### Contrats API/UI à surveiller
 - [ ] `instance_type_zones` existait dans la doc mais pas en SQL au départ → maintenant ajouté; vérifier que l’UI Settings alimente correctement cette table.
@@ -66,7 +84,7 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et les 
   - [x] table `action_types` (catalogue UI): `GET /action_types`
 
 ### Docs / scripts obsolètes
-- [ ] **Router**: le crate `inventiv-router` a été supprimé mais la doc/README/scripts en parlent encore (port 8002, `/v1/chat/completions`).
+- [x] **Router**: README mis à jour pour clarifier que le Router est prévu mais non présent actuellement (phase 0.2.2).
 - [ ] `scripts/test_architecture.sh` attend `/health` backend/router (à aligner avec la réalité ou ré-implémenter).
 
 ---
@@ -141,7 +159,7 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et les 
 
 ### Frontend / DX
 - [ ] Corriger warning eslint existant `useFinops.ts` (deps useEffect).
-- [ ] RBAC minimal (admin) + stockage sécurisé (hash/rotation).
+- [x] RBAC minimal (admin) + stockage sécurisé (hash bcrypt via pgcrypto).
 
 ### Worker agent
 - [x] `inventiv-worker/agent.py`: implémenter heartbeat/metrics + protocole d’enrôlement.
@@ -157,9 +175,31 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et les 
 
 ---
 
+## 🎯 Next steps (priorités immédiates)
+
+1. **FinOps Tokens** : Implémenter tracking et forecast des tokens (priorités 4-5 FinOps) :
+   - Consommation par modèle/instance/type/région/provider
+   - Forecast de tokens à produire
+   - Fenêtres temporelles (minute/heure/jour/30j/365j)
+   - Tables `finops.inference_usage` + événements `EVT:TOKENS_CONSUMED`
+
+2. **Worker deployment réel** : Valider end-to-end staging Scaleway avec vrai worker (vLLM) + register/heartbeat vers API domain.
+
+3. **Router MVP** : Réintroduire router OpenAI-compatible (phase 0.2.2) OU supprimer définitivement les mentions du router tant qu'il n'existe pas.
+
+4. **Autoscaling** : Implémenter autoscaler basé sur signaux router/worker (queue depth, latence, GPU util).
+
+5. **Rotation tokens worker** : Implémenter rotation/révocation des tokens worker (champs déjà présents en DB).
+
+6. **Metrics Prometheus** : Exposer `/metrics` sur chaque service (API, orchestrator, worker, finops).
+
+7. **Catalogue minimal** : Assurer qu'un catalogue minimal (zones + instance types + associations) est présent pour que l'UI propose des choix valides.
+
+---
+
 ## ✅ Recommandations (direction / “bonne trajectoire”)
 
-- [ ] **Single source of truth DB**: choisir un workflow unique migrations + seeds (idéalement `sqlx-migrations/` pour les migrations, et un script explicite pour les seeds).
-- [ ] **Stabiliser les contrats**: documenter (OpenAPI) et faire matcher l’UI strictement.
-- [ ] **Aligner la doc**: README + `docs/architecture.md` + scripts, notamment sur le router.
-- [ ] **Durcir le provisioning**: gestion d’erreurs, retries, timeouts, et logs exploitables (action_logs + metadata).
+- [x] **Single source of truth DB**: `sqlx-migrations/` pour migrations, `seeds/` pour seeds (workflow clarifié).
+- [x] **Stabiliser les contrats**: OpenAPI/Swagger UI disponible, contrats API/UI alignés.
+- [x] **Aligner la doc**: README restructuré selon plan complet, router clarifié comme prévu mais non présent.
+- [ ] **Durcir le provisioning**: gestion d'erreurs, retries, timeouts, et logs exploitables (action_logs + metadata).
