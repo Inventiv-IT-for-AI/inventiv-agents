@@ -265,7 +265,7 @@ export function CreateInstanceModal({
                             <Label className="text-right">Provider</Label>
                             <Select value={selectedProviderCode} onValueChange={onProviderChange}>
                                 <SelectTrigger className="col-span-3">
-                                    <SelectValue />
+                                    <SelectValue placeholder="Provider : tous" />
                                 </SelectTrigger>
                                 <SelectContent>
                                     <SelectItem value="all">Tout</SelectItem>
@@ -286,7 +286,7 @@ export function CreateInstanceModal({
                                 disabled={deployStep === "submitting"}
                             >
                                 <SelectTrigger className="col-span-3">
-                                    <SelectValue placeholder="Tout" />
+                                    <SelectValue placeholder="Region : toutes" />
                                 </SelectTrigger>
                                 <SelectContent>
                                     <SelectItem value="all">Tout</SelectItem>
@@ -309,7 +309,7 @@ export function CreateInstanceModal({
                                 disabled={deployStep === "submitting"}
                             >
                                 <SelectTrigger className="col-span-3">
-                                    <SelectValue placeholder="Tout" />
+                                    <SelectValue placeholder="Zone : toutes" />
                                 </SelectTrigger>
                                 <SelectContent>
                                     <SelectItem value="all">Tout</SelectItem>
@@ -341,10 +341,10 @@ export function CreateInstanceModal({
 
                                 <Select value={filterGpuCount} onValueChange={setFilterGpuCount}>
                                     <SelectTrigger className="w-[140px]">
-                                        <SelectValue placeholder="GPU" />
+                                        <SelectValue placeholder="GPU : tout" />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        <SelectItem value="all">GPU: tous</SelectItem>
+                                        <SelectItem value="all">GPU: tout</SelectItem>
                                         {gpuCountOptions.map((g) => (
                                             <SelectItem key={g} value={String(g)}>{g} GPU</SelectItem>
                                         ))}
@@ -353,7 +353,7 @@ export function CreateInstanceModal({
 
                                 <Select value={filterVramPerGpu} onValueChange={setFilterVramPerGpu}>
                                     <SelectTrigger className="w-[160px]">
-                                        <SelectValue placeholder="VRAM/GPU" />
+                                        <SelectValue placeholder="VRAM : toutes" />
                                     </SelectTrigger>
                                     <SelectContent>
                                         <SelectItem value="all">VRAM: toutes</SelectItem>
@@ -364,7 +364,7 @@ export function CreateInstanceModal({
                                 </Select>
                             </div>
 
-                            <ScrollArea className="h-[420px] rounded-md border">
+                            <ScrollArea className="h-[420px] rounded-md border [&>[data-radix-scroll-area-scrollbar][data-orientation=vertical]]:bg-muted/30">
                                 <div className="p-2 space-y-2">
                                     {filteredCombos.length === 0 ? (
                                         <div className="text-sm text-muted-foreground p-4">Aucun type ne correspond aux filtres.</div>
