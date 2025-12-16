@@ -1,8 +1,6 @@
 -- NOTE: catalog seeding is centralized in `seeds/catalog_seeds.sql`.
 -- This file only keeps non-catalog dev data.
 
--- Initial Admin User (Default pwd: password)
--- Note: In real app, use ARGON2 hash. Here is a placeholder hash.
-INSERT INTO users (id, email, password_hash, role)
-VALUES (gen_random_uuid(), 'hammed.ramdani@inventiv-it.fr', '$argon2id$v=19$m=4096,t=3,p=1$placeholder$placeholder', 'admin')
-ON CONFLICT (email) DO NOTHING;
+-- NOTE:
+-- Do NOT seed a default admin user here (would require committing secrets).
+-- Default admin is created by inventiv-api at boot using DEFAULT_ADMIN_PASSWORD_FILE (same mechanism dev/staging/prod).

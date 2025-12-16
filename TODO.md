@@ -20,6 +20,12 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et les 
   - [x] `GET /zones/:zone_id/instance_types` (filtrage pour l’UI)
 - [x] **Action logs**: `GET /action_logs` (filtrage, limit).
 - [x] Swagger UI: `/swagger-ui` + spec `/api-docs/openapi.json`.
+- [x] **Auth User (session)**:
+  - [x] `POST /auth/login` (login=username/email) + cookie session
+  - [x] `POST /auth/logout`
+  - [x] `GET/PUT /auth/me` + `PUT /auth/me/password`
+  - [x] Protection des endpoints API (401 sans session)
+- [x] **Gestion des users (admin)**: `GET/POST /users`, `GET/PUT/DELETE /users/:id`
 
 ### Orchestrator (inventiv-orchestrator :8001)
 - [x] **Provisioning Scaleway** (réel): `create_instance` + `poweron` + récupération IP → DB `booting`.
@@ -32,6 +38,9 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et les 
 - [x] UI Dashboard/Instances/Settings/Monitoring/Traces.
 - [x] API base URL via `NEXT_PUBLIC_API_URL` + `apiUrl()` (centralisé).
 - [x] Filtrage: zones par région + types par zone dans le flow de création.
+- [x] UI Login + protection via middleware (redirection vers `/login`).
+- [x] “User chip” + profil (édition profil + changement mdp) + logout.
+- [x] Page `/users` (CRUD users).
 
 ---
 
@@ -42,6 +51,12 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et les 
   - `sqlx-migrations/` = migrations exécutées au boot (API + orchestrator)
   - `migrations/` = seeds uniquement (`seeds*.sql`)
 - [ ] **Seeds non exécutés automatiquement**: il faut un mécanisme clair (script, make target, doc) pour initialiser providers/regions/zones/types/associations en dev.
+- [x] Users: ajout `first_name`, `last_name`, `username` + bootstrap admin via secret file.
+
+### Tooling / Ops
+- [x] Makefile: `make dev-*`/`stg-*`/`prod-*` utilisent automatiquement `env/{env}.env` et échouent avec un message clair si manquant.
+- [x] Secrets sync: `default_admin_password` sync via `scripts/remote_sync_secrets.sh`.
+- [x] Prompt de clôture: `/.cursor/commands/close.md`.
 
 ### Contrats API/UI à surveiller
 - [ ] `instance_type_zones` existait dans la doc mais pas en SQL au départ → maintenant ajouté; vérifier que l’UI Settings alimente correctement cette table.
@@ -120,7 +135,12 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et les 
   - drain → terminate + cooldowns
 
 ### Auth / API Keys
-- [ ] Auth (JWT) + gestion des API keys (backend + router/gateway).
+- [x] Auth (JWT session + users management) pour `inventiv-api`.
+- [ ] Gestion des API keys (backend + router/gateway).
+- [ ] RBAC plus fin (au-delà de `admin`) + politiques d’accès par endpoint.
+
+### Frontend / DX
+- [ ] Corriger warning eslint existant `useFinops.ts` (deps useEffect).
 - [ ] RBAC minimal (admin) + stockage sécurisé (hash/rotation).
 
 ### Worker agent

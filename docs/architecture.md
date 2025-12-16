@@ -72,6 +72,17 @@ Important:
 - l’edge/gateway doit être configuré pour **écraser** `X-Forwarded-For` côté client (anti-spoofing),
   ou pour ne faire confiance à `X-Forwarded-For` que depuis le réseau interne.
 
+##### Auth User (session)
+L’UI + l’API publique “produit” sont protégées par une **session** (cookie JWT):
+- `POST /auth/login` (login = username ou email) → pose un cookie de session
+- `POST /auth/logout` → invalide la session côté client (cookie)
+- `GET/PUT /auth/me` + `PUT /auth/me/password` (profil + changement MDP)
+- Tous les endpoints métier de `inventiv-api` sont protégés (401 sans session).
+
+Bootstrap admin:
+- au démarrage, `inventiv-api` peut créer `username=admin` si absent
+- le mot de passe est lu depuis `DEFAULT_ADMIN_PASSWORD_FILE` (secret file monté dans `/run/secrets`)
+
 ### Flux de Communication & Données
 
 1.  **Backend -> Orchestrator** :

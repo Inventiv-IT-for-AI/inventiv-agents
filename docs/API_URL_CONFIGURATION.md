@@ -20,11 +20,12 @@ Déjà implémenté dans `inventiv-frontend/src/lib/api.ts`.
 
 ### 3. Endroits typiques à vérifier
 
-- Dashboard: `src/app/(dashboard)/page.tsx`
-- Instances: `src/app/instances/page.tsx` + `components/instances/*`
-- Monitoring: `src/app/monitoring/page.tsx`
-- Traces: `src/app/traces/page.tsx`
-- Settings: `src/app/settings/page.tsx`
+- Dashboard: `inventiv-frontend/src/app/(app)/(dashboard)/page.tsx`
+- Instances: `inventiv-frontend/src/app/(app)/instances/page.tsx` + `inventiv-frontend/src/components/instances/*`
+- Monitoring: `inventiv-frontend/src/app/(app)/monitoring/page.tsx`
+- Traces: `inventiv-frontend/src/app/(app)/traces/page.tsx`
+- Settings: `inventiv-frontend/src/app/(app)/settings/page.tsx`
+- Login: `inventiv-frontend/src/app/(auth)/login/page.tsx`
 
 ### 4. Configuration par environnement
 

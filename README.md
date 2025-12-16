@@ -29,6 +29,15 @@ Le système est composé de 4 micro-services principaux structurés dans un Carg
 ### Lancement Local (Dev)
 
 ```bash
+# 1) Créer le fichier d'env local (non commité)
+cp env/dev.env.example env/dev.env
+
+# 2) Créer le secret admin (non commité)
+# (le mot de passe n'est pas documenté ici; voir env/* et le fichier secret)
+mkdir -p deploy/secrets
+echo "<your-admin-password>" > deploy/secrets/default_admin_password
+
+# 3) Lancer la stack
 make up
 ```
 
@@ -38,6 +47,12 @@ URLs locales :
 *   API : `http://localhost:8003` (Swagger: `GET /swagger-ui`)
 *   DB : `postgresql://postgres:password@localhost:5432/llminfra`
 *   Redis : `redis://localhost:6379`
+
+### 🔐 Auth (UI + API)
+
+- L'API `inventiv-api` est protégée par **session** (cookie JWT).
+- UI : la page `/login` est obligatoire pour accéder au dashboard.
+- Bootstrap: un user `admin` est créé au boot si absent (configuré via `DEFAULT_ADMIN_*` + `DEFAULT_ADMIN_PASSWORD_FILE`).
 
 ### Lancer le Frontend (UI)
 
@@ -58,14 +73,13 @@ UI locale : `http://localhost:3000`
 
 ### Scaleway (provisioning réel)
 
-Pour activer le provisioning Scaleway réel, exporter au minimum :
+Pour activer le provisioning Scaleway réel :
 
-```bash
-export SCALEWAY_PROJECT_ID="..."
-export SCALEWAY_SECRET_KEY="..."
-# optionnel selon ton compte/SDK
-export SCALEWAY_ACCESS_KEY="..."
-```
+- Renseigner dans `env/dev.env` (local) ou `env/staging.env` / `env/prod.env` (remote):
+  - `SCALEWAY_PROJECT_ID`
+  - `SCALEWAY_ACCESS_KEY` (selon besoin)
+  - `SCALEWAY_SECRET_KEY` (selon besoin)
+- En staging/prod, les secrets sont synchronisés sur la VM via `SECRETS_DIR` (voir `make stg-secrets-sync` / `make prod-secrets-sync`).
 
 ## 🛠 Commandes Utiles
 
@@ -151,6 +165,13 @@ Le plan est d’implémenter un **autoscaler** côté `inventiv-orchestrator` ba
 
 La version actuelle est définie dans le fichier `VERSION`.
 Le build Docker utilise cette version pour taguer les images.
+
+## 🧰 Configuration (env/secrets)
+
+- Les fichiers d'env de référence sont dans `env/*.env.example`.
+- En dev, les commandes `make dev-*` utilisent **`env/dev.env`** (obligatoire).
+- En staging/prod, les commandes `make stg-*` / `make prod-*` utilisent `env/staging.env` / `env/prod.env`.
+- Les secrets runtime sont montés dans les conteneurs via `SECRETS_DIR` → `/run/secrets` (staging/prod et dev local).
 
 ## ☁️ Déploiement
 

@@ -485,9 +485,16 @@ pub async fn process_provisioning(
     // 2. Create Server
     //
     // NOTE: Some provider + instance type combos require extra allocation parameters
-    // (disk profile, boot image, security group, etc.). Today we only enforce the
-    // Scaleway L4 constraint (no local volumes) by requiring a compatible boot image id
-    // to be configured per instance type.
+    // (disk profile, boot image, security group, etc.).
+    //
+    // Scaleway: some GPU instance families (e.g. L4, L40S) require *no local volumes* (0GB).
+    // In practice, this means the boot image must be compatible ("diskless") otherwise the
+    // server can be created but will fail at poweron with:
+    //   precondition_failed: resource_not_usable / local-volume(s) must be equal to 0GB
+    fn scaleway_requires_diskless_boot_image(instance_type: &str) -> bool {
+        let t = instance_type.trim().to_ascii_uppercase();
+        t.starts_with("L4-") || t.starts_with("L40S-")
+    }
     let mut image_id = "8e0da557-5d75-40ba-b928-5984075aa255".to_string();
 
     // Provider-specific image override (e.g. GPU-optimized images).
@@ -510,9 +517,9 @@ pub async fn process_provisioning(
     }
 
     if provider_name.to_ascii_lowercase() == "scaleway"
-        && instance_type.to_ascii_uppercase().starts_with("L4-")
+        && scaleway_requires_diskless_boot_image(&instance_type)
     {
-        // Prefer a provider-specific boot image configured on the instance type.
+        // Prefer a provider-specific diskless boot image configured on the instance type.
         // Expected shape: instance_types.allocation_params = {"scaleway": {"boot_image_id": "<uuid>" }}
         let configured: Option<String> = sqlx::query_scalar(
             r#"
@@ -527,7 +534,7 @@ pub async fn process_provisioning(
         .unwrap_or(None);
 
         if let Some(img) = configured {
-            // L4 override has priority.
+            // Diskless override has priority.
             image_id = img;
         } else {
             // Try provider-side auto-discovery.
@@ -535,12 +542,12 @@ pub async fn process_provisioning(
                 match provider.resolve_boot_image(&zone, &instance_type).await {
                     Ok(Some(img)) => {
                         println!(
-                            "ℹ️ Scaleway L4: auto-resolved boot image '{}' for zone '{}' (type '{}')",
+                            "ℹ️ Scaleway diskless: auto-resolved boot image '{}' for zone '{}' (type '{}')",
                             img, zone, instance_type
                         );
                         image_id = img;
 
-                        // Make subsequent L4 provisions deterministic: persist the resolved boot image
+                        // Make subsequent provisions deterministic: persist the resolved boot image
                         // onto the instance type allocation_params if it isn't set already.
                         let _ = sqlx::query(
                             r#"
@@ -563,7 +570,7 @@ pub async fn process_provisioning(
                         .await;
                     }
                     Ok(None) => {
-                        let msg = "Scaleway L4 requires a diskless/compatible boot image. Auto-discovery did not find a suitable image. Configure instance_types.allocation_params.scaleway.boot_image_id for this L4 type.".to_string();
+                        let msg = "Scaleway requires a diskless/compatible boot image for this instance type. Auto-discovery did not find a suitable image. Configure instance_types.allocation_params.scaleway.boot_image_id for this type.".to_string();
                         eprintln!("❌ {}", msg);
                         if let Some(log_id) = log_id_execute {
                             let duration = start.elapsed().as_millis() as i32;
@@ -572,7 +579,7 @@ pub async fn process_provisioning(
                         let _ = sqlx::query(
                             "UPDATE instances
                              SET status = 'failed',
-                                 error_code = COALESCE(error_code, 'SCW_L4_BOOT_IMAGE_REQUIRED'),
+                                 error_code = COALESCE(error_code, 'SCW_DISKLESS_BOOT_IMAGE_REQUIRED'),
                                  error_message = COALESCE($2, error_message),
                                  failed_at = COALESCE(failed_at, NOW())
                              WHERE id = $1"
@@ -584,7 +591,7 @@ pub async fn process_provisioning(
                         return;
                     }
                     Err(e) => {
-                        let msg = format!("Scaleway L4 boot image auto-discovery failed: {}", e);
+                        let msg = format!("Scaleway diskless boot image auto-discovery failed: {}", e);
                         eprintln!("❌ {}", msg);
                         if let Some(log_id) = log_id_execute {
                             let duration = start.elapsed().as_millis() as i32;
@@ -593,7 +600,7 @@ pub async fn process_provisioning(
                         let _ = sqlx::query(
                             "UPDATE instances
                              SET status = 'failed',
-                                 error_code = COALESCE(error_code, 'SCW_L4_BOOT_IMAGE_RESOLVE_FAILED'),
+                                 error_code = COALESCE(error_code, 'SCW_DISKLESS_BOOT_IMAGE_RESOLVE_FAILED'),
                                  error_message = COALESCE($2, error_message),
                                  failed_at = COALESCE(failed_at, NOW())
                              WHERE id = $1"
@@ -626,7 +633,7 @@ pub async fn process_provisioning(
     let api_start = Instant::now();
     let log_id_provider = logger::log_event_with_metadata(
         &pool, "PROVIDER_CREATE", "in_progress", instance_uuid, None,
-        Some(json!({"zone": zone, "instance_type": instance_type, "correlation_id": correlation_id_meta})),
+        Some(json!({"zone": zone, "instance_type": instance_type, "image_id": image_id, "correlation_id": correlation_id_meta})),
     ).await.ok();
     
     let server_id_result = provider.create_instance(&zone, &instance_type, &image_id).await;
@@ -849,7 +856,7 @@ pub async fn process_provisioning(
                 "in_progress",
                 instance_uuid,
                 None,
-                Some(json!({"zone": zone, "server_id": server_id, "correlation_id": correlation_id_meta})),
+                Some(json!({"zone": zone, "server_id": server_id, "image_id": image_id, "correlation_id": correlation_id_meta})),
             ).await.ok();
 
             // 3. Power On (fail-fast if provider rejects)
@@ -1058,12 +1065,34 @@ pub async fn process_catalog_sync(pool: Pool<Postgres>) {
     // 1. Get Provider (Scaleway)
     let provider_name = ProviderManager::current_provider_name();
     if let Some(provider) = ProviderManager::get_provider(&provider_name, pool.clone()) {
-        let provider_uuid: Uuid = sqlx::query_scalar("SELECT id FROM providers WHERE code = $1 LIMIT 1")
-            .bind(&provider_name)
-            .fetch_optional(&pool)
-            .await
-            .unwrap_or(None)
-            .unwrap_or_default();
+        // Ensure the provider exists in DB (required for Settings UI and FK integrity).
+        let provider_uuid: Option<Uuid> = sqlx::query_scalar(
+            r#"
+            INSERT INTO providers (id, name, code, description, is_active)
+            VALUES (gen_random_uuid(), $1, $2, $3, true)
+            ON CONFLICT (code)
+            DO UPDATE SET
+              name = EXCLUDED.name,
+              description = EXCLUDED.description,
+              is_active = true
+            RETURNING id
+            "#,
+        )
+        .bind(match provider_name.as_str() {
+            "scaleway" => "Scaleway",
+            "mock" => "Mock",
+            _ => provider_name.as_str(),
+        })
+        .bind(&provider_name)
+        .bind(format!("Auto-managed provider entry for {}", provider_name))
+        .fetch_optional(&pool)
+        .await
+        .unwrap_or(None);
+
+        let Some(provider_uuid) = provider_uuid else {
+            println!("❌ [Catalog Sync] Could not resolve provider id in DB for code={}", provider_name);
+            return;
+        };
 
         // Prefer zones configured in DB for this provider; fallback to a sane default list.
         let zones: Vec<String> = sqlx::query_scalar(
@@ -1094,12 +1123,49 @@ pub async fn process_catalog_sync(pool: Pool<Postgres>) {
         for zone in &zones {
              println!("🔄 [Catalog Sync] Fetching catalog for zone: {}", zone);
 
-             // Resolve zone id for mapping (instance_type_zones)
-             let zone_id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM zones WHERE code = $1 AND is_active = true")
+             // Ensure region+zone exist (so Settings UI doesn't stay empty).
+             // Region code heuristic: drop the trailing "-<digit>" (e.g., fr-par-2 -> fr-par).
+             let region_code = zone.rsplitn(2, '-').nth(1).unwrap_or(zone).to_string();
+             let region_name = region_code.clone();
+             let region_id: Option<Uuid> = sqlx::query_scalar(
+                 r#"
+                 INSERT INTO regions (id, provider_id, name, code, is_active)
+                 VALUES (gen_random_uuid(), $1, $2, $3, true)
+                 ON CONFLICT (provider_id, code)
+                 DO UPDATE SET
+                   name = EXCLUDED.name,
+                   is_active = true
+                 RETURNING id
+                 "#,
+             )
+             .bind(provider_uuid)
+             .bind(&region_name)
+             .bind(&region_code)
+             .fetch_optional(&pool)
+             .await
+             .unwrap_or(None);
+
+             let zone_id: Option<Uuid> = if let Some(rid) = region_id {
+                 sqlx::query_scalar(
+                     r#"
+                     INSERT INTO zones (id, region_id, name, code, is_active)
+                     VALUES (gen_random_uuid(), $1, $2, $3, true)
+                     ON CONFLICT (region_id, code)
+                     DO UPDATE SET
+                       name = EXCLUDED.name,
+                       is_active = true
+                     RETURNING id
+                     "#,
+                 )
+                 .bind(rid)
+                 .bind(zone)
                  .bind(zone)
                  .fetch_optional(&pool)
                  .await
-                 .unwrap_or(None);
+                 .unwrap_or(None)
+             } else {
+                 None
+             };
 
              if zone_id.is_none() {
                  println!("⚠️ [Catalog Sync] Zone '{}' not found in DB; skipping availability mapping", zone);

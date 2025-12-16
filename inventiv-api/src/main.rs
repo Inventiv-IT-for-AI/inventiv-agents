@@ -5,6 +5,7 @@ use axum::{
     http::{StatusCode, HeaderMap},
     response::IntoResponse,
 };
+use axum::middleware;
 use tower_http::cors::{CorsLayer, Any};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -24,6 +25,10 @@ mod api_docs;
 mod simple_logger;
 mod instance_type_zones; // Module for zone associations
 mod finops;
+mod auth;
+mod auth_endpoints;
+mod users_endpoint;
+mod bootstrap_admin;
  // Simple logger without sqlx macros
 
 // use audit_log::AuditLogger; // Commented out due to DATABASE_URL build issues
@@ -60,6 +65,8 @@ async fn main() {
     // Optional dev convenience: auto-seed catalog when DB is empty.
     // Guarded by env var to avoid accidental seeding in staging/prod.
     maybe_seed_catalog(&pool).await;
+    // Ensure default admin exists (dev/staging/prod)
+    bootstrap_admin::ensure_default_admin(&pool).await;
 
     let state = Arc::new(AppState {
         redis_client: client,
@@ -71,23 +78,35 @@ async fn main() {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let app = Router::new()
+    // Public routes (no user auth)
+    let public = Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", api_docs::ApiDoc::openapi()))
         .route("/", get(root))
-        .route("/deployments", post(create_deployment))
-        // Worker control-plane proxy (dev/local convenience; staging/prod handled by edge too)
+        .route("/auth/login", post(auth_endpoints::login))
+        .route("/auth/logout", post(auth_endpoints::logout));
+
+    // Worker routes (worker auth handled in handler + orchestrator)
+    let worker = Router::new()
         .route("/internal/worker/register", post(proxy_worker_register))
-        .route("/internal/worker/heartbeat", post(proxy_worker_heartbeat))
-        // NEW READ ENDPOINTS
+        .route("/internal/worker/heartbeat", post(proxy_worker_heartbeat));
+
+    // Protected routes (require user session)
+    let protected = Router::new()
+        .route("/auth/me", get(auth_endpoints::me).put(auth_endpoints::update_me))
+        .route("/auth/me/password", axum::routing::put(auth_endpoints::change_password))
+        .route("/deployments", post(create_deployment))
+        // Instances
         .route("/instances", get(list_instances))
         .route("/instances/:id/archive", axum::routing::put(archive_instance))
         .route("/instances/:id", get(get_instance).delete(terminate_instance))
+        // Action logs
         .route("/action_logs", get(list_action_logs))
         .route("/action_logs/search", get(action_logs_search::search_action_logs))
         .route("/action_types", get(list_action_types))
+        // Commands
         .route("/reconcile", post(manual_reconcile_trigger))
         .route("/catalog/sync", post(manual_catalog_sync_trigger))
-        // SETTINGS ENDPOINTS
+        // Settings
         .route("/providers", get(settings::list_providers))
         .route("/providers/search", get(settings::search_providers))
         .route("/providers/:id", axum::routing::put(settings::update_provider))
@@ -100,11 +119,11 @@ async fn main() {
         .route("/instance_types", get(settings::list_instance_types))
         .route("/instance_types/search", get(settings::search_instance_types))
         .route("/instance_types/:id", axum::routing::put(settings::update_instance_type))
-        // INSTANCE TYPE ZONE ASSOCIATIONS
+        // Instance Type <-> Zones
         .route("/instance_types/:id/zones", get(instance_type_zones::list_instance_type_zones))
         .route("/instance_types/:id/zones", axum::routing::put(instance_type_zones::associate_zones_to_instance_type))
         .route("/zones/:zone_id/instance_types", get(instance_type_zones::list_instance_types_for_zone))
-        // FINOPS (dashboard)
+        // Finops
         .route("/finops/cost/current", get(finops::get_cost_current))
         .route("/finops/dashboard/costs/current", get(finops::get_costs_dashboard_current))
         .route("/finops/dashboard/costs/summary", get(finops::get_costs_dashboard_summary))
@@ -112,7 +131,16 @@ async fn main() {
         .route("/finops/cost/forecast/minute", get(finops::get_cost_forecast_series))
         .route("/finops/cost/actual/minute", get(finops::get_cost_actual_series))
         .route("/finops/cost/cumulative/minute", get(finops::get_cost_cumulative_series))
-        .layer(cors)  // Apply CORS to ALL routes
+        // Users management
+        .route("/users", get(users_endpoint::list_users).post(users_endpoint::create_user))
+        .route("/users/:id", get(users_endpoint::get_user).put(users_endpoint::update_user).delete(users_endpoint::delete_user))
+        .route_layer(middleware::from_fn(auth::require_user));
+
+    let app = Router::new()
+        .merge(public)
+        .merge(worker)
+        .merge(protected)
+        .layer(cors) // Apply CORS to ALL routes
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8003));
@@ -130,11 +158,76 @@ fn orchestrator_internal_url() -> String {
         .to_string()
 }
 
+fn extract_bearer(headers: &HeaderMap) -> Option<String> {
+    let Some(auth) = headers.get(axum::http::header::AUTHORIZATION) else {
+        return None;
+    };
+    let Ok(auth) = auth.to_str() else {
+        return None;
+    };
+    let auth = auth.trim();
+    let prefix = "Bearer ";
+    if auth.len() <= prefix.len() || !auth.starts_with(prefix) {
+        return None;
+    }
+    Some(auth[prefix.len()..].trim().to_string())
+}
+
+async fn verify_worker_token_db(db: &Pool<Postgres>, instance_id: uuid::Uuid, token: &str) -> bool {
+    // Compare hash in DB using pgcrypto digest; avoids adding crypto deps in Rust.
+    let ok: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS(
+          SELECT 1
+          FROM worker_auth_tokens
+          WHERE instance_id = $1
+            AND revoked_at IS NULL
+            AND token_hash = encode(digest($2::text, 'sha256'), 'hex')
+        )
+        "#,
+    )
+    .bind(instance_id)
+    .bind(token)
+    .fetch_one(db)
+    .await
+    .unwrap_or(false);
+
+    if ok {
+        let _ = sqlx::query("UPDATE worker_auth_tokens SET last_seen_at = NOW() WHERE instance_id = $1")
+            .bind(instance_id)
+            .execute(db)
+            .await;
+    }
+
+    ok
+}
+
+async fn verify_worker_auth_api(
+    db: &Pool<Postgres>,
+    headers: &HeaderMap,
+    instance_id: uuid::Uuid,
+) -> bool {
+    // Backward-compat: allow a global token (useful for early bringup).
+    let expected = std::env::var("WORKER_AUTH_TOKEN").unwrap_or_default();
+    if !expected.trim().is_empty() {
+        if let Some(tok) = extract_bearer(headers) {
+            if tok.trim() == expected.trim() {
+                return true;
+            }
+        }
+    }
+
+    let Some(tok) = extract_bearer(headers) else {
+        return false;
+    };
+    verify_worker_token_db(db, instance_id, &tok).await
+}
+
 async fn proxy_post_to_orchestrator(
     path: &str,
     headers: HeaderMap,
     body: Bytes,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     let base = orchestrator_internal_url();
     let url = format!("{}/{}", base, path.trim_start_matches('/'));
 
@@ -179,11 +272,66 @@ async fn proxy_post_to_orchestrator(
     }
 }
 
-async fn proxy_worker_register(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
+#[derive(Deserialize)]
+struct WorkerInstanceIdPayload {
+    instance_id: uuid::Uuid,
+}
+
+async fn proxy_worker_register(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    // Bootstrap flow: allow missing token on register (orchestrator will check IP + token existence).
+    // If a token IS present, we verify it here too (defense-in-depth).
+    if extract_bearer(&headers).is_some() {
+        let parsed: WorkerInstanceIdPayload = match serde_json::from_slice(&body) {
+            Ok(p) => p,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error":"invalid_body","message":"missing_or_invalid_instance_id"})),
+                )
+                    .into_response()
+            }
+        };
+        if !verify_worker_auth_api(&state.db, &headers, parsed.instance_id).await {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error":"unauthorized"})),
+            )
+                .into_response();
+        }
+    }
+
     proxy_post_to_orchestrator("/internal/worker/register", headers, body).await
 }
 
-async fn proxy_worker_heartbeat(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
+async fn proxy_worker_heartbeat(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    // Heartbeat always requires a valid worker token.
+    let parsed: WorkerInstanceIdPayload = match serde_json::from_slice(&body) {
+        Ok(p) => p,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"invalid_body","message":"missing_or_invalid_instance_id"})),
+            )
+                .into_response()
+        }
+    };
+
+    if !verify_worker_auth_api(&state.db, &headers, parsed.instance_id).await {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error":"unauthorized"})),
+        )
+            .into_response();
+    }
+
     proxy_post_to_orchestrator("/internal/worker/heartbeat", headers, body).await
 }
 

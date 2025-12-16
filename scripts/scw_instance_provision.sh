@@ -300,6 +300,78 @@ runcmd:
 "
 api_put_text "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/servers/${SERVER_ID}/user_data/cloud-init" "${CLOUD_INIT}" >/dev/null
 
+ensure_security_group() {
+  # Ensure a security group exists and allows inbound SSH/HTTP/HTTPS.
+  # Without this, Scaleway may block 80/443 by default on new servers.
+  local sg_name sg_id sgs_json create_body rules_body
+
+  sg_name="${SCW_SECURITY_GROUP_NAME:-inventiv-agents-${ENV_NAME}-sg}"
+
+  echo "==> Ensuring security group '${sg_name}' allows 22/80/443"
+  sgs_json="$(api_get "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/security_groups")"
+  sg_id="$(printf '%s' "${sgs_json}" | python3 -c '
+import json,sys
+name = sys.argv[1]
+project = sys.argv[2]
+data = json.load(sys.stdin)
+for sg in data.get("security_groups", []):
+    if sg.get("name") == name and sg.get("project") == project:
+        print(sg.get("id",""))
+        raise SystemExit(0)
+raise SystemExit(0)
+' "${sg_name}" "${PROJECT_ID}")"
+
+  if [[ -z "${sg_id}" ]]; then
+    create_body="$(python3 -c '
+import json,sys
+name, project = sys.argv[1], sys.argv[2]
+print(json.dumps({
+  "name": name,
+  "project": project,
+  "stateful": True,
+  "inbound_default_policy": "drop",
+  "outbound_default_policy": "accept",
+  "tags": ["inventiv-agents", "control-plane"],
+}))
+' "${sg_name}" "${PROJECT_ID}")"
+    sg_id="$(printf '%s' "$(api_post "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/security_groups" "${create_body}")" | python3 -c '
+import json,sys
+data=json.load(sys.stdin)
+print(data["security_group"]["id"])
+')"
+  fi
+
+  # Replace rules with a known-good allowlist (idempotent).
+  rules_body="$(python3 -c '
+import json
+rules=[]
+pos=1
+for port in (22,80,443):
+    rules.append({
+        "action":"accept",
+        "protocol":"TCP",
+        "direction":"inbound",
+        "ip_range":"0.0.0.0/0",
+        "dest_port_from":port,
+        "dest_port_to":port,
+        "position":pos,
+        "editable":True,
+    })
+    pos += 1
+print(json.dumps({"rules": rules}))
+')"
+  api PUT "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/security_groups/${sg_id}/rules" -d "${rules_body}" >/dev/null
+
+  # Attach SG to server (idempotent).
+  api_patch "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/servers/${SERVER_ID}" "$(python3 -c '
+import json,sys
+sg_id=sys.argv[1]
+print(json.dumps({"security_group": {"id": sg_id}}))
+' "${sg_id}")" >/dev/null
+}
+
+ensure_security_group
+
 echo "==> Ensuring server is running"
 for _ in $(seq 1 60); do
   S_JSON="$(api_get "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/servers/${SERVER_ID}")" || true

@@ -74,9 +74,9 @@ services:
       - REDIS_URL=redis://redis:6379
       - CARGO_TARGET_DIR=/app/target/inventiv-orchestrator
       - PROVIDER=${PROVIDER:-scaleway}
-      - SCALEWAY_PROJECT_ID=${SCALEWAY_PROJECT_ID}
-      - SCALEWAY_ACCESS_KEY=${SCALEWAY_ACCESS_KEY}
-      - SCALEWAY_SECRET_KEY=${SCALEWAY_SECRET_KEY}
+      - SCALEWAY_PROJECT_ID=${SCALEWAY_PROJECT_ID:-}
+      - SCALEWAY_ACCESS_KEY=${SCALEWAY_ACCESS_KEY:-}
+      - SCALEWAY_SECRET_KEY=${SCALEWAY_SECRET_KEY:-}
       - SCALEWAY_SSH_PUBLIC_KEY_FILE=/app/.ssh/llm-studio-key.pub
       - WORKER_AUTH_TOKEN=${WORKER_AUTH_TOKEN:-dev-worker-token}
       - WORKER_HEALTH_PORT=${WORKER_HEALTH_PORT:-8080}
@@ -96,12 +96,18 @@ services:
       - "8003:8003"
     volumes:
       - .:/app # Source code mount for hot reload
+      # Default admin password file (dev/local)
+      - ${SECRETS_DIR:-./deploy/secrets}:/run/secrets:ro
     environment:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://postgres:password@db:5432/llminfra
       - CARGO_TARGET_DIR=/app/target/inventiv-api
       - AUTO_SEED_CATALOG=1
       - SEED_CATALOG_PATH=/app/seeds/catalog_seeds.sql
+      - BOOTSTRAP_DEFAULT_ADMIN=${BOOTSTRAP_DEFAULT_ADMIN:-1}
+      - DEFAULT_ADMIN_USERNAME=${DEFAULT_ADMIN_USERNAME:-admin}
+      - DEFAULT_ADMIN_EMAIL=${DEFAULT_ADMIN_EMAIL:-admin@inventiv.local}
+      - DEFAULT_ADMIN_PASSWORD_FILE=${DEFAULT_ADMIN_PASSWORD_FILE:-/run/secrets/default_admin_password}
       - RUST_LOG=debug
     depends_on:
       - redis

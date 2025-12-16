@@ -13,6 +13,10 @@ services:
       - ROOT_DOMAIN=${ROOT_DOMAIN:?set ROOT_DOMAIN (e.g. example.com)}
       - FRONTEND_DOMAIN=${FRONTEND_DOMAIN:?set FRONTEND_DOMAIN (e.g. app.example.com)}
       - API_DOMAIN=${API_DOMAIN:?set API_DOMAIN (e.g. api.example.com)}
+      # Certificate file prefix under /etc/ssl/lego/certificates/.
+      # - Wildcard cert is typically named: _.${ROOT_DOMAIN}
+      # - SAN cert is typically named after the first --domains value (e.g. ${FRONTEND_DOMAIN})
+      - TLS_CERT_NAME=${TLS_CERT_NAME:-}
     volumes:
       - ./nginx/templates:/etc/nginx/templates:ro
       # lego output (contains private key) - nginx reads it
@@ -25,7 +29,10 @@ services:
       - -lc
       - |
         apk add --no-cache gettext >/dev/null 2>&1
-        envsubst '$$ROOT_DOMAIN $$FRONTEND_DOMAIN $$API_DOMAIN' \
+        if [ -z "${TLS_CERT_NAME:-}" ]; then
+          export TLS_CERT_NAME="_.${ROOT_DOMAIN}"
+        fi
+        envsubst '$$ROOT_DOMAIN $$FRONTEND_DOMAIN $$API_DOMAIN $$TLS_CERT_NAME' \
           < /etc/nginx/templates/default.conf.template \
           > /etc/nginx/conf.d/default.conf
         nginx -g 'daemon off;'
@@ -42,24 +49,86 @@ services:
       - ACME_EMAIL=${ACME_EMAIL:?set ACME_EMAIL}
       - LEGO_PATH=/var/lib/lego
       - LEGO_DNS=scaleway
+      # Optional: override ACME directory URL (use staging for CI to avoid rate limits)
+      # Example: https://acme-staging-v02.api.letsencrypt.org/directory
+      - LEGO_SERVER=${LEGO_SERVER:-}
+      # Optional: override domains to request (comma-separated).
+      # If unset, defaults to wildcard: *.${ROOT_DOMAIN}
+      - LEGO_DOMAINS=${LEGO_DOMAINS:-}
       # Optional tuning:
       # - SCW_PROPAGATION_TIMEOUT=300
       # - SCW_POLLING_INTERVAL=10
     volumes:
       - lego_data:/var/lib/lego
       - ${SECRETS_DIR:-./secrets}:/run/secrets:ro
+    # IMPORTANT: keep this as a *single* shell argument for `sh -lc`.
+    # Some compose versions split `command:` strings into argv; putting the whole
+    # script as the 3rd entrypoint arg avoids that.
     entrypoint:
       - /bin/sh
       - -lc
-    command: >-
-      export SCW_ACCESS_KEY="$$(cat /run/secrets/scaleway_access_key)";
-      export SCW_SECRET_KEY="$$(cat /run/secrets/scaleway_secret_key)";
-      # Wildcard cert (subdomains). Add "--domains $$ROOT_DOMAIN" if you also need the apex.
-      lego --path "$$LEGO_PATH"
-           --email "$$ACME_EMAIL"
-           --dns "$$LEGO_DNS"
-           --domains "*.$$ROOT_DOMAIN"
-           run
+      - |
+        set -euo pipefail
+        # Provide multiple env var names for lego's scaleway DNS provider
+        # (it has changed over time / between implementations).
+        export SCW_ACCESS_KEY="$$(cat /run/secrets/scaleway_access_key)"
+        export SCW_SECRET_KEY="$$(cat /run/secrets/scaleway_secret_key)"
+        export SCALEWAY_ACCESS_KEY="$$(cat /run/secrets/scaleway_access_key)"
+        export SCALEWAY_SECRET_KEY="$$(cat /run/secrets/scaleway_secret_key)"
+        export SCALEWAY_API_TOKEN="$$(cat /run/secrets/scaleway_secret_key)"
+        # NOTE: goacme/lego image ships binary at /lego (not in PATH).
+        # Use $$-escaping so compose doesn't substitute at parse-time.
+        # Allow `docker compose run lego renew --days 30` by forwarding args.
+        # Note: with `sh -c`, the first arg becomes $$0, so we must include $$0.
+        SERVER_ARG=""
+        if [ -n "$${LEGO_SERVER:-}" ]; then
+          SERVER_ARG="--server $${LEGO_SERVER}"
+        fi
+
+        # Domains: default wildcard, or explicit SAN list via LEGO_DOMAINS.
+        DOMAINS_ARGS=""
+        if [ -n "$${LEGO_DOMAINS:-}" ]; then
+          OLDIFS="$$IFS"
+          IFS=','
+          for d in $${LEGO_DOMAINS}; do
+            d="$$(echo "$$d" | xargs)"
+            if [ -n "$$d" ]; then
+              DOMAINS_ARGS="$$DOMAINS_ARGS --domains $$d"
+            fi
+          done
+          IFS="$$OLDIFS"
+        else
+          DOMAINS_ARGS="--domains *.$${ROOT_DOMAIN}"
+        fi
+
+        ACTION0="$$0"
+        if [ "$${ACTION0}" = "renew" ] || [ "$${ACTION0}" = "run" ] || [ "$${ACTION0}" = "revoke" ] || [ "$${ACTION0}" = "list" ] || [ "$${ACTION0}" = "dnshelp" ]; then
+          /lego --path "$${LEGO_PATH}" \
+               --email "$${ACME_EMAIL}" \
+               --accept-tos \
+               $${SERVER_ARG} \
+               --dns "$${LEGO_DNS}" \
+               $${DOMAINS_ARGS} \
+               "$${ACTION0}" "$$@"
+        else
+          /lego --path "$${LEGO_PATH}" \
+               --email "$${ACME_EMAIL}" \
+               --accept-tos \
+               $${SERVER_ARG} \
+               --dns "$${LEGO_DNS}" \
+               $${DOMAINS_ARGS} \
+               run
+        fi
+
+        # Make certs readable by nginx (container runs as uid 101).
+        # Keep private key group-readable only.
+        CERT_DIR="$${LEGO_PATH}/certificates"
+        chmod 755 "$${LEGO_PATH}" || true
+        chmod 750 "$${CERT_DIR}" || true
+        chgrp 101 "$${CERT_DIR}" || true
+        chgrp 101 "$${CERT_DIR}"/* || true
+        chmod 644 "$${CERT_DIR}"/*.crt "$${CERT_DIR}"/*.issuer.crt "$${CERT_DIR}"/*.json 2>/dev/null || true
+        chmod 640 "$${CERT_DIR}"/*.key 2>/dev/null || true
 
   # --- INFRA ---
   redis:
@@ -91,6 +160,12 @@ services:
       - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-llminfra}}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379}
       - RUST_LOG=${RUST_LOG:-info}
+      - BOOTSTRAP_DEFAULT_ADMIN=${BOOTSTRAP_DEFAULT_ADMIN:-1}
+      - DEFAULT_ADMIN_USERNAME=${DEFAULT_ADMIN_USERNAME:-admin}
+      - DEFAULT_ADMIN_EMAIL=${DEFAULT_ADMIN_EMAIL:-admin@inventiv.local}
+      - DEFAULT_ADMIN_PASSWORD_FILE=${DEFAULT_ADMIN_PASSWORD_FILE:-/run/secrets/default_admin_password}
+    volumes:
+      - ${SECRETS_DIR:-./secrets}:/run/secrets:ro
     depends_on:
       - db
       - redis

@@ -17,6 +17,7 @@ set -euo pipefail
 #   scaleway_secret_key
 #   llm-studio-key.pub
 #   ghcr_token
+#   default_admin_password
 #
 # Usage:
 #   REMOTE_SSH=root@51.159.184.73 SSH_IDENTITY_FILE=./.ssh/llm-studio-key \
@@ -119,6 +120,14 @@ if ! upload_secret_file "ghcr_token" "${LOCAL_SECRETS_DIR}/ghcr_token"; then
   # Optional: only required when pulling from a private registry.
   if ! upload_secret_value "ghcr_token" "${GHCR_TOKEN:-}"; then
     echo "[warn] ghcr_token not provided; skipping (pull will fail if GHCR packages are private)" >&2
+  fi
+fi
+
+# 4) Default admin password (used by inventiv-api bootstrap)
+if ! upload_secret_file "default_admin_password" "${LOCAL_SECRETS_DIR}/default_admin_password"; then
+  # Optional: can be passed via env var (CI or local .env)
+  if ! upload_secret_value "default_admin_password" "${DEFAULT_ADMIN_PASSWORD:-}"; then
+    echo "[warn] default_admin_password not provided; skipping (default admin bootstrap may be disabled or fail)" >&2
   fi
 fi
 

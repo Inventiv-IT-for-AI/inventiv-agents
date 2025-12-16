@@ -1,10 +1,9 @@
 "use client";
 
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { StatsCard } from "@/components/shared/StatsCard";
 import { useInstances } from "@/hooks/useInstances";
 import { useFinopsCosts } from "@/hooks/useFinops";
-import { Server, Activity, DollarSign, Zap, TrendingUp, Clock } from "lucide-react";
+import { Server, Activity, TrendingUp, Clock, AlertTriangle, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { displayOrDash, formatEur } from "@/lib/utils";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -21,17 +20,13 @@ export default function DashboardPage() {
     provisioning: instances.filter((i) =>
       ["provisioning", "booting"].includes(i.status.toLowerCase())
     ).length,
-    totalCost: instances.reduce((sum, i) => sum + (i.total_cost || 0), 0),
-    avgCostPerHour:
-      instances.length > 0
-        ? instances.reduce((sum, i) => sum + (i.cost_per_hour || 0), 0) /
-          instances.length
-        : 0,
+    failed: instances.filter((i) =>
+      ["failed", "startup_failed", "provisioning_failed"].includes(i.status.toLowerCase())
+    ).length,
   };
 
   const allocationTotal = finops.summary?.allocation?.total ?? null;
   const cumulativeTotal = finops.summary?.cumulative_total?.cumulative_amount_eur ?? null;
-  const spend1m = finops.summary?.actual_spend_windows?.find((w) => w.window === "minute")?.actual_spend_eur ?? null;
 
   const spendWindows = useMemo(() => {
     const rows = finops.summary?.actual_spend_windows ?? [];
@@ -57,43 +52,55 @@ export default function DashboardPage() {
         </p>
       </div>
 
-      {/* Stats Grid */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <StatsCard
-          title="Total Instances"
-          value={stats.total}
-          description="All time managed"
-          icon={Server}
-        />
-        <StatsCard
-          title="Active Instances"
-          value={stats.active}
-          description="Currently running"
-          icon={Activity}
-          valueClassName="text-green-600"
-          iconClassName="text-green-600"
-        />
-        <StatsCard
-          title="Burn Rate"
-          value={allocationTotal ? `${formatEur(allocationTotal.burn_rate_eur_per_hour, { minFrac: 4, maxFrac: 4 })}/h` : "-"}
-          description="Current allocation (instances pricing)"
-          icon={DollarSign}
-          valueClassName="text-blue-600"
-          iconClassName="text-blue-600"
-        />
-        <StatsCard
-          title="Cumulative Spend"
-          value={formatEur(cumulativeTotal, { minFrac: 4, maxFrac: 4 })}
-          description="Sum of actual minute costs"
-          icon={TrendingUp}
-          valueClassName="text-purple-600"
-          iconClassName="text-purple-600"
-        />
-      </div>
-
-      {/* Quick Stats Cards */}
+      {/* Instances overview + Recent instances */}
       <div className="grid gap-4 md:grid-cols-2">
-        {/* Recent Activity */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Server className="h-5 w-5" />
+              Instances
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="p-3 border rounded-lg">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs text-muted-foreground">Total</div>
+                  <Server className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <div className="text-2xl font-bold">{stats.total}</div>
+                <div className="text-xs text-muted-foreground">All time managed</div>
+              </div>
+              <div className="p-3 border rounded-lg">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs text-muted-foreground">Active</div>
+                  <Activity className="h-4 w-4 text-green-600" />
+                </div>
+                <div className="text-2xl font-bold text-green-600">{stats.active}</div>
+                <div className="text-xs text-muted-foreground">Currently running</div>
+              </div>
+              <div className="p-3 border rounded-lg">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs text-muted-foreground">Provisioning</div>
+                  <Loader2 className="h-4 w-4 text-blue-600" />
+                </div>
+                <div className="text-2xl font-bold text-blue-600">{stats.provisioning}</div>
+                <div className="text-xs text-muted-foreground">Provisioning / booting</div>
+              </div>
+              <div className="p-3 border rounded-lg">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs text-muted-foreground">Failed</div>
+                  <AlertTriangle className={`h-4 w-4 ${stats.failed > 0 ? "text-red-600" : "text-muted-foreground"}`} />
+                </div>
+                <div className={`text-2xl font-bold ${stats.failed > 0 ? "text-red-600" : "text-muted-foreground"}`}>
+                  {stats.failed}
+                </div>
+                <div className="text-xs text-muted-foreground">Needs attention</div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -136,38 +143,6 @@ export default function DashboardPage() {
                 ))}
               </div>
             )}
-          </CardContent>
-        </Card>
-
-        {/* Quick Stats */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Zap className="h-5 w-5" />
-              Quick Stats
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              <div className="flex items-center justify-between p-3 border rounded-lg">
-                <span className="text-sm font-medium">Provisioning</span>
-                <span className="text-2xl font-bold text-blue-600">
-                  {stats.provisioning}
-                </span>
-              </div>
-              <div className="flex items-center justify-between p-3 border rounded-lg">
-                <span className="text-sm font-medium">Active Instances</span>
-                <span className="text-2xl font-bold text-green-600">
-                  {stats.active}
-                </span>
-              </div>
-              <div className="flex items-center justify-between p-3 border rounded-lg">
-                <span className="text-sm font-medium">Actual Spend (last minute)</span>
-                <span className="text-2xl font-bold text-purple-600">
-                  {formatEur(spend1m, { minFrac: 6, maxFrac: 6 })}
-                </span>
-              </div>
-            </div>
           </CardContent>
         </Card>
       </div>
@@ -286,9 +261,15 @@ export default function DashboardPage() {
                       {formatEur(finops.breakdown?.total_eur ?? null, { minFrac: 4, maxFrac: 4 })}
                     </div>
                   </div>
-                  <div className="p-3 border rounded-lg">
-                    <div className="text-xs text-muted-foreground">Cumulative (all time)</div>
-                    <div className="text-xl font-bold">{formatEur(cumulativeTotal, { minFrac: 4, maxFrac: 4 })}</div>
+                  <div className="p-3 border rounded-lg bg-purple-50/70 border-purple-200">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs text-muted-foreground">Cumulative (all time)</div>
+                      <TrendingUp className="h-4 w-4 text-purple-700" />
+                    </div>
+                    <div className="text-xl font-bold text-purple-700">
+                      {formatEur(cumulativeTotal, { minFrac: 4, maxFrac: 4 })}
+                    </div>
+                    <div className="text-xs text-muted-foreground">Real spend since inception</div>
                   </div>
                 </div>
 

@@ -252,6 +252,14 @@ async fn main() {
         redis_client: redis_client.clone(),
     });
 
+    // Kick an initial catalog sync shortly after startup so the Settings UI has data
+    // (providers/regions/zones/instance types) without manual seeding on staging/prod.
+    let db_catalog = state.db.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        services::process_catalog_sync(db_catalog).await;
+    });
+
 
 
     // 3. Start Scaling Engine Loop (Background Task)

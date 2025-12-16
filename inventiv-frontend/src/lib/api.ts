@@ -1,6 +1,22 @@
 // API configuration
-// Use NEXT_PUBLIC_API_URL from environment, fallback to localhost for dev
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8003';
+//
+// IMPORTANT:
+// - Client-side code must NOT default to localhost (would call the user's browser localhost).
+// - In staging/prod we prefer going through Next rewrites at `/api/backend/*`,
+//   which are configured in `next.config.ts` to proxy to `API_INTERNAL_URL` (docker) or `NEXT_PUBLIC_API_URL`.
+//
+// Server-side: talk directly to the internal service (docker network) when available.
+const SERVER_API_BASE_URL =
+  process.env.API_INTERNAL_URL ??
+  process.env.NEXT_PUBLIC_API_URL ??
+  "http://127.0.0.1:8003";
+
+// Browser-side: always call same-origin proxy (Next rewrite).
+const BROWSER_API_BASE_URL = "/api/backend";
+
+export const API_BASE_URL =
+  typeof window === "undefined" ? SERVER_API_BASE_URL : BROWSER_API_BASE_URL;
 
 // Helper function to build API URLs
-export const apiUrl = (path: string) => `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
+export const apiUrl = (path: string) =>
+  `${API_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;

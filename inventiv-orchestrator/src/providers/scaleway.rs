@@ -100,8 +100,13 @@ impl CloudProvider for ScalewayProvider {
     }
 
     async fn resolve_boot_image(&self, zone: &str, instance_type: &str) -> Result<Option<String>> {
-        // We only need this for special instance families (e.g. L4) that have boot constraints.
-        if !instance_type.to_ascii_uppercase().starts_with("L4-") {
+        // Some Scaleway GPU instance families require *no local volumes* (diskless boot image).
+        // Example: L4-*, L40S-* (error at poweron: local-volume(s) must be equal to 0GB).
+        fn requires_diskless_boot_image(instance_type: &str) -> bool {
+            let t = instance_type.trim().to_ascii_uppercase();
+            t.starts_with("L4-") || t.starts_with("L40S-")
+        }
+        if !requires_diskless_boot_image(instance_type) {
             return Ok(None);
         }
 
@@ -143,7 +148,8 @@ impl CloudProvider for ScalewayProvider {
             if let Some(rv) = img.get("root_volume") {
                 // e.g. {"id": "...", "name": "...", "volume_type": "l_ssd", "size": 20000000000}
                 if let Some(vt) = rv.get("volume_type").and_then(|x| x.as_str()) {
-                    if vt.eq_ignore_ascii_case("l_ssd") {
+                    // Treat any "l_*" volume type as local (l_ssd, l_hdd, etc.).
+                    if vt.to_ascii_lowercase().starts_with("l_") {
                         looks_local = true;
                     }
                 }

@@ -9,15 +9,45 @@ IMAGE_TAG_LATEST ?= latest
 # Docker requires lowercase repository names
 IMAGE_REPO ?= ghcr.io/inventiv-it-for-ai/inventiv-agents
 
-# Compose (single file for build+pull)
-COMPOSE_FILE ?= deploy/docker-compose.nginx.yml
+# Compose
+# - LOCAL: developer stack (hot reload, docker-compose.yml in repo root)
+# - DEPLOY: prod-like stack (nginx/lego + prod Dockerfiles), used for staging/prod and local edge testing
+LOCAL_COMPOSE_FILE ?= docker-compose.yml
+DEPLOY_COMPOSE_FILE ?= deploy/docker-compose.nginx.yml
 COMPOSE ?= docker compose
 
 # Local env files (not committed) should live in env/*.env
 # Defaults to *.env.example so commands remain runnable on fresh clones.
-DEV_ENV_FILE ?= env/dev.env.example
+DEV_ENV_FILE ?= env/dev.env
 STG_ENV_FILE ?= env/staging.env
-PRD_ENV_FILE ?= env/prod.env.example
+PRD_ENV_FILE ?= env/prod.env
+
+# Fail fast with helpful guidance when env files are missing.
+define require_env_file
+	@if [ ! -f "$(1)" ]; then \
+	  echo ""; \
+	  echo "❌ Missing env file: $(1)"; \
+	  echo "Create it from the example:"; \
+	  echo "  cp $(2) $(1)"; \
+	  echo "Then edit $(1) and retry."; \
+	  echo ""; \
+	  exit 2; \
+	fi
+endef
+
+.PHONY: check-dev-env check-stg-env check-prod-env
+check-dev-env:
+	$(call require_env_file,$(DEV_ENV_FILE),env/dev.env.example)
+
+check-stg-env:
+	$(call require_env_file,$(STG_ENV_FILE),env/staging.env.example)
+
+check-prod-env:
+	$(call require_env_file,$(PRD_ENV_FILE),env/prod.env.example)
+
+# Compose wrappers (keep commands consistent everywhere)
+COMPOSE_LOCAL = $(COMPOSE) -f $(LOCAL_COMPOSE_FILE) --env-file $(DEV_ENV_FILE)
+COMPOSE_DEPLOY = $(COMPOSE) -f $(DEPLOY_COMPOSE_FILE) --env-file $(DEV_ENV_FILE)
 
 # Remote deploy
 REMOTE_DIR ?= /opt/inventiv-agents
@@ -29,9 +59,12 @@ PRD_REMOTE_SSH ?=
 	images-build-version images-push-version images-build-latest images-push-latest \
 	images-publish-stg images-publish-prod \
 	ghcr-token-local ghcr-login \
-	dev-create dev-create-edge dev-start dev-start-edge dev-stop dev-delete dev-ps dev-logs dev-cert \
+	up down ps logs dev-create dev-create-edge dev-start dev-start-edge dev-stop dev-delete dev-ps dev-logs dev-restart-orchestrator dev-cert \
+	edge-create edge-start edge-stop edge-delete edge-ps edge-logs edge-cert \
 	stg-provision stg-destroy stg-bootstrap stg-secrets-sync stg-rebuild stg-create stg-update stg-start stg-stop stg-delete stg-status stg-logs stg-cert stg-renew stg-ghcr-token \
+	stg-cert-export stg-cert-import \
 	prod-provision prod-destroy prod-bootstrap prod-secrets-sync prod-rebuild prod-create prod-update prod-start prod-stop prod-delete prod-status prod-logs prod-cert prod-renew prod-ghcr-token \
+	prod-cert-export prod-cert-import \
 	test clean
 
 help:
@@ -41,7 +74,8 @@ help:
 	@echo "Common vars:"
 	@echo "  IMAGE_REPO=$(IMAGE_REPO)"
 	@echo "  IMAGE_TAG (default)=$(IMAGE_TAG)   | version tag=$(IMAGE_TAG_VERSION)   | latest tag=$(IMAGE_TAG_LATEST)"
-	@echo "  COMPOSE_FILE=$(COMPOSE_FILE)"
+	@echo "  LOCAL_COMPOSE_FILE=$(LOCAL_COMPOSE_FILE)"
+	@echo "  DEPLOY_COMPOSE_FILE=$(DEPLOY_COMPOSE_FILE)"
 	@echo ""
 	@echo "## Images (build/push/pull)"
 	@echo "  make images-build [IMAGE_TAG=<sha>]"
@@ -51,7 +85,7 @@ help:
 	@echo "  make images-push-version     # IMAGE_TAG=v$(VERSION)"
 	@echo "  make images-build-latest     # IMAGE_TAG=latest (dev only)"
 	@echo "  make images-push-latest      # IMAGE_TAG=latest (dev only)"
-	@echo "  make ghcr-token-local        # writes deploy/secrets/ghcr_token (gitignored) from gh auth token"
+	@echo "  make ghcr-token-local        # writes/validates deploy/secrets/ghcr_token (gitignored)"
 	@echo ""
 	@echo "## Promotion (same digest)"
 	@echo "  make images-promote-stg  IMAGE_TAG=<sha|vX.Y.Z>"
@@ -59,11 +93,13 @@ help:
 	@echo "  make images-publish-stg  # build+push v$(VERSION) then retag to :staging"
 	@echo "  make images-publish-prod # build+push v$(VERSION) then retag to :prod"
 	@echo ""
-	@echo "## DEV local (docker compose)"
-	@echo "  make dev-create        [IMAGE_TAG=<sha|dev|latest>]"
-	@echo "  make dev-create-edge   [IMAGE_TAG=<sha|dev|latest>]   # nginx+lego profile edge"
-	@echo "  make dev-start | dev-start-edge | dev-stop | dev-delete"
-	@echo "  make dev-ps | dev-logs | dev-cert"
+	@echo "## DEV local (docker-compose.yml — hot reload)"
+	@echo "  make up | down | ps | logs"
+	@echo "  make dev-create | dev-start | dev-stop | dev-delete"
+	@echo "  make dev-restart-orchestrator"
+	@echo ""
+	@echo "## Local prod-like (deploy/docker-compose.nginx.yml — nginx/lego + prod Dockerfiles)"
+	@echo "  make edge-create | edge-start | edge-stop | edge-delete | edge-logs | edge-cert"
 	@echo ""
 	@echo "## STAGING remote (Scaleway)"
 	@echo "  make stg-provision     # create/reuse server in fr-par-2 + attach flex IP + SSH test"
@@ -75,11 +111,15 @@ help:
 	@echo "  make stg-update        # pull + renew cert + up -d"
 	@echo "  make stg-status | stg-logs | stg-stop | stg-delete"
 	@echo "  make stg-cert | stg-renew"
+	@echo "  make stg-cert-export        # export wildcard cert cache to deploy/certs/"
+	@echo "  make stg-cert-import        # import wildcard cert cache from deploy/certs/ to VM"
 	@echo ""
 	@echo "## PROD remote (Scaleway)"
 	@echo "  make prod-provision | prod-destroy | prod-bootstrap | prod-secrets-sync | prod-rebuild | prod-create | prod-update"
 	@echo "  make prod-status | prod-logs | prod-stop | prod-delete"
 	@echo "  make prod-cert | prod-renew"
+	@echo "  make prod-cert-export       # export wildcard cert cache to deploy/certs/"
+	@echo "  make prod-cert-import       # import wildcard cert cache from deploy/certs/ to VM"
 	@echo ""
 	@echo "Notes:"
 	@echo "  - Remote connection settings live in env/staging.env and env/prod.env (REMOTE_HOST/PORT, SSH_IDENTITY_FILE, optional REMOTE_USER)."
@@ -94,7 +134,7 @@ help:
 images-build:
 	@echo "🏗  Building images (tag=$(IMAGE_TAG))"
 	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
-	  $(COMPOSE) -f $(COMPOSE_FILE) --env-file $(DEV_ENV_FILE) build api orchestrator finops frontend
+	  $(COMPOSE) -f $(DEPLOY_COMPOSE_FILE) --env-file $(DEV_ENV_FILE) build api orchestrator finops frontend
 
 images-build-version:
 	@$(MAKE) images-build IMAGE_TAG=$(IMAGE_TAG_VERSION)
@@ -121,16 +161,8 @@ images-publish-prod:
 	@$(MAKE) images-promote-prod IMAGE_TAG=$(IMAGE_TAG_VERSION)
 
 ghcr-token-local:
-	@mkdir -p deploy/secrets
-	@echo "==> Writing deploy/secrets/ghcr_token (gitignored)"
-	@# Non-interactive: prefer GHCR_TOKEN if provided, otherwise use gh auth token (may lack read:packages).
-	@if [ -n "$${GHCR_TOKEN:-}" ]; then \
-	  printf "%s" "$${GHCR_TOKEN}" > deploy/secrets/ghcr_token; \
-	else \
-	  gh auth token > deploy/secrets/ghcr_token; \
-	fi
-	@chmod 600 deploy/secrets/ghcr_token
-	@echo "==> Note: token must have read:packages for private GHCR pulls"
+	@chmod +x ./scripts/ghcr_token_local.sh 2>/dev/null || true
+	@./scripts/ghcr_token_local.sh
 
 ghcr-login:
 	@# Only needed for GHCR/private pulls & pushes
@@ -141,12 +173,12 @@ images-push:
 	@if echo "$(IMAGE_REPO)" | grep -q "^ghcr.io/"; then $(MAKE) ghcr-login; fi
 	@echo "📦 Pushing images (tag=$(IMAGE_TAG))"
 	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
-	  $(COMPOSE) -f $(COMPOSE_FILE) --env-file $(DEV_ENV_FILE) push api orchestrator finops frontend
+	  $(COMPOSE) -f $(DEPLOY_COMPOSE_FILE) --env-file $(DEV_ENV_FILE) push api orchestrator finops frontend
 
 images-pull:
 	@echo "⬇️  Pulling images (tag=$(IMAGE_TAG))"
 	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
-	  $(COMPOSE) -f $(COMPOSE_FILE) --env-file $(DEV_ENV_FILE) pull api orchestrator finops frontend
+	  $(COMPOSE) -f $(DEPLOY_COMPOSE_FILE) --env-file $(DEV_ENV_FILE) pull api orchestrator finops frontend
 
 # Optional convenience tags (staging/prod) that point to the same digest as IMAGE_TAG.
 images-promote-stg:
@@ -166,57 +198,96 @@ images-promote-prod:
 	docker buildx imagetools create -t $(IMAGE_REPO)/inventiv-frontend:prod $(IMAGE_REPO)/inventiv-frontend:$(IMAGE_TAG)
 
 ## -----------------------------
-## Local DEV (create/start/stop/delete)
+## Local DEV (docker-compose.yml, hot reload)
 ## -----------------------------
 
+# README-friendly aliases
+up: dev-create
+down: dev-delete
+ps: dev-ps
+logs: dev-logs
+
 dev-create:
-	@echo "🚀 DEV create (no edge) tag=$(IMAGE_TAG)"
-	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
-	  $(COMPOSE) -f $(COMPOSE_FILE) --env-file $(DEV_ENV_FILE) build
-	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
-	  $(COMPOSE) -f $(COMPOSE_FILE) --env-file $(DEV_ENV_FILE) up -d --remove-orphans
+	@echo "🚀 DEV create (docker-compose.yml, hot reload)"
+	@$(MAKE) check-dev-env
+	$(COMPOSE_LOCAL) up -d --build --remove-orphans
 
 dev-create-edge:
-	@echo "🚀 DEV create (with edge) tag=$(IMAGE_TAG)"
-	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
-	  $(COMPOSE) -f $(COMPOSE_FILE) --env-file $(DEV_ENV_FILE) --profile edge build
-	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
-	  $(COMPOSE) -f $(COMPOSE_FILE) --env-file $(DEV_ENV_FILE) --profile edge up -d --remove-orphans
+	@$(MAKE) edge-create
 
 dev-start:
-	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
-	  $(COMPOSE) -f $(COMPOSE_FILE) --env-file $(DEV_ENV_FILE) up -d --remove-orphans
+	@$(MAKE) check-dev-env
+	$(COMPOSE_LOCAL) up -d --remove-orphans
 
 dev-start-edge:
-	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
-	  $(COMPOSE) -f $(COMPOSE_FILE) --env-file $(DEV_ENV_FILE) --profile edge up -d --remove-orphans
+	@$(MAKE) edge-start
 
 dev-stop:
-	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
-	  $(COMPOSE) -f $(COMPOSE_FILE) --env-file $(DEV_ENV_FILE) stop
+	@$(MAKE) check-dev-env
+	$(COMPOSE_LOCAL) stop
 
 dev-delete:
-	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
-	  $(COMPOSE) -f $(COMPOSE_FILE) --env-file $(DEV_ENV_FILE) down -v
+	@$(MAKE) check-dev-env
+	$(COMPOSE_LOCAL) down -v
 
 dev-ps:
-	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
-	  $(COMPOSE) -f $(COMPOSE_FILE) --env-file $(DEV_ENV_FILE) ps
+	@$(MAKE) check-dev-env
+	$(COMPOSE_LOCAL) ps
 
 dev-logs:
+	@$(MAKE) check-dev-env
+	$(COMPOSE_LOCAL) logs -f --tail=200
+
+dev-cert:
+	@$(MAKE) edge-cert
+
+# Convenience: when you edit orchestrator code and want to reload the container quickly.
+dev-restart-orchestrator:
+	@$(MAKE) check-dev-env
+	$(COMPOSE_LOCAL) restart orchestrator
+
+## -----------------------------
+## Local prod-like stack (deploy/docker-compose.nginx.yml)
+## -----------------------------
+
+edge-create:
+	@echo "🚀 EDGE create (deploy/docker-compose.nginx.yml) tag=$(IMAGE_TAG)"
 	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
-	  $(COMPOSE) -f $(COMPOSE_FILE) --env-file $(DEV_ENV_FILE) logs -f --tail=200
+	  $(COMPOSE_DEPLOY) build
+	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
+	  $(COMPOSE_DEPLOY) up -d --remove-orphans
+
+edge-start:
+	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
+	  $(COMPOSE_DEPLOY) up -d --remove-orphans
+
+edge-stop:
+	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
+	  $(COMPOSE_DEPLOY) stop
+
+edge-delete:
+	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
+	  $(COMPOSE_DEPLOY) down -v
+
+edge-ps:
+	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
+	  $(COMPOSE_DEPLOY) ps
+
+edge-logs:
+	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
+	  $(COMPOSE_DEPLOY) logs -f --tail=200
 
 # Issue wildcard cert (edge profile)
-dev-cert:
+edge-cert:
 	IMAGE_TAG=$(IMAGE_TAG) IMAGE_REPO=$(IMAGE_REPO) \
-	  $(COMPOSE) -f $(COMPOSE_FILE) --env-file $(DEV_ENV_FILE) --profile edge run --rm lego
+	  $(COMPOSE) -f $(DEPLOY_COMPOSE_FILE) --env-file $(DEV_ENV_FILE) --profile edge run --rm lego
 
 ## -----------------------------
 ## Remote STAGING/PROD (create/update/start/stop/delete)
 ## -----------------------------
 
 stg-create:
+	@$(MAKE) check-stg-env
 	@set -e; \
 	HOST=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
 	PORT=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
@@ -227,6 +298,7 @@ stg-create:
 	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/deploy_remote.sh staging create
 
 stg-update:
+	@$(MAKE) check-stg-env
 	@set -e; \
 	HOST=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
 	PORT=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
@@ -237,6 +309,7 @@ stg-update:
 	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/deploy_remote.sh staging update
 
 stg-start:
+	@$(MAKE) check-stg-env
 	@set -e; \
 	HOST=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
 	PORT=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
@@ -247,6 +320,7 @@ stg-start:
 	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/deploy_remote.sh staging start
 
 stg-stop:
+	@$(MAKE) check-stg-env
 	@set -e; \
 	HOST=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
 	PORT=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
@@ -257,6 +331,7 @@ stg-stop:
 	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/deploy_remote.sh staging stop
 
 stg-delete:
+	@$(MAKE) check-stg-env
 	@set -e; \
 	HOST=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
 	PORT=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
@@ -267,6 +342,7 @@ stg-delete:
 	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/deploy_remote.sh staging delete
 
 stg-status:
+	@$(MAKE) check-stg-env
 	@set -e; \
 	HOST=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
 	PORT=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
@@ -277,6 +353,7 @@ stg-status:
 	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/deploy_remote.sh staging status
 
 stg-logs:
+	@$(MAKE) check-stg-env
 	@set -e; \
 	HOST=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
 	PORT=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
@@ -287,6 +364,7 @@ stg-logs:
 	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/deploy_remote.sh staging logs
 
 stg-bootstrap:
+	@$(MAKE) check-stg-env
 	@set -e; \
 	HOST=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
 	PORT=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
@@ -297,10 +375,12 @@ stg-bootstrap:
 	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/remote_bootstrap.sh staging
 
 stg-provision:
+	@$(MAKE) check-stg-env
 	@chmod 600 ./.ssh/llm-studio-key 2>/dev/null || true
 	@./scripts/scw_instance_provision.sh $(STG_ENV_FILE) staging
 
 stg-ghcr-token:
+	@$(MAKE) check-stg-env
 	@set -e; \
 	HOST=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
 	PORT=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
@@ -311,6 +391,7 @@ stg-ghcr-token:
 	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE ./scripts/remote_set_secret.sh $(STG_ENV_FILE) ghcr_token
 
 stg-secrets-sync:
+	@$(MAKE) check-stg-env
 	@set -e; \
 	HOST=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
 	PORT=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
@@ -320,24 +401,54 @@ stg-secrets-sync:
 	if [ -z "$$REMOTE" ]; then REMOTE=$$(SSH_IDENTITY_FILE="$$KEY" ./scripts/ssh_detect_user.sh $$HOST $$PORT); fi; \
 	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE ./scripts/remote_sync_secrets.sh $(STG_ENV_FILE)
 
+stg-cert-export:
+	@$(MAKE) check-stg-env
+	@set -e; \
+	HOST=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
+	PORT=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
+	USER=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_USER:-}'); \
+	KEY=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${SSH_IDENTITY_FILE:-}'); \
+	ROOT=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $$ROOT_DOMAIN'); \
+	REMOTE=$${STG_REMOTE_SSH:-$${USER:+$$USER@$$HOST}}; \
+	if [ -z "$$REMOTE" ]; then REMOTE=$$(SSH_IDENTITY_FILE="$$KEY" ./scripts/ssh_detect_user.sh $$HOST $$PORT); fi; \
+	mkdir -p deploy/certs; \
+	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE ./scripts/lego_volume_export.sh $(STG_ENV_FILE) "deploy/certs/lego_data_$${ROOT}_staging.tar.gz" || true
+
+stg-cert-import:
+	@$(MAKE) check-stg-env
+	@set -e; \
+	HOST=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
+	PORT=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
+	USER=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_USER:-}'); \
+	KEY=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${SSH_IDENTITY_FILE:-}'); \
+	ROOT=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $$ROOT_DOMAIN'); \
+	REMOTE=$${STG_REMOTE_SSH:-$${USER:+$$USER@$$HOST}}; \
+	if [ -z "$$REMOTE" ]; then REMOTE=$$(SSH_IDENTITY_FILE="$$KEY" ./scripts/ssh_detect_user.sh $$HOST $$PORT); fi; \
+	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE ./scripts/lego_volume_import.sh $(STG_ENV_FILE) "deploy/certs/lego_data_$${ROOT}_staging.tar.gz"
+
 stg-rebuild:
+	@$(MAKE) check-stg-env
 	@$(MAKE) stg-provision
 	@$(MAKE) stg-bootstrap
 	@$(MAKE) stg-secrets-sync
 	@$(MAKE) stg-create
 
 stg-destroy:
+	@$(MAKE) check-stg-env
 	@./scripts/scw_instance_destroy.sh $(STG_ENV_FILE) staging
 
 stg-cert:
+	@$(MAKE) check-stg-env
 	REMOTE_SSH=$(STG_REMOTE_SSH) REMOTE_DIR=$(REMOTE_DIR) EDGE_ENABLED=1 \
 	  ./scripts/deploy_remote.sh staging cert
 
 stg-renew:
+	@$(MAKE) check-stg-env
 	REMOTE_SSH=$(STG_REMOTE_SSH) REMOTE_DIR=$(REMOTE_DIR) EDGE_ENABLED=1 \
 	  ./scripts/deploy_remote.sh staging renew
 
 prod-create:
+	@$(MAKE) check-prod-env
 	@set -e; \
 	HOST=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
 	PORT=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
@@ -348,6 +459,7 @@ prod-create:
 	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/deploy_remote.sh prod create
 
 prod-update:
+	@$(MAKE) check-prod-env
 	@set -e; \
 	HOST=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
 	PORT=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
@@ -358,26 +470,62 @@ prod-update:
 	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/deploy_remote.sh prod update
 
 prod-start:
-	REMOTE_SSH=$(PRD_REMOTE_SSH) REMOTE_DIR=$(REMOTE_DIR) \
-	  ./scripts/deploy_remote.sh prod start
+	@$(MAKE) check-prod-env
+	@set -e; \
+	HOST=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
+	PORT=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
+	USER=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${REMOTE_USER:-}'); \
+	KEY=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${SSH_IDENTITY_FILE:-}'); \
+	REMOTE=$${PRD_REMOTE_SSH:-$${USER:+$$USER@$$HOST}}; \
+	if [ -z "$$REMOTE" ]; then REMOTE=$$(SSH_IDENTITY_FILE="$$KEY" ./scripts/ssh_detect_user.sh $$HOST $$PORT); fi; \
+	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/deploy_remote.sh prod start
 
 prod-stop:
-	REMOTE_SSH=$(PRD_REMOTE_SSH) REMOTE_DIR=$(REMOTE_DIR) \
-	  ./scripts/deploy_remote.sh prod stop
+	@$(MAKE) check-prod-env
+	@set -e; \
+	HOST=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
+	PORT=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
+	USER=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${REMOTE_USER:-}'); \
+	KEY=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${SSH_IDENTITY_FILE:-}'); \
+	REMOTE=$${PRD_REMOTE_SSH:-$${USER:+$$USER@$$HOST}}; \
+	if [ -z "$$REMOTE" ]; then REMOTE=$$(SSH_IDENTITY_FILE="$$KEY" ./scripts/ssh_detect_user.sh $$HOST $$PORT); fi; \
+	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/deploy_remote.sh prod stop
 
 prod-delete:
-	REMOTE_SSH=$(PRD_REMOTE_SSH) REMOTE_DIR=$(REMOTE_DIR) \
-	  ./scripts/deploy_remote.sh prod delete
+	@$(MAKE) check-prod-env
+	@set -e; \
+	HOST=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
+	PORT=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
+	USER=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${REMOTE_USER:-}'); \
+	KEY=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${SSH_IDENTITY_FILE:-}'); \
+	REMOTE=$${PRD_REMOTE_SSH:-$${USER:+$$USER@$$HOST}}; \
+	if [ -z "$$REMOTE" ]; then REMOTE=$$(SSH_IDENTITY_FILE="$$KEY" ./scripts/ssh_detect_user.sh $$HOST $$PORT); fi; \
+	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/deploy_remote.sh prod delete
 
 prod-status:
-	REMOTE_SSH=$(PRD_REMOTE_SSH) REMOTE_DIR=$(REMOTE_DIR) \
-	  ./scripts/deploy_remote.sh prod status
+	@$(MAKE) check-prod-env
+	@set -e; \
+	HOST=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
+	PORT=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
+	USER=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${REMOTE_USER:-}'); \
+	KEY=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${SSH_IDENTITY_FILE:-}'); \
+	REMOTE=$${PRD_REMOTE_SSH:-$${USER:+$$USER@$$HOST}}; \
+	if [ -z "$$REMOTE" ]; then REMOTE=$$(SSH_IDENTITY_FILE="$$KEY" ./scripts/ssh_detect_user.sh $$HOST $$PORT); fi; \
+	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/deploy_remote.sh prod status
 
 prod-logs:
-	REMOTE_SSH=$(PRD_REMOTE_SSH) REMOTE_DIR=$(REMOTE_DIR) \
-	  ./scripts/deploy_remote.sh prod logs
+	@$(MAKE) check-prod-env
+	@set -e; \
+	HOST=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
+	PORT=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
+	USER=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${REMOTE_USER:-}'); \
+	KEY=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${SSH_IDENTITY_FILE:-}'); \
+	REMOTE=$${PRD_REMOTE_SSH:-$${USER:+$$USER@$$HOST}}; \
+	if [ -z "$$REMOTE" ]; then REMOTE=$$(SSH_IDENTITY_FILE="$$KEY" ./scripts/ssh_detect_user.sh $$HOST $$PORT); fi; \
+	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/deploy_remote.sh prod logs
 
 prod-bootstrap:
+	@$(MAKE) check-prod-env
 	@set -e; \
 	HOST=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
 	PORT=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
@@ -388,10 +536,12 @@ prod-bootstrap:
 	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) ./scripts/remote_bootstrap.sh prod
 
 prod-provision:
+	@$(MAKE) check-prod-env
 	@chmod 600 ./.ssh/llm-studio-key 2>/dev/null || true
 	@./scripts/scw_instance_provision.sh $(PRD_ENV_FILE) prod
 
 prod-ghcr-token:
+	@$(MAKE) check-prod-env
 	@set -e; \
 	HOST=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
 	PORT=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
@@ -402,6 +552,7 @@ prod-ghcr-token:
 	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE ./scripts/remote_set_secret.sh $(PRD_ENV_FILE) ghcr_token
 
 prod-secrets-sync:
+	@$(MAKE) check-prod-env
 	@set -e; \
 	HOST=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
 	PORT=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
@@ -411,20 +562,49 @@ prod-secrets-sync:
 	if [ -z "$$REMOTE" ]; then REMOTE=$$(SSH_IDENTITY_FILE="$$KEY" ./scripts/ssh_detect_user.sh $$HOST $$PORT); fi; \
 	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE ./scripts/remote_sync_secrets.sh $(PRD_ENV_FILE)
 
+prod-cert-export:
+	@$(MAKE) check-prod-env
+	@set -e; \
+	HOST=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
+	PORT=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
+	USER=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${REMOTE_USER:-}'); \
+	KEY=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${SSH_IDENTITY_FILE:-}'); \
+	ROOT=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $$ROOT_DOMAIN'); \
+	REMOTE=$${PRD_REMOTE_SSH:-$${USER:+$$USER@$$HOST}}; \
+	if [ -z "$$REMOTE" ]; then REMOTE=$$(SSH_IDENTITY_FILE="$$KEY" ./scripts/ssh_detect_user.sh $$HOST $$PORT); fi; \
+	mkdir -p deploy/certs; \
+	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE ./scripts/lego_volume_export.sh $(PRD_ENV_FILE) "deploy/certs/lego_data_$${ROOT}_prod.tar.gz" || true
+
+prod-cert-import:
+	@$(MAKE) check-prod-env
+	@set -e; \
+	HOST=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
+	PORT=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
+	USER=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${REMOTE_USER:-}'); \
+	KEY=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $${SSH_IDENTITY_FILE:-}'); \
+	ROOT=$$(bash -lc 'set -a; source $(PRD_ENV_FILE); set +a; echo $$ROOT_DOMAIN'); \
+	REMOTE=$${PRD_REMOTE_SSH:-$${USER:+$$USER@$$HOST}}; \
+	if [ -z "$$REMOTE" ]; then REMOTE=$$(SSH_IDENTITY_FILE="$$KEY" ./scripts/ssh_detect_user.sh $$HOST $$PORT); fi; \
+	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE ./scripts/lego_volume_import.sh $(PRD_ENV_FILE) "deploy/certs/lego_data_$${ROOT}_prod.tar.gz"
+
 prod-rebuild:
+	@$(MAKE) check-prod-env
 	@$(MAKE) prod-provision
 	@$(MAKE) prod-bootstrap
 	@$(MAKE) prod-secrets-sync
 	@$(MAKE) prod-create
 
 prod-destroy:
+	@$(MAKE) check-prod-env
 	@./scripts/scw_instance_destroy.sh $(PRD_ENV_FILE) prod
 
 prod-cert:
+	@$(MAKE) check-prod-env
 	REMOTE_SSH=$(PRD_REMOTE_SSH) REMOTE_DIR=$(REMOTE_DIR) EDGE_ENABLED=1 \
 	  ./scripts/deploy_remote.sh prod cert
 
 prod-renew:
+	@$(MAKE) check-prod-env
 	REMOTE_SSH=$(PRD_REMOTE_SSH) REMOTE_DIR=$(REMOTE_DIR) EDGE_ENABLED=1 \
 	  ./scripts/deploy_remote.sh prod renew
 

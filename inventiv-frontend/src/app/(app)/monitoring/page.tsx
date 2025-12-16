@@ -465,3 +465,5 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
         </div>
     );
 }
+
+
