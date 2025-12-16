@@ -47,7 +47,7 @@ docker compose up -d db redis orchestrator api
 
 echo "== 2) Wait for API to be ready (auto seed if providers empty) =="
 for i in {1..60}; do
-  if curl -fsS "http://localhost:8003/" >/dev/null 2>&1; then
+  if docker compose exec -T api curl -fsS "http://localhost:8003/" >/dev/null 2>&1; then
     echo "API is up"
     break
   fi
@@ -55,7 +55,7 @@ for i in {1..60}; do
 done
 
 echo "== 3) Create mock deployment (get instance_id) =="
-CREATE_JSON="$(curl -fsS -X POST "http://localhost:8003/deployments" \
+CREATE_JSON="$(docker compose exec -T api curl -fsS -X POST "http://localhost:8003/deployments" \
   -H "Content-Type: application/json" \
   -d '{"provider_code":"mock","zone":"mock-eu-1","instance_type":"MOCK-GPU-S"}')"
 

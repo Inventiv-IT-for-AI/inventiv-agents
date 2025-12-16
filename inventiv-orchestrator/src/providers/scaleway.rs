@@ -134,7 +134,7 @@ impl ScalewayProvider {
 
 #[async_trait]
 impl CloudProvider for ScalewayProvider {
-    async fn create_instance(&self, zone: &str, instance_type: &str, image_id: &str) -> Result<String> {
+    async fn create_instance(&self, zone: &str, instance_type: &str, image_id: &str, cloud_init: Option<&str>) -> Result<String> {
         let url = format!("https://api.scaleway.com/instance/v1/zones/{}/servers", zone);
         let name = format!("inventiv-worker-{}", uuid::Uuid::new_v4());
         let mut body = json!({
@@ -146,7 +146,19 @@ impl CloudProvider for ScalewayProvider {
         });
         body["image"] = json!(image_id);
 
-        let resp = self.client.post(&url)
+        // Preferred: pass cloud-init at create-time (standard provisioning flow).
+        // Note: some API schemas reject `user_data` (we observed 400: "extra keys not allowed").
+        // In that case, we retry without `user_data` so provisioning can continue, and a later
+        // SSH fallback install can still bootstrap the worker.
+        if let Some(ci) = cloud_init {
+            if !ci.trim().is_empty() {
+                body["user_data"] = json!({
+                    "cloud-init": ci
+                });
+            }
+        }
+
+        let mut resp = self.client.post(&url)
             .headers(self.headers())
             .json(&body)
             .send()
@@ -154,41 +166,41 @@ impl CloudProvider for ScalewayProvider {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await?;
-            return Err(anyhow::anyhow!("Failed to create instance: {} - {}", status, text));
+            let text = resp.text().await.unwrap_or_default();
+
+            // Retry on schema mismatch for user_data.
+            let has_user_data = body.get("user_data").is_some();
+            if has_user_data
+                && status.as_u16() == 400
+                && (text.contains("user_data") && (text.contains("extra keys") || text.contains("extra keys not allowed")))
+            {
+                let mut body2 = body.clone();
+                body2.as_object_mut().map(|o| o.remove("user_data"));
+                resp = self
+                    .client
+                    .post(&url)
+                    .headers(self.headers())
+                    .json(&body2)
+                    .send()
+                    .await?;
+                if !resp.status().is_success() {
+                    let status2 = resp.status();
+                    let text2 = resp.text().await.unwrap_or_default();
+                    return Err(anyhow::anyhow!(
+                        "Failed to create instance (retry without user_data): {} - {} (initial: {} - {})",
+                        status2,
+                        text2,
+                        status,
+                        text
+                    ));
+                }
+            } else {
+                return Err(anyhow::anyhow!("Failed to create instance: {} - {}", status, text));
+            }
         }
 
         let json: serde_json::Value = resp.json().await?;
         let server_id = json["server"]["id"].as_str().unwrap().to_string();
-
-        // Inject SSH key (optional) via cloud-init user-data.
-        //
-        // IMPORTANT: On the Instance API, `user_data` in the create-server payload is not always accepted
-        // (we observed 400: "user_data ... extra keys not allowed"). To be robust across API schema changes,
-        // we set user_data via the dedicated endpoint after server creation.
-        if let Some(pk) = self.ssh_public_key.as_deref() {
-            let cloud_init = format!(
-                "#cloud-config\nssh_authorized_keys:\n  - {}\n",
-                pk.replace('\n', " ")
-            );
-            let ud_url = format!(
-                "https://api.scaleway.com/instance/v1/zones/{}/servers/{}/user_data/cloud-init",
-                zone, server_id
-            );
-            let ud_resp = self
-                .client
-                .put(&ud_url)
-                .header("X-Auth-Token", &self.secret_key)
-                .header("Content-Type", "text/plain")
-                .body(cloud_init)
-                .send()
-                .await?;
-            if !ud_resp.status().is_success() {
-                let status = ud_resp.status();
-                let text = ud_resp.text().await.unwrap_or_default();
-                eprintln!("⚠️ Failed to set Scaleway cloud-init user_data: {} - {}", status, text);
-            }
-        }
 
         Ok(server_id)
     }

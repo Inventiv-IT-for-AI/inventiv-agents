@@ -4,8 +4,6 @@ services:
   # --- INFRA ---
   redis:
     image: redis:alpine
-    ports:
-      - "6379:6379"
     volumes:
       - redis_data:/data
 
@@ -15,8 +13,6 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=password
       - POSTGRES_DB=llminfra
-    ports:
-      - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
 
@@ -57,6 +53,28 @@ services:
       - mock-vllm
       - orchestrator
 
+  # --- UI (exposed on host) ---
+  # Run Next.js dev server inside Docker so the browser only talks to the UI port.
+  # All backend calls go through same-origin proxy routes `/api/backend/*` implemented in Next route handlers.
+  frontend:
+    image: node:20-alpine
+    profiles: ["ui"]
+    working_dir: /app
+    command: ["sh", "-lc", "npm install && npm run dev -- --hostname 0.0.0.0 --port 3000"]
+    environment:
+      # Frontend server-side proxy target (docker network)
+      - API_INTERNAL_URL=http://api:8003
+      # Improve file watching reliability on macOS/docker bind mounts
+      - CHOKIDAR_USEPOLLING=1
+      - WATCHPACK_POLLING=true
+      - NODE_ENV=development
+    volumes:
+      - ./inventiv-frontend:/app
+    ports:
+      - "${UI_HOST_PORT:-3000}:3000"
+    depends_on:
+      - api
+
   # --- SERVICES (RUST) ---
   orchestrator:
     build:
@@ -64,9 +82,7 @@ services:
       dockerfile: Dockerfile.rust
       args:
         SERVICE_NAME: inventiv-orchestrator
-    command: cargo watch -w sqlx-migrations -x "run --release -p inventiv-orchestrator"
-    ports:
-      - "8001:8001"
+    command: cargo watch -w inventiv-orchestrator -w inventiv-common -w sqlx-migrations -x "run --release -p inventiv-orchestrator"
     volumes:
       - .:/app # Source code mount for hot reload
     environment:
@@ -82,10 +98,13 @@ services:
       - WORKER_HEALTH_PORT=${WORKER_HEALTH_PORT:-8080}
       - WORKER_AUTO_INSTALL=${WORKER_AUTO_INSTALL:-0}
       - WORKER_CONTROL_PLANE_URL=${WORKER_CONTROL_PLANE_URL:-}
+      - WORKER_AUTO_INSTALL_INSTANCE_PATTERNS=${WORKER_AUTO_INSTALL_INSTANCE_PATTERNS:-}
       - WORKER_MODEL_ID=${WORKER_MODEL_ID:-}
       - WORKER_VLLM_IMAGE=${WORKER_VLLM_IMAGE:-}
       - WORKER_AGENT_SOURCE_URL=${WORKER_AGENT_SOURCE_URL:-}
       - WORKER_EXPOSE_PORTS=${WORKER_EXPOSE_PORTS:-1}
+      - WORKER_SSH_PRIVATE_KEY_FILE=${WORKER_SSH_PRIVATE_KEY_FILE:-/app/.ssh/llm-studio-key}
+      - WORKER_SSH_USER=${WORKER_SSH_USER:-root}
       - RUST_LOG=debug
     depends_on:
       - db
@@ -97,9 +116,7 @@ services:
       dockerfile: Dockerfile.rust
       args:
         SERVICE_NAME: inventiv-api
-    command: cargo watch -w sqlx-migrations -x "run --release -p inventiv-api"
-    ports:
-      - "8003:8003"
+    command: cargo watch -w inventiv-api -w inventiv-common -w sqlx-migrations -x "run --release -p inventiv-api"
     volumes:
       - .:/app # Source code mount for hot reload
       # Default admin password file (dev/local)
@@ -114,6 +131,10 @@ services:
       - DEFAULT_ADMIN_USERNAME=${DEFAULT_ADMIN_USERNAME:-admin}
       - DEFAULT_ADMIN_EMAIL=${DEFAULT_ADMIN_EMAIL:-admin@inventiv.local}
       - DEFAULT_ADMIN_PASSWORD_FILE=${DEFAULT_ADMIN_PASSWORD_FILE:-/run/secrets/default_admin_password}
+      # Dev convenience: allow a global worker token for heartbeat auth.
+      - WORKER_AUTH_TOKEN=${WORKER_AUTH_TOKEN:-dev-worker-token}
+      - WORKER_AUTO_INSTALL=${WORKER_AUTO_INSTALL:-0}
+      - WORKER_AUTO_INSTALL_INSTANCE_PATTERNS=${WORKER_AUTO_INSTALL_INSTANCE_PATTERNS:-}
       - RUST_LOG=debug
     depends_on:
       - redis
@@ -125,9 +146,7 @@ services:
       dockerfile: Dockerfile.rust
       args:
         SERVICE_NAME: inventiv-finops
-    command: cargo watch -w sqlx-migrations -x "run --release -p inventiv-finops"
-    ports:
-      - "8005:8005"
+    command: cargo watch -w inventiv-finops -w inventiv-common -w sqlx-migrations -x "run --release -p inventiv-finops"
     volumes:
       - .:/app # Source code mount for hot reload
     environment:

@@ -742,6 +742,131 @@ async fn create_deployment(
         )
             .into_response();
     }
+
+    // Guardrails for Scaleway worker auto-install:
+    // - instance type must be available in the zone (instance_type_zones.is_available)
+    // - instance type must match the allowlist patterns when WORKER_AUTO_INSTALL=1
+    let provider_code: String = sqlx::query_scalar("SELECT COALESCE(code, '') FROM providers WHERE id = $1")
+        .bind(provider_id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or_default();
+
+    let auto_install = std::env::var("WORKER_AUTO_INSTALL")
+        .ok()
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+
+    if auto_install && provider_code.to_ascii_lowercase() == "scaleway" {
+        let (Some(zid), Some(tid)) = (resolved_zone_id, resolved_type_id) else {
+            // Should not happen after validation, but keep it safe.
+            let msg = "Missing resolved zone/type id after validation";
+            let _ = sqlx::query(
+                "UPDATE instances SET status='provisioning_failed', error_code=$2, error_message=$3, failed_at=NOW()
+                 WHERE id=$1"
+            )
+            .bind(instance_id_uuid)
+            .bind("INVALID_CATALOG_STATE")
+            .bind(msg)
+            .execute(&state.db)
+            .await;
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(DeploymentResponse { status: "failed".to_string(), instance_id, message: Some(msg.to_string()) }),
+            )
+                .into_response();
+        };
+
+        let is_available: bool = sqlx::query_scalar(
+            r#"
+            SELECT COALESCE(itz.is_available, false)
+            FROM instance_type_zones itz
+            WHERE itz.instance_type_id = $1
+              AND itz.zone_id = $2
+            "#,
+        )
+        .bind(tid)
+        .bind(zid)
+        .fetch_optional(&state.db)
+        .await
+        .unwrap_or(None)
+        .unwrap_or(false);
+
+        if !is_available {
+            let code = "INSTANCE_TYPE_NOT_AVAILABLE_IN_ZONE";
+            let msg = "Instance type is not available in this zone (catalog)";
+            let _ = sqlx::query(
+                "UPDATE instances SET status='provisioning_failed', error_code=$2, error_message=$3, failed_at=NOW()
+                 WHERE id=$1"
+            )
+            .bind(instance_id_uuid)
+            .bind(code)
+            .bind(msg)
+            .execute(&state.db)
+            .await;
+
+            if let Some(id) = log_id {
+                let duration = start.elapsed().as_millis() as i32;
+                simple_logger::log_action_complete_with_metadata(
+                    &state.db,
+                    id,
+                    "failed",
+                    duration,
+                    Some(msg),
+                    Some(serde_json::json!({"error_code": code})),
+                )
+                .await
+                .ok();
+            }
+
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(DeploymentResponse { status: "failed".to_string(), instance_id, message: Some(msg.to_string()) }),
+            )
+                .into_response();
+        }
+
+        let patterns = inventiv_common::worker_target::parse_instance_type_patterns(
+            std::env::var("WORKER_AUTO_INSTALL_INSTANCE_PATTERNS").ok().as_deref(),
+        );
+        let is_supported = inventiv_common::worker_target::instance_type_matches_patterns(&payload.instance_type, &patterns);
+        if !is_supported {
+            let code = "INSTANCE_TYPE_NOT_SUPPORTED";
+            let msg = format!(
+                "Instance type '{}' not supported for worker auto-install (patterns={:?})",
+                payload.instance_type, patterns
+            );
+            let _ = sqlx::query(
+                "UPDATE instances SET status='provisioning_failed', error_code=$2, error_message=$3, failed_at=NOW()
+                 WHERE id=$1"
+            )
+            .bind(instance_id_uuid)
+            .bind(code)
+            .bind(&msg)
+            .execute(&state.db)
+            .await;
+
+            if let Some(id) = log_id {
+                let duration = start.elapsed().as_millis() as i32;
+                simple_logger::log_action_complete_with_metadata(
+                    &state.db,
+                    id,
+                    "failed",
+                    duration,
+                    Some(&msg),
+                    Some(serde_json::json!({"error_code": code, "patterns": patterns})),
+                )
+                .await
+                .ok();
+            }
+
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(DeploymentResponse { status: "failed".to_string(), instance_id, message: Some(msg) }),
+            )
+                .into_response();
+        }
+    }
     
     println!("🚀 New Instance Creation Request: {}", instance_id);
 

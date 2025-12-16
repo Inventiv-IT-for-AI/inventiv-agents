@@ -1,6 +1,9 @@
 FROM rust:latest
 WORKDIR /app
 
+# Needed by orchestrator for SSH bootstrap fallback installs.
+RUN apt-get update && apt-get install -y openssh-client && rm -rf /var/lib/apt/lists/*
+
 # Install cargo-watch for hot reload
 RUN cargo install cargo-watch
 

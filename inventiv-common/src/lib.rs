@@ -3,6 +3,7 @@ use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
 pub mod bus;
+pub mod worker_target;
 
 // --- Enums ---
 

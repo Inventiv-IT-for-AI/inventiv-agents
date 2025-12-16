@@ -381,6 +381,73 @@ pub async fn process_provisioning(
          // TODO: Log failure
         return;
     }
+    let zone_id = zone_id.unwrap();
+    let type_id = type_id.unwrap();
+
+    // Guardrails for worker auto-install (Scaleway): prevent provisioning unsupported/unavailable types.
+    let auto_install_guard = std::env::var("WORKER_AUTO_INSTALL")
+        .ok()
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+    if auto_install_guard && provider_name.to_ascii_lowercase() == "scaleway" {
+        let is_available: bool = sqlx::query_scalar(
+            r#"
+            SELECT COALESCE(itz.is_available, false)
+            FROM instance_type_zones itz
+            WHERE itz.instance_type_id = $1
+              AND itz.zone_id = $2
+            "#,
+        )
+        .bind(type_id)
+        .bind(zone_id)
+        .fetch_optional(&pool)
+        .await
+        .unwrap_or(None)
+        .unwrap_or(false);
+
+        if !is_available {
+            let msg = "Instance type is not available in this zone (catalog)".to_string();
+            let _ = sqlx::query(
+                "UPDATE instances
+                 SET status='failed',
+                     error_code=COALESCE(error_code,'INSTANCE_TYPE_NOT_AVAILABLE_IN_ZONE'),
+                     error_message=COALESCE($2,error_message),
+                     failed_at=COALESCE(failed_at,NOW())
+                 WHERE id=$1"
+            )
+            .bind(instance_uuid)
+            .bind(&msg)
+            .execute(&pool)
+            .await;
+            eprintln!("❌ {}", msg);
+            return;
+        }
+
+        let patterns = inventiv_common::worker_target::parse_instance_type_patterns(
+            std::env::var("WORKER_AUTO_INSTALL_INSTANCE_PATTERNS").ok().as_deref(),
+        );
+        let is_supported = inventiv_common::worker_target::instance_type_matches_patterns(&instance_type, &patterns);
+        if !is_supported {
+            let msg = format!(
+                "Instance type '{}' not supported for worker auto-install (patterns={:?})",
+                instance_type, patterns
+            );
+            let _ = sqlx::query(
+                "UPDATE instances
+                 SET status='failed',
+                     error_code=COALESCE(error_code,'INSTANCE_TYPE_NOT_SUPPORTED'),
+                     error_message=COALESCE($2,error_message),
+                     failed_at=COALESCE(failed_at,NOW())
+                 WHERE id=$1"
+            )
+            .bind(instance_uuid)
+            .bind(&msg)
+            .execute(&pool)
+            .await;
+            eprintln!("❌ {}", msg);
+            return;
+        }
+    }
 
     // 0.5. Ensure row exists (idempotent; do NOT regress status on retries)
     let insert_result = sqlx::query(
@@ -390,8 +457,8 @@ pub async fn process_provisioning(
     )
     .bind(instance_uuid)
     .bind(provider_id)
-    .bind(zone_id.unwrap())
-    .bind(type_id.unwrap())
+    .bind(zone_id)
+    .bind(type_id)
     .execute(&pool)
     .await;
 
@@ -508,7 +575,7 @@ pub async fn process_provisioning(
             WHERE it.id = $1
             "#,
         )
-        .bind(type_id.unwrap())
+        .bind(type_id)
         .fetch_optional(&pool)
         .await
         .unwrap_or(None);
@@ -529,7 +596,7 @@ pub async fn process_provisioning(
             WHERE it.id = $1
             "#,
         )
-        .bind(type_id.unwrap())
+        .bind(type_id)
         .fetch_optional(&pool)
         .await
         .unwrap_or(None);
@@ -565,7 +632,7 @@ pub async fn process_provisioning(
                               AND NULLIF(TRIM(allocation_params->'scaleway'->>'boot_image_id'), '') IS NULL
                             "#,
                         )
-                        .bind(type_id.unwrap())
+                        .bind(type_id)
                         .bind(&image_id)
                         .execute(&pool)
                         .await;
@@ -636,8 +703,89 @@ pub async fn process_provisioning(
         &pool, "PROVIDER_CREATE", "in_progress", instance_uuid, None,
         Some(json!({"zone": zone, "instance_type": instance_type, "image_id": image_id, "correlation_id": correlation_id_meta})),
     ).await.ok();
-    
-    let server_id_result = provider.create_instance(&zone, &instance_type, &image_id).await;
+
+    // Optional: configure worker auto-install at boot (cloud-init) for Scaleway.
+    //
+    // Controlled by orchestrator env vars:
+    // - WORKER_AUTO_INSTALL=1
+    // - WORKER_CONTROL_PLANE_URL=https://api.<domain> (or tunnel URL for DEV local-to-cloud)
+    // - WORKER_AUTO_INSTALL_INSTANCE_PATTERNS=L4-*,L40S-*,RENDER-S (optional; defaults to L4-*,L40S-*,RENDER-S)
+    // - WORKER_MODEL_ID=Qwen/Qwen2.5-0.5B-Instruct (default)
+    // - WORKER_VLLM_IMAGE=vllm/vllm-openai:latest (default)
+    // - WORKER_AGENT_SOURCE_URL=<raw github url> (default to main)
+    let auto_install = std::env::var("WORKER_AUTO_INSTALL")
+        .ok()
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+
+    let is_scaleway = provider_name.to_ascii_lowercase() == "scaleway";
+
+    let patterns = inventiv_common::worker_target::parse_instance_type_patterns(
+        std::env::var("WORKER_AUTO_INSTALL_INSTANCE_PATTERNS").ok().as_deref(),
+    );
+    let is_worker_target =
+        inventiv_common::worker_target::instance_type_matches_patterns(&instance_type, &patterns);
+
+    let cp_url = std::env::var("WORKER_CONTROL_PLANE_URL").unwrap_or_default();
+    let cp_url = cp_url.trim().trim_end_matches('/').to_string();
+
+    // Include SSH key for debugging (same one used by provisioning).
+    let ssh_pub_path = std::env::var("SCALEWAY_SSH_PUBLIC_KEY_FILE")
+        .unwrap_or_else(|_| "/app/.ssh/llm-studio-key.pub".to_string());
+    let ssh_pub = fs::read_to_string(&ssh_pub_path)
+        .ok()
+        .map(|s| s.trim().replace('\n', " "))
+        .unwrap_or_default();
+
+    let cloud_init_for_create: Option<String> = if is_scaleway {
+        if auto_install && is_worker_target {
+            if cp_url.is_empty() {
+                eprintln!("⚠️ WORKER_AUTO_INSTALL=1 but WORKER_CONTROL_PLANE_URL is empty; creating server without worker bootstrap");
+                if ssh_pub.trim().is_empty() {
+                    None
+                } else {
+                    Some(build_ssh_key_cloud_init(&ssh_pub))
+                }
+            } else {
+                let worker_model = std::env::var("WORKER_MODEL_ID")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| "Qwen/Qwen2.5-0.5B-Instruct".to_string());
+
+                let vllm_image = std::env::var("WORKER_VLLM_IMAGE")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| "vllm/vllm-openai:latest".to_string());
+
+                let agent_url = std::env::var("WORKER_AGENT_SOURCE_URL")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| "https://raw.githubusercontent.com/Inventiv-IT-for-AI/inventiv-agents/main/inventiv-worker/agent.py".to_string());
+
+                let worker_auth_token = std::env::var("WORKER_AUTH_TOKEN").unwrap_or_default();
+
+                Some(build_worker_cloud_init(
+                    &ssh_pub,
+                    &instance_uuid.to_string(),
+                    &cp_url,
+                    &worker_model,
+                    &vllm_image,
+                    &agent_url,
+                    &worker_auth_token,
+                ))
+            }
+        } else if !ssh_pub.trim().is_empty() {
+            Some(build_ssh_key_cloud_init(&ssh_pub))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let server_id_result = provider
+        .create_instance(&zone, &instance_type, &image_id, cloud_init_for_create.as_deref())
+        .await;
 
     match server_id_result {
         Ok(server_id) => {
@@ -687,85 +835,22 @@ pub async fn process_provisioning(
                 return;
             }
 
-            // Optional: configure worker auto-install at boot (cloud-init) for Scaleway L4/L40S.
+            // Optional: open ports so the control-plane (and dev laptop) can reach:
+            // - vLLM: 8000
+            // - worker health: 8080
             //
-            // This enables a pure "standard flow" test:
-            // UI -> API -> Orchestrator -> Scaleway VM -> (cloud-init) -> vLLM + agent running.
-            //
-            // Controlled by orchestrator env vars:
-            // - WORKER_AUTO_INSTALL=1
-            // - WORKER_CONTROL_PLANE_URL=https://api.<domain> (or tunnel URL for DEV local-to-cloud)
-            // - WORKER_MODEL_ID=Qwen/Qwen2.5-0.5B-Instruct (default)
-            // - WORKER_VLLM_IMAGE=vllm/vllm-openai:latest (default)
-            // - WORKER_AGENT_SOURCE_URL=<raw github url> (default to main)
-            let auto_install = std::env::var("WORKER_AUTO_INSTALL")
-                .ok()
-                .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-                .unwrap_or(false);
-
-            let is_scaleway = provider_name.to_ascii_lowercase() == "scaleway";
-            let it_upper = instance_type.trim().to_ascii_uppercase();
-            let is_l4_family = it_upper.starts_with("L4-") || it_upper.starts_with("L40S-");
-
-            if auto_install && is_scaleway && is_l4_family {
-                let cp_url = std::env::var("WORKER_CONTROL_PLANE_URL").unwrap_or_default();
-                if cp_url.trim().is_empty() {
-                    eprintln!("⚠️ WORKER_AUTO_INSTALL=1 but WORKER_CONTROL_PLANE_URL is empty; skipping worker cloud-init");
-                } else {
-                    let worker_model = std::env::var("WORKER_MODEL_ID")
-                        .ok()
-                        .filter(|s| !s.trim().is_empty())
-                        .unwrap_or_else(|| "Qwen/Qwen2.5-0.5B-Instruct".to_string());
-
-                    let vllm_image = std::env::var("WORKER_VLLM_IMAGE")
-                        .ok()
-                        .filter(|s| !s.trim().is_empty())
-                        .unwrap_or_else(|| "vllm/vllm-openai:latest".to_string());
-
-                    let agent_url = std::env::var("WORKER_AGENT_SOURCE_URL")
-                        .ok()
-                        .filter(|s| !s.trim().is_empty())
-                        .unwrap_or_else(|| "https://raw.githubusercontent.com/Inventiv-IT-for-AI/inventiv-agents/main/inventiv-worker/agent.py".to_string());
-
-                    // Include SSH key (same one used by provisioning) so we can debug if needed.
-                    let ssh_pub_path = std::env::var("SCALEWAY_SSH_PUBLIC_KEY_FILE")
-                        .unwrap_or_else(|_| "/app/.ssh/llm-studio-key.pub".to_string());
-                    let ssh_pub = fs::read_to_string(&ssh_pub_path)
-                        .ok()
-                        .map(|s| s.trim().replace('\n', " "))
-                        .unwrap_or_default();
-
-                    let cloud_init = build_worker_cloud_init(
-                        &ssh_pub,
-                        &instance_uuid.to_string(),
-                        cp_url.trim_end_matches('/'),
-                        &worker_model,
-                        &vllm_image,
-                        &agent_url,
-                    );
-
-                    match provider.set_cloud_init(&zone, &server_id, &cloud_init).await {
-                        Ok(true) => println!("🧩 worker cloud-init configured (auto-install enabled)"),
-                        Ok(false) => eprintln!("⚠️ provider does not support set_cloud_init (skipped)"),
-                        Err(e) => eprintln!("⚠️ failed to set worker cloud-init: {}", e),
-                    }
-
-                    // Optional: open ports so the control-plane (and dev laptop) can reach:
-                    // - vLLM: 8000
-                    // - worker health: 8080
-                    //
-                    // Without this, Scaleway security groups may block inbound traffic by default,
-                    // which makes `curl http://<ip>:8000/...` fail even if the worker is running.
-                    let expose = std::env::var("WORKER_EXPOSE_PORTS")
-                        .ok()
-                        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-                        .unwrap_or(true);
-                    if expose {
-                        match provider.ensure_inbound_tcp_ports(&zone, &server_id, vec![8000, 8080]).await {
-                            Ok(true) => println!("🔓 worker ports opened on security group (8000/8080)"),
-                            Ok(false) => eprintln!("⚠️ provider does not support ensure_inbound_tcp_ports (skipped)"),
-                            Err(e) => eprintln!("⚠️ failed to open worker ports: {}", e),
-                        }
+            // Without this, Scaleway security groups may block inbound traffic by default,
+            // which makes `curl http://<ip>:8000/...` fail even if the worker is running.
+            if auto_install && is_scaleway && is_worker_target {
+                let expose = std::env::var("WORKER_EXPOSE_PORTS")
+                    .ok()
+                    .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+                    .unwrap_or(true);
+                if expose {
+                    match provider.ensure_inbound_tcp_ports(&zone, &server_id, vec![8000, 8080]).await {
+                        Ok(true) => println!("🔓 worker ports opened on security group (8000/8080)"),
+                        Ok(false) => eprintln!("⚠️ provider does not support ensure_inbound_tcp_ports (skipped)"),
+                        Err(e) => eprintln!("⚠️ failed to open worker ports: {}", e),
                     }
                 }
             }
@@ -789,7 +874,7 @@ pub async fn process_provisioning(
                 WHERE it.id = $1
                 "#,
             )
-            .bind(type_id.unwrap())
+            .bind(type_id)
             .bind(&provider_name)
             .fetch_optional(&pool)
             .await
@@ -1150,6 +1235,7 @@ fn build_worker_cloud_init(
     model_id: &str,
     vllm_image: &str,
     agent_source_url: &str,
+    worker_auth_token: &str,
 ) -> String {
     // Keep it simple for initial DEV->Scaleway validation:
     // - Run vLLM from upstream image
@@ -1173,6 +1259,7 @@ fn build_worker_cloud_init(
     cloud.push_str(&format!("      MODEL_ID=\"{}\"\n", model_id));
     cloud.push_str(&format!("      VLLM_IMAGE=\"{}\"\n", vllm_image));
     cloud.push_str(&format!("      AGENT_URL=\"{}\"\n", agent_source_url));
+    cloud.push_str(&format!("      WORKER_AUTH_TOKEN=\"{}\"\n", worker_auth_token));
     cloud.push_str("      export DEBIAN_FRONTEND=noninteractive\n");
     cloud.push_str("\n");
     cloud.push_str("      if ! command -v docker >/dev/null 2>&1; then\n");
@@ -1186,9 +1273,10 @@ fn build_worker_cloud_init(
     cloud.push_str("      # Enable NVIDIA runtime for docker (required for --gpus all)\n");
     cloud.push_str("      if command -v nvidia-smi >/dev/null 2>&1; then\n");
     cloud.push_str("        echo '[inventiv-worker] installing nvidia-container-toolkit'\n");
+    cloud.push_str("        set +e\n");
     cloud.push_str("        . /etc/os-release\n");
     cloud.push_str("        distribution=\"${ID}${VERSION_ID}\"\n");
-    cloud.push_str("        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg\n");
+    cloud.push_str("        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --batch --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg\n");
     cloud.push_str("        curl -fsSL \"https://nvidia.github.io/libnvidia-container/${distribution}/libnvidia-container.list\" \\\n");
     cloud.push_str("          | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \\\n");
     cloud.push_str("          > /etc/apt/sources.list.d/nvidia-container-toolkit.list\n");
@@ -1197,6 +1285,7 @@ fn build_worker_cloud_init(
     cloud.push_str("        nvidia-ctk runtime configure --runtime=docker\n");
     cloud.push_str("        systemctl restart docker\n");
     cloud.push_str("        echo '[inventiv-worker] nvidia-container-toolkit configured'\n");
+    cloud.push_str("        set -e\n");
     cloud.push_str("      else\n");
     cloud.push_str("        echo '[inventiv-worker] nvidia-smi not found; skipping nvidia-container-toolkit'\n");
     cloud.push_str("      fi\n");
@@ -1231,6 +1320,7 @@ fn build_worker_cloud_init(
     cloud.push_str("        -e WORKER_HEALTH_PORT=8080 \\\n");
     cloud.push_str("        -e WORKER_VLLM_PORT=8000 \\\n");
     cloud.push_str("        -e WORKER_HEARTBEAT_INTERVAL_S=10 \\\n");
+    cloud.push_str("        -e WORKER_AUTH_TOKEN=\"$WORKER_AUTH_TOKEN\" \\\n");
     cloud.push_str("        -v /opt/inventiv-worker/agent.py:/app/agent.py:ro \\\n");
     cloud.push_str("        python:3.11-slim \\\n");
     cloud.push_str("        bash -lc \"pip install --no-cache-dir requests >/dev/null && python /app/agent.py\"\n");
@@ -1239,6 +1329,16 @@ fn build_worker_cloud_init(
     cloud.push_str("\n");
     cloud.push_str("runcmd:\n");
     cloud.push_str("  - [ bash, -lc, /usr/local/bin/inventiv-worker-bootstrap.sh ]\n");
+    cloud
+}
+
+fn build_ssh_key_cloud_init(ssh_pub: &str) -> String {
+    let mut cloud = String::new();
+    cloud.push_str("#cloud-config\n");
+    if !ssh_pub.trim().is_empty() {
+        cloud.push_str("ssh_authorized_keys:\n");
+        cloud.push_str(&format!("  - {}\n", ssh_pub.trim()));
+    }
     cloud
 }
 
