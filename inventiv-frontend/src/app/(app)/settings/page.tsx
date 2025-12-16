@@ -16,7 +16,6 @@ import type { Provider, Region, Zone, InstanceType } from "@/lib/types";
 import { VirtualizedDataTable, type DataTableColumn } from "@/components/shared/VirtualizedDataTable";
 import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
 import { formatEur } from "@/lib/utils";
-
 export default function SettingsPage() {
     const [activeTab, setActiveTab] = useState<"providers" | "regions" | "zones" | "types">("regions");
     const [refreshTick, setRefreshTick] = useState({ providers: 0, regions: 0, zones: 0, types: 0 });
@@ -414,7 +413,8 @@ export default function SettingsPage() {
                                 listId="settings:providers"
                                 title="Providers"
                                 dataKey={String(refreshTick.providers)}
-                                height={420}
+                                autoHeight={true}
+                                height={300}
                                 rowHeight={52}
                                 columns={providerColumns}
                                 loadRange={loadProviders}
@@ -431,7 +431,8 @@ export default function SettingsPage() {
                                 listId="settings:regions"
                                 title="Regions"
                                 dataKey={String(refreshTick.regions)}
-                                height={420}
+                                autoHeight={true}
+                                height={300}
                                 rowHeight={52}
                                 columns={regionColumns}
                                 loadRange={loadRegions}
@@ -448,7 +449,8 @@ export default function SettingsPage() {
                                 listId="settings:zones"
                                 title="Zones"
                                 dataKey={String(refreshTick.zones)}
-                                height={420}
+                                autoHeight={true}
+                                height={300}
                                 rowHeight={52}
                                 columns={zoneColumns}
                                 loadRange={loadZones}
@@ -465,7 +467,8 @@ export default function SettingsPage() {
                                 listId="settings:types"
                                 title="Instance Types"
                                 dataKey={String(refreshTick.types)}
-                                height={420}
+                                autoHeight={true}
+                                height={300}
                                 rowHeight={52}
                                 columns={typeColumns}
                                 loadRange={loadTypes}

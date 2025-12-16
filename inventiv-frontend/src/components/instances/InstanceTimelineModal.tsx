@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { Server, Zap, Cloud, Database, Archive, AlertTriangle, Clock, CheckCircle, RefreshCcw } from "lucide-react";
+import { Server, Zap, Cloud, Database, Archive, AlertTriangle, Clock, CheckCircle, RefreshCcw, Copy, Check } from "lucide-react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -27,6 +27,8 @@ export function InstanceTimelineModal({
   const [counts, setCounts] = useState({ total: 0, filtered: 0 });
   const [visibleRange, setVisibleRange] = useState<VirtualRange>({ startIndex: 0, endIndex: 0 });
   const [refreshToken, setRefreshToken] = useState(0);
+  const [copyingActions, setCopyingActions] = useState(false);
+  const [copiedActions, setCopiedActions] = useState(false);
 
   useEffect(() => {
     if (open && instanceId) {
@@ -161,6 +163,90 @@ export function InstanceTimelineModal({
     [instanceId]
   );
 
+  const fetchAllActions = useCallback(async (): Promise<ActionLog[]> => {
+    const allActions: ActionLog[] = [];
+    let offset = 0;
+    const limit = 1000; // Utiliser une limite élevée pour récupérer toutes les actions en une fois
+    let hasMore = true;
+
+    while (hasMore) {
+      const params = new URLSearchParams();
+      params.set("offset", String(offset));
+      params.set("limit", String(limit));
+      params.set("instance_id", instanceId);
+
+      const res = await fetch(apiUrl(`action_logs/search?${params.toString()}`));
+      const data: ActionLogsSearchResponse = await res.json();
+
+      allActions.push(...data.rows);
+
+      if (data.rows.length < limit || offset + data.rows.length >= data.filtered_count) {
+        hasMore = false;
+      } else {
+        offset += limit;
+      }
+    }
+
+    return allActions;
+  }, [instanceId]);
+
+  const copyAllActionsToClipboard = useCallback(async () => {
+    if (copyingActions) return;
+
+    setCopyingActions(true);
+    try {
+      const allActions = await fetchAllActions();
+      
+      // Créer un objet avec les informations de l'instance et toutes les actions
+      const dataToCopy = {
+        instance: {
+          id: instanceId,
+          status: instance?.status,
+          created_at: instance?.created_at,
+          region: instance?.region,
+          zone: instance?.zone,
+          instance_type: instance?.instance_type,
+          ip_address: instance?.ip_address,
+          provider_instance_id: instance?.provider_instance_id,
+          gpu_count: instance?.gpu_count,
+          gpu_vram: instance?.gpu_vram,
+        },
+        actions: allActions.map((action) => ({
+          id: action.id,
+          action_type: action.action_type,
+          component: action.component,
+          status: action.status,
+          provider_name: action.provider_name,
+          instance_type: action.instance_type,
+          error_message: action.error_message,
+          instance_id: action.instance_id,
+          duration_ms: action.duration_ms,
+          created_at: action.created_at,
+          completed_at: action.completed_at,
+          metadata: action.metadata,
+          instance_status_before: action.instance_status_before,
+          instance_status_after: action.instance_status_after,
+        })),
+        summary: {
+          total_actions: allActions.length,
+          exported_at: new Date().toISOString(),
+        },
+      };
+
+      const jsonString = JSON.stringify(dataToCopy, null, 2);
+      await navigator.clipboard.writeText(jsonString);
+      
+      setCopiedActions(true);
+      setTimeout(() => {
+        setCopiedActions(false);
+      }, 2000);
+    } catch (error) {
+      console.error("Failed to copy actions to clipboard:", error);
+    } finally {
+      setCopyingActions(false);
+    }
+  }, [copyingActions, fetchAllActions, instanceId, instance]);
+
   return (
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent showCloseButton={false} className="w-[calc(100vw-2rem)] max-w-5xl sm:max-w-5xl p-0 overflow-hidden">
@@ -252,7 +338,31 @@ export function InstanceTimelineModal({
                     ? `Lignes ${visibleRange.startIndex + 1}–${Math.min(visibleRange.endIndex + 1, counts.filtered)}`
                     : "Aucune action"}
                 </div>
-                <div className="font-mono">{counts.filtered > 0 ? `Total ${counts.filtered}` : ""}</div>
+                <div className="flex items-center gap-2">
+                  <div className="font-mono">{counts.filtered > 0 ? `Total ${counts.filtered}` : ""}</div>
+                  {counts.filtered > 0 && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2 text-xs"
+                      onClick={copyAllActionsToClipboard}
+                      disabled={copyingActions}
+                      title="Copier toutes les actions en JSON"
+                    >
+                      {copiedActions ? (
+                        <>
+                          <Check className="h-3 w-3 mr-1 text-green-500" />
+                          Copié
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-3 w-3 mr-1" />
+                          {copyingActions ? "Copie..." : "Copier JSON"}
+                        </>
+                      )}
+                    </Button>
+                  )}
+                </div>
               </div>
 
               <div className="grid grid-cols-[84px_1fr_110px_90px_140px] gap-2 px-5 py-2 text-[11px] font-semibold text-muted-foreground border-b bg-muted/30">

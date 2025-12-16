@@ -10,6 +10,18 @@ pub trait CloudProvider: Send + Sync {
     
     // New Generic Methods
     async fn check_instance_exists(&self, zone: &str, server_id: &str) -> Result<bool>;
+
+    // Optional: set cloud-init user-data (text/plain) for a server.
+    // Default is a no-op so providers without user-data support can compile.
+    async fn set_cloud_init(&self, _zone: &str, _server_id: &str, _cloud_init: &str) -> Result<bool> {
+        Ok(false)
+    }
+
+    // Optional: ensure inbound TCP ports are open (provider firewall / security group).
+    // Default is a no-op.
+    async fn ensure_inbound_tcp_ports(&self, _zone: &str, _server_id: &str, _ports: Vec<u16>) -> Result<bool> {
+        Ok(false)
+    }
     
     // For Catalog Sync, returning a list of generic InstanceType definitions
     async fn fetch_catalog(&self, zone: &str) -> Result<Vec<inventory::CatalogItem>>;

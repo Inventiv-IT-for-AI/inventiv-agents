@@ -8,6 +8,7 @@ use crate::provider_manager::ProviderManager;
 use crate::logger;
 use bigdecimal::FromPrimitive;
 use crate::finops_events;
+use std::fs;
 
 fn gb_to_bytes(gb: i64) -> i64 {
     // Scaleway APIs use bytes; use decimal GB.
@@ -686,6 +687,89 @@ pub async fn process_provisioning(
                 return;
             }
 
+            // Optional: configure worker auto-install at boot (cloud-init) for Scaleway L4/L40S.
+            //
+            // This enables a pure "standard flow" test:
+            // UI -> API -> Orchestrator -> Scaleway VM -> (cloud-init) -> vLLM + agent running.
+            //
+            // Controlled by orchestrator env vars:
+            // - WORKER_AUTO_INSTALL=1
+            // - WORKER_CONTROL_PLANE_URL=https://api.<domain> (or tunnel URL for DEV local-to-cloud)
+            // - WORKER_MODEL_ID=Qwen/Qwen2.5-0.5B-Instruct (default)
+            // - WORKER_VLLM_IMAGE=vllm/vllm-openai:latest (default)
+            // - WORKER_AGENT_SOURCE_URL=<raw github url> (default to main)
+            let auto_install = std::env::var("WORKER_AUTO_INSTALL")
+                .ok()
+                .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+                .unwrap_or(false);
+
+            let is_scaleway = provider_name.to_ascii_lowercase() == "scaleway";
+            let it_upper = instance_type.trim().to_ascii_uppercase();
+            let is_l4_family = it_upper.starts_with("L4-") || it_upper.starts_with("L40S-");
+
+            if auto_install && is_scaleway && is_l4_family {
+                let cp_url = std::env::var("WORKER_CONTROL_PLANE_URL").unwrap_or_default();
+                if cp_url.trim().is_empty() {
+                    eprintln!("⚠️ WORKER_AUTO_INSTALL=1 but WORKER_CONTROL_PLANE_URL is empty; skipping worker cloud-init");
+                } else {
+                    let worker_model = std::env::var("WORKER_MODEL_ID")
+                        .ok()
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or_else(|| "Qwen/Qwen2.5-0.5B-Instruct".to_string());
+
+                    let vllm_image = std::env::var("WORKER_VLLM_IMAGE")
+                        .ok()
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or_else(|| "vllm/vllm-openai:latest".to_string());
+
+                    let agent_url = std::env::var("WORKER_AGENT_SOURCE_URL")
+                        .ok()
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or_else(|| "https://raw.githubusercontent.com/Inventiv-IT-for-AI/inventiv-agents/main/inventiv-worker/agent.py".to_string());
+
+                    // Include SSH key (same one used by provisioning) so we can debug if needed.
+                    let ssh_pub_path = std::env::var("SCALEWAY_SSH_PUBLIC_KEY_FILE")
+                        .unwrap_or_else(|_| "/app/.ssh/llm-studio-key.pub".to_string());
+                    let ssh_pub = fs::read_to_string(&ssh_pub_path)
+                        .ok()
+                        .map(|s| s.trim().replace('\n', " "))
+                        .unwrap_or_default();
+
+                    let cloud_init = build_worker_cloud_init(
+                        &ssh_pub,
+                        &instance_uuid.to_string(),
+                        cp_url.trim_end_matches('/'),
+                        &worker_model,
+                        &vllm_image,
+                        &agent_url,
+                    );
+
+                    match provider.set_cloud_init(&zone, &server_id, &cloud_init).await {
+                        Ok(true) => println!("🧩 worker cloud-init configured (auto-install enabled)"),
+                        Ok(false) => eprintln!("⚠️ provider does not support set_cloud_init (skipped)"),
+                        Err(e) => eprintln!("⚠️ failed to set worker cloud-init: {}", e),
+                    }
+
+                    // Optional: open ports so the control-plane (and dev laptop) can reach:
+                    // - vLLM: 8000
+                    // - worker health: 8080
+                    //
+                    // Without this, Scaleway security groups may block inbound traffic by default,
+                    // which makes `curl http://<ip>:8000/...` fail even if the worker is running.
+                    let expose = std::env::var("WORKER_EXPOSE_PORTS")
+                        .ok()
+                        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+                        .unwrap_or(true);
+                    if expose {
+                        match provider.ensure_inbound_tcp_ports(&zone, &server_id, vec![8000, 8080]).await {
+                            Ok(true) => println!("🔓 worker ports opened on security group (8000/8080)"),
+                            Ok(false) => eprintln!("⚠️ provider does not support ensure_inbound_tcp_ports (skipped)"),
+                            Err(e) => eprintln!("⚠️ failed to open worker ports: {}", e),
+                        }
+                    }
+                }
+            }
+
             // Optional: create + attach a data volume (SBS) based on instance type allocation params.
             // allocation_params shape:
             // {
@@ -1057,6 +1141,105 @@ pub async fn process_provisioning(
              .await;
         }
     }
+}
+
+fn build_worker_cloud_init(
+    ssh_pub: &str,
+    instance_id: &str,
+    control_plane_url: &str,
+    model_id: &str,
+    vllm_image: &str,
+    agent_source_url: &str,
+) -> String {
+    // Keep it simple for initial DEV->Scaleway validation:
+    // - Run vLLM from upstream image
+    // - Run agent from python image (mount agent.py downloaded at boot)
+    // - Use host network for agent so it can talk to vLLM at 127.0.0.1
+    let mut cloud = String::new();
+    cloud.push_str("#cloud-config\n");
+    if !ssh_pub.trim().is_empty() {
+        cloud.push_str("ssh_authorized_keys:\n");
+        cloud.push_str(&format!("  - {}\n", ssh_pub.trim()));
+    }
+    cloud.push_str("\nwrite_files:\n");
+    cloud.push_str("  - path: /usr/local/bin/inventiv-worker-bootstrap.sh\n");
+    cloud.push_str("    permissions: '0755'\n");
+    cloud.push_str("    content: |\n");
+    cloud.push_str("      #!/usr/bin/env bash\n");
+    cloud.push_str("      set -euo pipefail\n");
+    cloud.push_str("      echo '[inventiv-worker] bootstrap starting'\n");
+    cloud.push_str(&format!("      INSTANCE_ID=\"{}\"\n", instance_id));
+    cloud.push_str(&format!("      CONTROL_PLANE_URL=\"{}\"\n", control_plane_url));
+    cloud.push_str(&format!("      MODEL_ID=\"{}\"\n", model_id));
+    cloud.push_str(&format!("      VLLM_IMAGE=\"{}\"\n", vllm_image));
+    cloud.push_str(&format!("      AGENT_URL=\"{}\"\n", agent_source_url));
+    cloud.push_str("      export DEBIAN_FRONTEND=noninteractive\n");
+    cloud.push_str("\n");
+    cloud.push_str("      if ! command -v docker >/dev/null 2>&1; then\n");
+    cloud.push_str("        echo '[inventiv-worker] installing docker'\n");
+    cloud.push_str("        apt-get update -y\n");
+    cloud.push_str("        apt-get install -y ca-certificates curl gnupg\n");
+    cloud.push_str("        curl -fsSL https://get.docker.com | sh\n");
+    cloud.push_str("      fi\n");
+    cloud.push_str("      systemctl enable --now docker || true\n");
+    cloud.push_str("\n");
+    cloud.push_str("      # Enable NVIDIA runtime for docker (required for --gpus all)\n");
+    cloud.push_str("      if command -v nvidia-smi >/dev/null 2>&1; then\n");
+    cloud.push_str("        echo '[inventiv-worker] installing nvidia-container-toolkit'\n");
+    cloud.push_str("        . /etc/os-release\n");
+    cloud.push_str("        distribution=\"${ID}${VERSION_ID}\"\n");
+    cloud.push_str("        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg\n");
+    cloud.push_str("        curl -fsSL \"https://nvidia.github.io/libnvidia-container/${distribution}/libnvidia-container.list\" \\\n");
+    cloud.push_str("          | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \\\n");
+    cloud.push_str("          > /etc/apt/sources.list.d/nvidia-container-toolkit.list\n");
+    cloud.push_str("        apt-get update -y\n");
+    cloud.push_str("        apt-get install -y nvidia-container-toolkit\n");
+    cloud.push_str("        nvidia-ctk runtime configure --runtime=docker\n");
+    cloud.push_str("        systemctl restart docker\n");
+    cloud.push_str("        echo '[inventiv-worker] nvidia-container-toolkit configured'\n");
+    cloud.push_str("      else\n");
+    cloud.push_str("        echo '[inventiv-worker] nvidia-smi not found; skipping nvidia-container-toolkit'\n");
+    cloud.push_str("      fi\n");
+    cloud.push_str("\n");
+    cloud.push_str("      mkdir -p /opt/inventiv-worker\n");
+    cloud.push_str("      curl -fsSL \"$AGENT_URL\" -o /opt/inventiv-worker/agent.py\n");
+    cloud.push_str("\n");
+    cloud.push_str("      for i in 1 2 3 4 5; do docker pull \"$VLLM_IMAGE\" && break || sleep 5; done\n");
+    cloud.push_str("      for i in 1 2 3 4 5; do docker pull python:3.11-slim && break || sleep 5; done\n");
+    cloud.push_str("\n");
+    cloud.push_str("      docker rm -f vllm >/dev/null 2>&1 || true\n");
+    cloud.push_str("      docker run -d --restart unless-stopped \\\n");
+    cloud.push_str("        --name vllm \\\n");
+    cloud.push_str("        --gpus all \\\n");
+    cloud.push_str("        -p 8000:8000 \\\n");
+    cloud.push_str("        -e HF_HOME=/opt/inventiv-worker/hf \\\n");
+    cloud.push_str("        -e TRANSFORMERS_CACHE=/opt/inventiv-worker/hf \\\n");
+    cloud.push_str("        -v /opt/inventiv-worker:/opt/inventiv-worker \\\n");
+    cloud.push_str("        \"$VLLM_IMAGE\" \\\n");
+    cloud.push_str("        --host 0.0.0.0 --port 8000 \\\n");
+    cloud.push_str("        --model \"$MODEL_ID\" \\\n");
+    cloud.push_str("        --dtype float16\n");
+    cloud.push_str("\n");
+    cloud.push_str("      docker rm -f inventiv-agent >/dev/null 2>&1 || true\n");
+    cloud.push_str("      docker run -d --restart unless-stopped \\\n");
+    cloud.push_str("        --name inventiv-agent \\\n");
+    cloud.push_str("        --network host \\\n");
+    cloud.push_str("        -e CONTROL_PLANE_URL=\"$CONTROL_PLANE_URL\" \\\n");
+    cloud.push_str("        -e INSTANCE_ID=\"$INSTANCE_ID\" \\\n");
+    cloud.push_str("        -e MODEL_ID=\"$MODEL_ID\" \\\n");
+    cloud.push_str("        -e VLLM_BASE_URL=\"http://127.0.0.1:8000\" \\\n");
+    cloud.push_str("        -e WORKER_HEALTH_PORT=8080 \\\n");
+    cloud.push_str("        -e WORKER_VLLM_PORT=8000 \\\n");
+    cloud.push_str("        -e WORKER_HEARTBEAT_INTERVAL_S=10 \\\n");
+    cloud.push_str("        -v /opt/inventiv-worker/agent.py:/app/agent.py:ro \\\n");
+    cloud.push_str("        python:3.11-slim \\\n");
+    cloud.push_str("        bash -lc \"pip install --no-cache-dir requests >/dev/null && python /app/agent.py\"\n");
+    cloud.push_str("\n");
+    cloud.push_str("      echo '[inventiv-worker] bootstrap done'\n");
+    cloud.push_str("\n");
+    cloud.push_str("runcmd:\n");
+    cloud.push_str("  - [ bash, -lc, /usr/local/bin/inventiv-worker-bootstrap.sh ]\n");
+    cloud
 }
 
 pub async fn process_catalog_sync(pool: Pool<Postgres>) {

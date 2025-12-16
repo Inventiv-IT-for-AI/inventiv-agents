@@ -37,16 +37,7 @@ pub async fn ensure_default_admin(db: &Pool<Postgres>) {
     let email = env_string("DEFAULT_ADMIN_EMAIL", "admin@inventiv.local").to_ascii_lowercase();
     let first_name = env_string("DEFAULT_ADMIN_FIRST_NAME", "Admin");
     let last_name = env_string("DEFAULT_ADMIN_LAST_NAME", "User");
-
-    // If already exists, nothing to do.
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)")
-        .bind(&username)
-        .fetch_one(db)
-        .await
-        .unwrap_or(false);
-    if exists {
-        return;
-    }
+    let update_password = env_bool("BOOTSTRAP_UPDATE_ADMIN_PASSWORD", false);
 
     let Some(password) = default_admin_password() else {
         eprintln!(
@@ -54,6 +45,44 @@ pub async fn ensure_default_admin(db: &Pool<Postgres>) {
         );
         return;
     };
+
+    // Check if admin user already exists
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)")
+        .bind(&username)
+        .fetch_one(db)
+        .await
+        .unwrap_or(false);
+
+    if exists {
+        // If update_password is enabled, update the password hash
+        if update_password {
+            let rows_updated = sqlx::query(
+                r#"
+                UPDATE users
+                SET password_hash = crypt($1, gen_salt('bf')),
+                    email = COALESCE(NULLIF($2, ''), email),
+                    first_name = COALESCE(NULLIF($3, ''), first_name),
+                    last_name = COALESCE(NULLIF($4, ''), last_name),
+                    updated_at = NOW()
+                WHERE username = $5
+                "#,
+            )
+            .bind(&password)
+            .bind(&email)
+            .bind(&first_name)
+            .bind(&last_name)
+            .bind(&username)
+            .execute(db)
+            .await
+            .map(|r| r.rows_affected())
+            .unwrap_or(0);
+
+            if rows_updated > 0 {
+                eprintln!("[info] Updated admin user password and profile");
+            }
+        }
+        return;
+    }
 
     // Create admin user. If another replica races, ON CONFLICT DO NOTHING makes it safe.
     let _ = sqlx::query(

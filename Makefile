@@ -62,9 +62,10 @@ PRD_REMOTE_SSH ?=
 	up down ps logs ui dev-create dev-create-edge dev-start dev-start-edge dev-stop dev-delete dev-ps dev-logs dev-restart-orchestrator dev-cert \
 	edge-create edge-start edge-stop edge-delete edge-ps edge-logs edge-cert \
 	stg-provision stg-destroy stg-bootstrap stg-secrets-sync stg-rebuild stg-create stg-update stg-start stg-stop stg-delete stg-status stg-logs stg-cert stg-renew stg-ghcr-token \
-	stg-cert-export stg-cert-import \
+	stg-cert-export stg-cert-import stg-reset-admin-password \
 	prod-provision prod-destroy prod-bootstrap prod-secrets-sync prod-rebuild prod-create prod-update prod-start prod-stop prod-delete prod-status prod-logs prod-cert prod-renew prod-ghcr-token \
-	prod-cert-export prod-cert-import \
+	prod-cert-export prod-cert-import prod-reset-admin-password \
+	reset-admin-password \
 	test clean
 
 help:
@@ -114,6 +115,7 @@ help:
 	@echo "  make stg-cert | stg-renew"
 	@echo "  make stg-cert-export        # export wildcard cert cache to deploy/certs/"
 	@echo "  make stg-cert-import        # import wildcard cert cache from deploy/certs/ to VM"
+	@echo "  make stg-reset-admin-password  # reset admin password on staging"
 	@echo ""
 	@echo "## PROD remote (Scaleway)"
 	@echo "  make prod-provision | prod-destroy | prod-bootstrap | prod-secrets-sync | prod-rebuild | prod-create | prod-update"
@@ -121,6 +123,7 @@ help:
 	@echo "  make prod-cert | prod-renew"
 	@echo "  make prod-cert-export       # export wildcard cert cache to deploy/certs/"
 	@echo "  make prod-cert-import       # import wildcard cert cache from deploy/certs/ to VM"
+	@echo "  make prod-reset-admin-password  # reset admin password on prod"
 	@echo ""
 	@echo "Notes:"
 	@echo "  - Remote connection settings live in env/staging.env and env/prod.env (REMOTE_HOST/PORT, SSH_IDENTITY_FILE, optional REMOTE_USER)."
@@ -262,6 +265,9 @@ dev-cert:
 dev-restart-orchestrator:
 	@$(MAKE) check-dev-env
 	$(COMPOSE_LOCAL) restart orchestrator
+
+reset-admin-password:
+	@./scripts/reset_admin_password.sh
 
 ## -----------------------------
 ## Local prod-like stack (deploy/docker-compose.nginx.yml)
@@ -603,6 +609,10 @@ prod-cert-import:
 	REMOTE=$${PRD_REMOTE_SSH:-$${USER:+$$USER@$$HOST}}; \
 	if [ -z "$$REMOTE" ]; then REMOTE=$$(SSH_IDENTITY_FILE="$$KEY" ./scripts/ssh_detect_user.sh $$HOST $$PORT); fi; \
 	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE ./scripts/lego_volume_import.sh $(PRD_ENV_FILE) "deploy/certs/lego_data_$${ROOT}_prod.tar.gz"
+
+prod-reset-admin-password:
+	@$(MAKE) check-prod-env
+	@./scripts/reset_admin_password.sh prod
 
 prod-rebuild:
 	@$(MAKE) check-prod-env

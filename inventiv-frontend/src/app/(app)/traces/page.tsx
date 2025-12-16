@@ -11,7 +11,6 @@ import { apiUrl } from "@/lib/api";
 import { displayOrDash, formatEur } from "@/lib/utils";
 import type { Instance } from "@/lib/types";
 import { VirtualizedDataTable, type DataTableColumn } from "@/components/shared/VirtualizedDataTable";
-
 export default function Traces() {
     const [instances, setInstances] = useState<Instance[]>([]);
     const [isDetailsOpen, setIsDetailsOpen] = useState(false);
@@ -149,7 +148,8 @@ export default function Traces() {
                     <VirtualizedDataTable<Instance>
                         listId="traces:archived_instances"
                         title="Archived Instances"
-                        height={560}
+                        autoHeight={true}
+                        height={300}
                         rowHeight={56}
                         columns={columns}
                         rows={instances}

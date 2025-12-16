@@ -9,7 +9,6 @@ import type { Instance } from "@/lib/types";
 import { displayOrDash, formatEur } from "@/lib/utils";
 import { VirtualizedDataTable, type DataTableColumn } from "@/components/shared/VirtualizedDataTable";
 import { useMemo } from "react";
-
 type InstanceTableProps = {
   instances: Instance[];
   onViewDetails: (instance: Instance) => void;
@@ -23,6 +22,7 @@ export function InstanceTable({
   onTerminate,
   onArchive,
 }: InstanceTableProps) {
+  
   const columns = useMemo<DataTableColumn<Instance>[]>(() => {
     return [
       {
@@ -163,7 +163,8 @@ export function InstanceTable({
     <VirtualizedDataTable<Instance>
       listId="instances:table"
       title="Instances"
-      height={560}
+      autoHeight={true}
+      height={300}
       rowHeight={56}
       columns={columns}
       rows={instances}

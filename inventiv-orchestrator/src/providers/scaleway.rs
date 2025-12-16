@@ -36,6 +36,100 @@ impl ScalewayProvider {
         headers.insert("Content-Type", "application/json".parse().unwrap());
         headers
     }
+
+    async fn ensure_security_group_with_ports(&self, zone: &str, ports: &[u16]) -> Result<String> {
+        let sg_name = "inventiv-agents-worker-sg";
+
+        // 1) Find existing SG by name+project
+        let list_url = format!("https://api.scaleway.com/instance/v1/zones/{}/security_groups", zone);
+        let resp = self
+            .client
+            .get(&list_url)
+            .headers(self.headers())
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Failed to list security groups: {} - {}", status, text));
+        }
+        let v: serde_json::Value = resp.json().await?;
+        let mut sg_id: Option<String> = None;
+        if let Some(arr) = v.get("security_groups").and_then(|x| x.as_array()) {
+            for sg in arr {
+                let name = sg.get("name").and_then(|x| x.as_str()).unwrap_or("");
+                let project = sg.get("project").and_then(|x| x.as_str()).unwrap_or("");
+                if name == sg_name && project == self.project_id {
+                    sg_id = sg.get("id").and_then(|x| x.as_str()).map(|s| s.to_string());
+                    break;
+                }
+            }
+        }
+
+        // 2) Create if missing
+        if sg_id.is_none() {
+            let create_url = format!("https://api.scaleway.com/instance/v1/zones/{}/security_groups", zone);
+            let body = json!({
+                "name": sg_name,
+                "project": self.project_id,
+                "stateful": true,
+                "inbound_default_policy": "drop",
+                "outbound_default_policy": "accept",
+                "tags": ["inventiv-agents", "worker"],
+            });
+            let resp = self
+                .client
+                .post(&create_url)
+                .headers(self.headers())
+                .json(&body)
+                .send()
+                .await?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(anyhow::anyhow!("Failed to create security group: {} - {}", status, text));
+            }
+            let v: serde_json::Value = resp.json().await?;
+            sg_id = v.get("security_group").and_then(|x| x.get("id")).and_then(|x| x.as_str()).map(|s| s.to_string());
+        }
+
+        let sg_id = sg_id.ok_or_else(|| anyhow::anyhow!("Security group id resolution failed"))?;
+
+        // 3) Replace rules with our allowlist (idempotent)
+        let mut rules = Vec::new();
+        let mut pos: i32 = 1;
+        for p in ports {
+            rules.push(json!({
+                "action": "accept",
+                "protocol": "TCP",
+                "direction": "inbound",
+                "ip_range": "0.0.0.0/0",
+                "dest_port_from": *p as i32,
+                "dest_port_to": *p as i32,
+                "position": pos,
+                "editable": true
+            }));
+            pos += 1;
+        }
+        let rules_url = format!(
+            "https://api.scaleway.com/instance/v1/zones/{}/security_groups/{}/rules",
+            zone, sg_id
+        );
+        let resp = self
+            .client
+            .put(&rules_url)
+            .headers(self.headers())
+            .json(&json!({ "rules": rules }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Failed to set security group rules: {} - {}", status, text));
+        }
+
+        Ok(sg_id)
+    }
 }
 
 #[async_trait]
@@ -233,6 +327,62 @@ impl CloudProvider for ScalewayProvider {
         let json: serde_json::Value = resp.json().await?;
         let ip = json["server"]["public_ip"]["address"].as_str().map(|s| s.to_string());
         Ok(ip)
+    }
+
+    async fn set_cloud_init(&self, zone: &str, server_id: &str, cloud_init: &str) -> Result<bool> {
+        let ud_url = format!(
+            "https://api.scaleway.com/instance/v1/zones/{}/servers/{}/user_data/cloud-init",
+            zone, server_id
+        );
+        let ud_resp = self
+            .client
+            .put(&ud_url)
+            .header("X-Auth-Token", &self.secret_key)
+            .header("Content-Type", "text/plain")
+            .body(cloud_init.to_string())
+            .send()
+            .await?;
+        if !ud_resp.status().is_success() {
+            let status = ud_resp.status();
+            let text = ud_resp.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Failed to set Scaleway cloud-init user_data: {} - {}",
+                status,
+                text
+            ));
+        }
+        Ok(true)
+    }
+
+    async fn ensure_inbound_tcp_ports(&self, zone: &str, server_id: &str, ports: Vec<u16>) -> Result<bool> {
+        // Ensure we always keep SSH open for debugging.
+        let mut ports = ports;
+        if !ports.contains(&22) {
+            ports.push(22);
+        }
+        ports.sort_unstable();
+        ports.dedup();
+
+        let sg_id = self.ensure_security_group_with_ports(zone, &ports).await?;
+
+        // Attach SG to server (idempotent).
+        let url = format!(
+            "https://api.scaleway.com/instance/v1/zones/{}/servers/{}",
+            zone, server_id
+        );
+        let resp = self
+            .client
+            .patch(&url)
+            .headers(self.headers())
+            .json(&json!({ "security_group": { "id": sg_id } }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Failed to attach security group to server: {} - {}", status, text));
+        }
+        Ok(true)
     }
 
     async fn check_instance_exists(&self, zone: &str, server_id: &str) -> Result<bool> {

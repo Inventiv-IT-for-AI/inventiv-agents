@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { VirtualizedRemoteList, type LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
+import { useAvailableHeight } from "@/hooks/useAvailableHeight";
 
 type ColumnId = string;
 
@@ -124,7 +125,14 @@ export type VirtualizedDataTableProps<Row> = {
   /** Notified when backend counts change */
   onCountsChange?: (counts: { total: number; filtered: number }) => void;
 
-  height: number;
+  /** Height of the table. If autoHeight is true, this is used as fallback/minimum */
+  height?: number;
+  /** If true, automatically calculate height based on available space. Requires height to be provided as fallback */
+  autoHeight?: boolean;
+  /** Offset to subtract when autoHeight is enabled. Default: 200px */
+  autoHeightOffset?: number;
+  /** Minimum height when autoHeight is enabled. Default: 300px */
+  autoHeightMin?: number;
   rowHeight: number;
   pageSize?: number;
   overscan?: number;
@@ -150,6 +158,9 @@ export function VirtualizedDataTable<Row>({
   leftMeta,
   onCountsChange,
   height,
+  autoHeight = false,
+  autoHeightOffset = 200,
+  autoHeightMin = 300,
   rowHeight,
   pageSize,
   overscan,
@@ -161,6 +172,19 @@ export function VirtualizedDataTable<Row>({
   onRowClick,
   className,
 }: VirtualizedDataTableProps<Row>) {
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  
+  // Calculer la hauteur automatiquement si autoHeight est activé
+  const calculatedHeight = useAvailableHeight(
+    autoHeightOffset,
+    autoHeightMin,
+    autoHeight ? containerRef : undefined,
+    5, // minRows
+    rowHeight
+  );
+  
+  // Utiliser la hauteur calculée si autoHeight est activé, sinon utiliser la hauteur fournie
+  const effectiveHeight = autoHeight ? calculatedHeight : (height ?? 300);
   const rowNumCol = React.useMemo((): DataTableColumn<Row> => {
     return {
       id: "__rownum__",
@@ -540,7 +564,7 @@ export function VirtualizedDataTable<Row>({
   );
 
   return (
-    <div className={cn("w-full", className)}>
+    <div className={cn("w-full", className)} ref={autoHeight ? containerRef : undefined}>
       <div className="flex items-center justify-between gap-3 mb-2">
         <div className="min-w-0 flex items-center gap-2">
           {title ? <div className="text-lg font-semibold truncate">{title}</div> : null}
@@ -565,7 +589,7 @@ export function VirtualizedDataTable<Row>({
       <div className="border rounded-md overflow-hidden bg-background">
         <VirtualizedRemoteList<Row>
           queryKey={virtualKey}
-          height={height}
+          height={effectiveHeight}
           header={headerNode}
           headerHeight={48}
           contentWidth={contentWidth}

@@ -47,13 +47,13 @@ export default function LoginPage() {
         <CardContent>
           <form onSubmit={onSubmit} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="email">Login</Label>
+              <Label htmlFor="email">Email ou username</Label>
               <Input
                 id="email"
                 type="text"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="admin"
+                placeholder="admin ou admin@inventiv.local"
                 autoComplete="username"
                 autoFocus
                 required

@@ -12,7 +12,6 @@ import { InstanceTimelineModal } from "@/components/instances/InstanceTimelineMo
 import type { ActionLog, ActionType } from "@/lib/types";
 import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
 import { VirtualizedDataTable, type DataTableColumn } from "@/components/shared/VirtualizedDataTable";
-
 export default function MonitoringPage() {
     const [actionTypes, setActionTypes] = useState<Record<string, ActionType>>({});
     const [filterComponent, setFilterComponent] = useState<string>("all");
@@ -439,7 +438,8 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
                         listId="monitoring:action_logs"
                         dataKey={queryKey}
                         title="Action Logs"
-                        height={560}
+                        autoHeight={true}
+                        height={300}
                         rowHeight={56}
                         columns={columns}
                         loadRange={loadRange}
