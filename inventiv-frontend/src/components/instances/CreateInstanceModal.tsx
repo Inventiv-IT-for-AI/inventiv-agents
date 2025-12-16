@@ -280,7 +280,7 @@ export function CreateInstanceModal({
                                             <SelectValue placeholder="Provider : tous" />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            <SelectItem value="all">Tous</SelectItem>
+                                            <SelectItem value="all">Provider : tous</SelectItem>
                                             {providers.filter((p) => p.is_active ?? true).map((p) => (
                                                 <SelectItem key={p.id} value={p.code}>
                                                     {p.name}
@@ -298,7 +298,7 @@ export function CreateInstanceModal({
                                             <SelectValue placeholder="Region : toutes" />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            <SelectItem value="all">Toutes</SelectItem>
+                                            <SelectItem value="all">Region : toutes</SelectItem>
                                             {regions
                                                 .filter((r) => r.is_active && (!selectedProviderId || r.provider_id === selectedProviderId))
                                                 .map((r) => (
@@ -318,7 +318,7 @@ export function CreateInstanceModal({
                                             <SelectValue placeholder="Zone : toutes" />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            <SelectItem value="all">Toutes</SelectItem>
+                                            <SelectItem value="all">Zone : toutes</SelectItem>
                                             {zones.map((z) => (
                                                 <SelectItem key={z.id} value={z.id}>
                                                     {z.name}
