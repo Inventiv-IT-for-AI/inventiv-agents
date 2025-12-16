@@ -30,6 +30,7 @@ mod auth_endpoints;
 mod users_endpoint;
 mod bootstrap_admin;
 mod locales_endpoint;
+mod user_locale;
  // Simple logger without sqlx macros
 
 // use audit_log::AuditLogger; // Commented out due to DATABASE_URL build issues
@@ -395,7 +396,87 @@ async fn maybe_seed_catalog(pool: &Pool<Postgres>) {
             return;
         }
     }
+    // After seeding, ensure i18n backfill exists for seeded rows (seeds run after migrations).
+    // This is safe to run repeatedly and keeps the DB consistent even when seeds insert rows with NULL *_i18n_id.
+    ensure_catalog_i18n_backfill(pool).await;
     println!("✅ AUTO_SEED_CATALOG done");
+}
+
+async fn ensure_catalog_i18n_backfill(pool: &Pool<Postgres>) {
+    // Best-effort: never fail startup due to i18n backfill.
+    let _ = sqlx::query(
+        r#"
+        -- Providers
+        UPDATE public.providers
+        SET name_i18n_id = COALESCE(name_i18n_id, gen_random_uuid()),
+            description_i18n_id = COALESCE(description_i18n_id, gen_random_uuid());
+
+        -- Regions/Zones/Instance Types
+        UPDATE public.regions SET name_i18n_id = COALESCE(name_i18n_id, gen_random_uuid());
+        UPDATE public.zones SET name_i18n_id = COALESCE(name_i18n_id, gen_random_uuid());
+        UPDATE public.instance_types SET name_i18n_id = COALESCE(name_i18n_id, gen_random_uuid());
+        UPDATE public.action_types SET label_i18n_id = COALESCE(label_i18n_id, gen_random_uuid());
+
+        -- Ensure keys exist
+        INSERT INTO public.i18n_keys (id)
+        SELECT DISTINCT x.id
+        FROM (
+          SELECT name_i18n_id AS id FROM public.providers
+          UNION ALL SELECT description_i18n_id AS id FROM public.providers
+          UNION ALL SELECT name_i18n_id AS id FROM public.regions
+          UNION ALL SELECT name_i18n_id AS id FROM public.zones
+          UNION ALL SELECT name_i18n_id AS id FROM public.instance_types
+          UNION ALL SELECT label_i18n_id AS id FROM public.action_types
+        ) x
+        WHERE x.id IS NOT NULL
+        ON CONFLICT (id) DO NOTHING;
+
+        -- Seed en-US texts from base columns if missing
+        INSERT INTO public.i18n_texts (key_id, locale_code, text_value)
+        SELECT p.name_i18n_id, 'en-US', p.name
+        FROM public.providers p
+        WHERE p.name_i18n_id IS NOT NULL
+          AND COALESCE(p.name, '') <> ''
+        ON CONFLICT (key_id, locale_code) DO NOTHING;
+
+        INSERT INTO public.i18n_texts (key_id, locale_code, text_value)
+        SELECT p.description_i18n_id, 'en-US', p.description
+        FROM public.providers p
+        WHERE p.description_i18n_id IS NOT NULL
+          AND COALESCE(p.description, '') <> ''
+        ON CONFLICT (key_id, locale_code) DO NOTHING;
+
+        INSERT INTO public.i18n_texts (key_id, locale_code, text_value)
+        SELECT r.name_i18n_id, 'en-US', r.name
+        FROM public.regions r
+        WHERE r.name_i18n_id IS NOT NULL
+          AND COALESCE(r.name, '') <> ''
+        ON CONFLICT (key_id, locale_code) DO NOTHING;
+
+        INSERT INTO public.i18n_texts (key_id, locale_code, text_value)
+        SELECT z.name_i18n_id, 'en-US', z.name
+        FROM public.zones z
+        WHERE z.name_i18n_id IS NOT NULL
+          AND COALESCE(z.name, '') <> ''
+        ON CONFLICT (key_id, locale_code) DO NOTHING;
+
+        INSERT INTO public.i18n_texts (key_id, locale_code, text_value)
+        SELECT it.name_i18n_id, 'en-US', it.name
+        FROM public.instance_types it
+        WHERE it.name_i18n_id IS NOT NULL
+          AND COALESCE(it.name, '') <> ''
+        ON CONFLICT (key_id, locale_code) DO NOTHING;
+
+        INSERT INTO public.i18n_texts (key_id, locale_code, text_value)
+        SELECT at.label_i18n_id, 'en-US', at.label
+        FROM public.action_types at
+        WHERE at.label_i18n_id IS NOT NULL
+          AND COALESCE(at.label, '') <> ''
+        ON CONFLICT (key_id, locale_code) DO NOTHING;
+        "#
+    )
+    .execute(pool)
+    .await;
 }
 
 #[derive(Serialize, sqlx::FromRow, utoipa::ToSchema)]
@@ -1406,13 +1487,22 @@ struct ActionTypeResponse {
 )]
 async fn list_action_types(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
 ) -> Json<Vec<ActionTypeResponse>> {
+    let locale = user_locale::preferred_locale_code(&state.db, user.user_id).await;
     let rows = sqlx::query_as::<Postgres, ActionTypeResponse>(
-        "SELECT code, label, icon, color_class, category, is_active
+        "SELECT
+           code,
+           COALESCE(i18n_get_text(label_i18n_id, $1), label) as label,
+           icon,
+           color_class,
+           category,
+           is_active
          FROM action_types
          WHERE is_active = true
          ORDER BY category NULLS LAST, code ASC"
     )
+    .bind(locale)
     .fetch_all(&state.db)
     .await
     .unwrap_or_default();

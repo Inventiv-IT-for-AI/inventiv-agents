@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 use inventiv_common::{Provider, Region, Zone, InstanceType};
-use crate::AppState;
+use crate::{AppState, auth, user_locale};
 use sqlx::FromRow;
 
 // --- DTOs ---
@@ -126,6 +126,8 @@ pub struct UpdateInstanceTypeRequest {
     )
 )]
 pub async fn list_regions(State(state): State<Arc<AppState>>) -> Json<Vec<Region>> {
+    // NOTE: list_* endpoints are behind require_user middleware, but older callers might not pass Extension.
+    // Keep backward compat by not extracting user here; locale-aware version is in search endpoints and UI.
     let regions = sqlx::query_as::<_, Region>(
         "SELECT id, provider_id, name, code, is_active FROM regions ORDER BY name"
     )
@@ -145,8 +147,10 @@ pub async fn list_regions(State(state): State<Arc<AppState>>) -> Json<Vec<Region
 )]
 pub async fn search_regions(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
     Query(params): Query<SearchQuery>,
 ) -> Json<SearchResponse<RegionSearchRow>> {
+    let locale = user_locale::preferred_locale_code(&state.db, user.user_id).await;
     let offset = params.offset.unwrap_or(0).max(0);
     let limit = params.limit.unwrap_or(200).clamp(1, 500);
     let q_like: Option<String> = params
@@ -168,12 +172,13 @@ pub async fn search_regions(
         JOIN providers p ON p.id = r.provider_id
         WHERE ($1::uuid IS NULL OR r.provider_id = $1)
           AND ($2::bool IS NULL OR r.is_active = $2)
-          AND ($3::text IS NULL OR r.name ILIKE $3 OR r.code ILIKE $3)
+          AND ($3::text IS NULL OR COALESCE(i18n_get_text(r.name_i18n_id, $6), r.name) ILIKE $3 OR r.code ILIKE $3)
         "#,
     )
     .bind(params.provider_id)
     .bind(params.is_active)
     .bind(q_like.as_deref())
+    .bind(&locale)
     .fetch_one(&state.db)
     .await
     .unwrap_or(0);
@@ -190,16 +195,16 @@ pub async fn search_regions(
         SELECT
           r.id,
           r.provider_id,
-          p.name as provider_name,
+          COALESCE(i18n_get_text(p.name_i18n_id, $6), p.name) as provider_name,
           p.code as provider_code,
-          r.name,
+          COALESCE(i18n_get_text(r.name_i18n_id, $6), r.name) as name,
           r.code,
           r.is_active
         FROM regions r
         JOIN providers p ON p.id = r.provider_id
         WHERE ($1::uuid IS NULL OR r.provider_id = $1)
           AND ($2::bool IS NULL OR r.is_active = $2)
-          AND ($3::text IS NULL OR r.name ILIKE $3 OR r.code ILIKE $3)
+          AND ($3::text IS NULL OR COALESCE(i18n_get_text(r.name_i18n_id, $6), r.name) ILIKE $3 OR r.code ILIKE $3)
         ORDER BY {order_by} {dir}, id {dir}
         LIMIT $4 OFFSET $5
         "#
@@ -210,6 +215,7 @@ pub async fn search_regions(
         .bind(q_like.as_deref())
         .bind(limit)
         .bind(offset)
+        .bind(&locale)
         .fetch_all(&state.db)
         .await
         .unwrap_or_default();
@@ -291,8 +297,10 @@ pub async fn list_zones(State(state): State<Arc<AppState>>) -> Json<Vec<Zone>> {
 )]
 pub async fn search_zones(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
     Query(params): Query<SearchQuery>,
 ) -> Json<SearchResponse<ZoneSearchRow>> {
+    let locale = user_locale::preferred_locale_code(&state.db, user.user_id).await;
     let offset = params.offset.unwrap_or(0).max(0);
     let limit = params.limit.unwrap_or(200).clamp(1, 500);
     let q_like: Option<String> = params
@@ -316,13 +324,14 @@ pub async fn search_zones(
         WHERE ($1::uuid IS NULL OR z.region_id = $1)
           AND ($2::uuid IS NULL OR r.provider_id = $2)
           AND ($3::bool IS NULL OR z.is_active = $3)
-          AND ($4::text IS NULL OR z.name ILIKE $4 OR z.code ILIKE $4)
+          AND ($4::text IS NULL OR COALESCE(i18n_get_text(z.name_i18n_id, $7), z.name) ILIKE $4 OR z.code ILIKE $4)
         "#,
     )
     .bind(params.region_id)
     .bind(params.provider_id)
     .bind(params.is_active)
     .bind(q_like.as_deref())
+    .bind(&locale)
     .fetch_one(&state.db)
     .await
     .unwrap_or(0);
@@ -339,12 +348,12 @@ pub async fn search_zones(
         SELECT
           z.id,
           z.region_id,
-          r.name as region_name,
+          COALESCE(i18n_get_text(r.name_i18n_id, $7), r.name) as region_name,
           r.code as region_code,
           r.provider_id,
-          p.name as provider_name,
+          COALESCE(i18n_get_text(p.name_i18n_id, $7), p.name) as provider_name,
           p.code as provider_code,
-          z.name,
+          COALESCE(i18n_get_text(z.name_i18n_id, $7), z.name) as name,
           z.code,
           z.is_active
         FROM zones z
@@ -353,7 +362,7 @@ pub async fn search_zones(
         WHERE ($1::uuid IS NULL OR z.region_id = $1)
           AND ($2::uuid IS NULL OR r.provider_id = $2)
           AND ($3::bool IS NULL OR z.is_active = $3)
-          AND ($4::text IS NULL OR z.name ILIKE $4 OR z.code ILIKE $4)
+          AND ($4::text IS NULL OR COALESCE(i18n_get_text(z.name_i18n_id, $7), z.name) ILIKE $4 OR z.code ILIKE $4)
         ORDER BY {order_by} {dir}, id {dir}
         LIMIT $5 OFFSET $6
         "#
@@ -365,6 +374,7 @@ pub async fn search_zones(
         .bind(q_like.as_deref())
         .bind(limit)
         .bind(offset)
+        .bind(&locale)
         .fetch_all(&state.db)
         .await
         .unwrap_or_default();
@@ -451,8 +461,10 @@ pub async fn list_instance_types(State(state): State<Arc<AppState>>) -> Json<Vec
 )]
 pub async fn search_instance_types(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
     Query(params): Query<SearchQuery>,
 ) -> Json<SearchResponse<InstanceTypeSearchRow>> {
+    let locale = user_locale::preferred_locale_code(&state.db, user.user_id).await;
     let offset = params.offset.unwrap_or(0).max(0);
     let limit = params.limit.unwrap_or(200).clamp(1, 500);
     let q_like: Option<String> = params
@@ -474,12 +486,13 @@ pub async fn search_instance_types(
         JOIN providers p ON p.id = it.provider_id
         WHERE ($1::uuid IS NULL OR it.provider_id = $1)
           AND ($2::bool IS NULL OR it.is_active = $2)
-          AND ($3::text IS NULL OR it.name ILIKE $3 OR it.code ILIKE $3)
+          AND ($3::text IS NULL OR COALESCE(i18n_get_text(it.name_i18n_id, $6), it.name) ILIKE $3 OR it.code ILIKE $3)
         "#,
     )
     .bind(params.provider_id)
     .bind(params.is_active)
     .bind(q_like.as_deref())
+    .bind(&locale)
     .fetch_one(&state.db)
     .await
     .unwrap_or(0);
@@ -499,9 +512,9 @@ pub async fn search_instance_types(
         SELECT
           it.id,
           it.provider_id,
-          p.name as provider_name,
+          COALESCE(i18n_get_text(p.name_i18n_id, $6), p.name) as provider_name,
           p.code as provider_code,
-          it.name,
+          COALESCE(i18n_get_text(it.name_i18n_id, $6), it.name) as name,
           it.code,
           it.gpu_count,
           it.vram_per_gpu_gb,
@@ -514,7 +527,7 @@ pub async fn search_instance_types(
         JOIN providers p ON p.id = it.provider_id
         WHERE ($1::uuid IS NULL OR it.provider_id = $1)
           AND ($2::bool IS NULL OR it.is_active = $2)
-          AND ($3::text IS NULL OR it.name ILIKE $3 OR it.code ILIKE $3)
+          AND ($3::text IS NULL OR COALESCE(i18n_get_text(it.name_i18n_id, $6), it.name) ILIKE $3 OR it.code ILIKE $3)
         ORDER BY {order_by} {dir}, id {dir}
         LIMIT $4 OFFSET $5
         "#
@@ -525,6 +538,7 @@ pub async fn search_instance_types(
         .bind(q_like.as_deref())
         .bind(limit)
         .bind(offset)
+        .bind(&locale)
         .fetch_all(&state.db)
         .await
         .unwrap_or_default();
@@ -618,8 +632,10 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> Json<Vec<Prov
 )]
 pub async fn search_providers(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
     Query(params): Query<SearchQuery>,
 ) -> Json<SearchResponse<Provider>> {
+    let locale = user_locale::preferred_locale_code(&state.db, user.user_id).await;
     let offset = params.offset.unwrap_or(0).max(0);
     let limit = params.limit.unwrap_or(200).clamp(1, 500);
     let q_like: Option<String> = params
@@ -641,14 +657,15 @@ pub async fn search_providers(
         WHERE ($1::bool IS NULL OR is_active = $1)
           AND (
             $2::text IS NULL
-            OR name ILIKE $2
+            OR COALESCE(i18n_get_text(name_i18n_id, $5), name) ILIKE $2
             OR code ILIKE $2
-            OR COALESCE(description, '') ILIKE $2
+            OR COALESCE(i18n_get_text(description_i18n_id, $5), description, '') ILIKE $2
           )
         "#,
     )
     .bind(params.is_active)
     .bind(q_like.as_deref())
+    .bind(&locale)
     .fetch_one(&state.db)
     .await
     .unwrap_or(0);
@@ -662,14 +679,19 @@ pub async fn search_providers(
 
     let sql = format!(
         r#"
-        SELECT id, name, code, description, is_active
+        SELECT
+          id,
+          COALESCE(i18n_get_text(name_i18n_id, $5), name) as name,
+          code,
+          COALESCE(i18n_get_text(description_i18n_id, $5), description) as description,
+          is_active
         FROM providers
         WHERE ($1::bool IS NULL OR is_active = $1)
           AND (
             $2::text IS NULL
-            OR name ILIKE $2
+            OR COALESCE(i18n_get_text(name_i18n_id, $5), name) ILIKE $2
             OR code ILIKE $2
-            OR COALESCE(description, '') ILIKE $2
+            OR COALESCE(i18n_get_text(description_i18n_id, $5), description, '') ILIKE $2
           )
         ORDER BY {order_by} {dir}, id {dir}
         LIMIT $3 OFFSET $4
@@ -680,6 +702,7 @@ pub async fn search_providers(
         .bind(q_like.as_deref())
         .bind(limit)
         .bind(offset)
+        .bind(&locale)
         .fetch_all(&state.db)
         .await
         .unwrap_or_default();

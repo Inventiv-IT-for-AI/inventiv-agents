@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 use inventiv_common::InstanceType;
-use crate::AppState;
+use crate::{AppState, auth, user_locale};
 
 // --- DTOs for Zone Associations ---
 
@@ -40,14 +40,16 @@ pub struct AssociateZoneRequest {
 )]
 pub async fn list_instance_type_zones(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
     Path(instance_type_id): Path<Uuid>,
 ) -> Json<Vec<InstanceTypeZoneAssociation>> {
+    let locale = user_locale::preferred_locale_code(&state.db, user.user_id).await;
     let associations = sqlx::query_as::<_, (Uuid, Uuid, bool, String, String)>(
         r#"SELECT 
             itz.instance_type_id,
             itz.zone_id,
             itz.is_available,
-            z.name as zone_name,
+            COALESCE(i18n_get_text(z.name_i18n_id, $2), z.name) as zone_name,
             z.code as zone_code
            FROM instance_type_zones itz
            JOIN zones z ON itz.zone_id = z.id
@@ -55,6 +57,7 @@ pub async fn list_instance_type_zones(
            ORDER BY z.name"#
     )
     .bind(instance_type_id)
+    .bind(locale)
     .fetch_all(&state.db)
     .await
     .unwrap_or(vec![])
@@ -174,9 +177,11 @@ pub async fn associate_zones_to_instance_type(
 )]
 pub async fn list_instance_types_for_zone(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
     Path(zone_id): Path<Uuid>,
     axum::extract::Query(params): axum::extract::Query<ListInstanceTypesForZoneQuery>,
 ) -> Json<Vec<InstanceType>> {
+    let locale = user_locale::preferred_locale_code(&state.db, user.user_id).await;
     // Prefer provider_code, keep provider_id for backward compatibility.
     let provider_filter: Option<Uuid> = if let Some(pid) = params.provider_id {
         Some(pid)
@@ -197,7 +202,10 @@ pub async fn list_instance_types_for_zone(
 
     let types = sqlx::query_as::<_, InstanceType>(
         r#"SELECT DISTINCT
-            it.id, it.provider_id, it.name, it.code, 
+            it.id,
+            it.provider_id,
+            COALESCE(i18n_get_text(it.name_i18n_id, $3), it.name) as name,
+            it.code, 
             it.gpu_count, it.vram_per_gpu_gb, 
             it.cpu_count, it.ram_gb, it.bandwidth_bps,
             it.is_active,
@@ -210,10 +218,11 @@ pub async fn list_instance_types_for_zone(
              AND p.is_active = true
              AND ($2::uuid IS NULL OR it.provider_id = $2::uuid)
              AND itz.is_available = true
-           ORDER BY it.name"#
+           ORDER BY COALESCE(i18n_get_text(it.name_i18n_id, $3), it.name)"#
     )
     .bind(zone_id)
     .bind(provider_filter)
+    .bind(locale)
     .fetch_all(&state.db)
     .await
     .unwrap_or(vec![]);
