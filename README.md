@@ -1,7 +1,9 @@
 # Inventiv Agents
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)](VERSION)
+[![CI](https://github.com/inventiv-it-for-ai/inventiv-agents/actions/workflows/ghcr.yml/badge.svg)](https://github.com/inventiv-it-for-ai/inventiv-agents/actions/workflows/ghcr.yml)
+[![Docker images](https://img.shields.io/badge/GHCR-ghcr.io%2Finventiv--it--for--ai%2Finventiv--agents-blue)](https://ghcr.io/inventiv-it-for-ai/inventiv-agents)
 
 **Control-plane + data-plane pour exécuter des agents/instances IA** — Infrastructure d'inférence LLM scalable, modulaire et performante, écrite en **Rust**.
 
@@ -24,6 +26,7 @@
 - ✅ **Frontend (console web)** : Dashboard Next.js avec monitoring FinOps, gestion des instances, settings (providers/zones/types), action logs
 - ✅ **Auth (session JWT + users)** : Authentification par session cookie, gestion des utilisateurs, bootstrap admin automatique
 - ✅ **Worker Auth (token par instance)** : Authentification sécurisée des workers avec tokens hashés en DB, bootstrap automatique
+- ✅ **i18n (MVP)** : Locales (`en-US`, `fr-FR`, `ar`) + profil utilisateur `locale_code` + scaffold UI (messages + helpers)
 
 ## Architecture (vue d'ensemble)
 
@@ -143,6 +146,7 @@ npm run dev -- --port 3000
   - Username : `admin` (ou `DEFAULT_ADMIN_USERNAME`)
   - Email : `admin@inventiv.local` (ou `DEFAULT_ADMIN_EMAIL`)
   - Password : lu depuis `deploy/secrets/default_admin_password` (ou `DEFAULT_ADMIN_PASSWORD_FILE`)
+  - Locale : `DEFAULT_ADMIN_LOCALE` (défaut: `fr-FR`)
 
 ### 5. Seeding (catalogue)
 
@@ -237,6 +241,8 @@ En staging/prod, les secrets sont synchronisés sur la VM via `SECRETS_DIR` (voi
 - `20251215010000_create_worker_auth_tokens.sql` : Table tokens workers
 - `20251215020000_users_add_first_last_name.sql` : Champs first_name/last_name users
 - `20251215021000_users_add_username.sql` : Username unique pour login
+- `20251216000000_add_locales_and_user_locale.sql` : Table `locales` + `users.locale_code` (FK) + seeds des locales (en-US/fr-FR/ar)
+- `20251216001000_add_generic_i18n_tables.sql` : Tables `i18n_keys`/`i18n_texts` + helper `i18n_get_text(...)`
 
 ### Seeds
 
@@ -415,7 +421,11 @@ NEXT_PUBLIC_API_URL=http://localhost:8003
 
 **Helper centralisé** : `inventiv-frontend/src/lib/api.ts` (fonction `apiUrl()`)
 
-**Rewrites** : Si nécessaire, configurer dans `next.config.js` pour proxy `/api/backend` → `NEXT_PUBLIC_API_URL`
+**Proxy same-origin** : l’UI appelle `/api/backend/*` (Next.js route handlers) qui proxy vers:
+- `API_INTERNAL_URL` (prioritaire, utile en Docker: ex `http://api:8003`)
+- sinon `NEXT_PUBLIC_API_URL` (ex `http://localhost:8003`)
+
+Voir [docs/API_URL_CONFIGURATION.md](docs/API_URL_CONFIGURATION.md).
 
 ### Dev
 
@@ -480,7 +490,7 @@ make prod-cert
 
 **Stratégie de tags** :
 - SHA : `ghcr.io/<org>/<service>:<sha>`
-- Version : `ghcr.io/<org>/<service>:v0.3.0`
+- Version : `ghcr.io/<org>/<service>:vX.Y.Z`
 - Latest : `ghcr.io/<org>/<service>:latest`
 
 **Promotion** : Par digest (SHA) pour garantir la reproductibilité

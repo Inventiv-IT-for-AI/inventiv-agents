@@ -2,8 +2,12 @@
 
 ## ✅ État actuel (repo)
 
-Le frontend utilise maintenant **`NEXT_PUBLIC_API_URL`** + le helper **`apiUrl()`** (dans `inventiv-frontend/src/lib/api.ts`).
-Cela évite les URLs hardcodées et garantit que l’UI parle toujours au bon backend.
+Le frontend utilise un **proxy same-origin** via **`/api/backend/*`** (route handlers Next.js) + le helper **`apiUrl()`** (dans `inventiv-frontend/src/lib/api.ts`).
+
+- **Côté navigateur**: l’UI appelle toujours `GET/POST /api/backend/...` (même origin), ce qui facilite **les cookies de session**.
+- **Côté serveur** (SSR / route handlers): la cible upstream est déterminée par:
+  - `API_INTERNAL_URL` (prioritaire, utile en Docker/edge: ex `http://api:8003`)
+  - sinon `NEXT_PUBLIC_API_URL` (ex `http://localhost:8003` en dev)
 
 ## Configuration
 
@@ -14,9 +18,20 @@ Cela évite les URLs hardcodées et garantit que l’UI parle toujours au bon ba
 NEXT_PUBLIC_API_URL=http://localhost:8003
 ```
 
+> En local, `make ui` crée automatiquement ce fichier si absent.
+
 ### 2. Helper `apiUrl()`
 
 Déjà implémenté dans `inventiv-frontend/src/lib/api.ts`.
+
+### 3. Proxy `/api/backend/*`
+
+Les appels UI passent par:
+
+- `inventiv-frontend/src/app/api/backend/route.ts`
+- `inventiv-frontend/src/app/api/backend/[...path]/route.ts`
+
+Ces route handlers proxient la requête vers `API_INTERNAL_URL`/`NEXT_PUBLIC_API_URL` et propagent les cookies.
 
 ### 3. Endroits typiques à vérifier
 
@@ -36,13 +51,13 @@ NEXT_PUBLIC_API_URL=http://localhost:8003
 ```
 
 #### Staging
-`.env.staging`
+Exemple `.env.staging` (si tu buildes le frontend hors Docker avec un backend distant):
 ```bash
 NEXT_PUBLIC_API_URL=https://api-staging.yourdomain.com
 ```
 
 #### Production
-`.env.production`
+Exemple `.env.production` (frontend buildé/déployé séparément):
 ```bash
 NEXT_PUBLIC_API_URL=https://api.yourdomain.com
 ```

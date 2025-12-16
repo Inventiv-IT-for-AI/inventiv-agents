@@ -26,6 +26,10 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et les 
   - [x] `GET/PUT /auth/me` + `PUT /auth/me/password`
   - [x] Protection des endpoints API (401 sans session)
 - [x] **Gestion des users (admin)**: `GET/POST /users`, `GET/PUT/DELETE /users/:id`
+- [x] **Locales (i18n)**:
+  - [x] DB: table `locales` + `users.locale_code` (FK) + seeds `en-US`, `fr-FR`, `ar`
+  - [x] API: `GET /locales` (locales actives)
+  - [x] Auth/Profile: `GET /auth/me` inclut `locale_code`; `PUT /auth/me` accepte `locale_code`
 
 ### Orchestrator (inventiv-orchestrator :8001)
 - [x] **Provisioning Scaleway** (réel): `create_instance` + `poweron` + récupération IP → DB `booting`.
@@ -41,6 +45,7 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et les 
 - [x] UI Login + protection via middleware (redirection vers `/login`).
 - [x] “User chip” + profil (édition profil + changement mdp) + logout.
 - [x] Page `/users` (CRUD users).
+- [x] **Scaffold i18n**: fichiers de messages `inventiv-frontend/src/i18n/messages/*` + helpers (`normalizeLocale`, `isRtl`, `t(...)`).
 - [x] **FinOps Dashboard** : Coûts réels/forecast/cumulatifs, breakdown par provider/instance/region/type, fenêtres temporelles (minute/heure/jour/30j/365j).
 
 ### FinOps (inventiv-finops)
@@ -86,6 +91,7 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et les 
 ### Docs / scripts obsolètes
 - [x] **Router**: README mis à jour pour clarifier que le Router est prévu mais non présent actuellement (phase 0.2.2).
 - [ ] `scripts/test_architecture.sh` attend `/health` backend/router (à aligner avec la réalité ou ré-implémenter).
+- [ ] **i18n UI**: la préférence `locale_code` est stockée côté backend, mais l’UI n’applique pas encore partout la traduction/RTL (scaffold prêt).
 
 ---
 
