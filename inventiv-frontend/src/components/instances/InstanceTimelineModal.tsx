@@ -6,9 +6,10 @@ import { Button } from "@/components/ui/button";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiUrl } from "@/lib/api";
 import type { ActionLog, ActionType, Instance } from "@/lib/types";
-import { VirtualizedRemoteList, type LoadRangeResult, type VirtualRange } from "@/components/shared/VirtualizedRemoteList";
+import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
 import { CopyButton } from "@/components/shared/CopyButton";
 import { displayOrDash } from "@/lib/utils";
+import { VirtualizedDataTable, type DataTableColumn } from "@/components/shared/VirtualizedDataTable";
 
 interface InstanceTimelineModalProps {
   open: boolean;
@@ -25,7 +26,6 @@ export function InstanceTimelineModal({
   const [actionTypes, setActionTypes] = useState<Record<string, ActionType>>({});
   const [selectedLog, setSelectedLog] = useState<ActionLog | null>(null);
   const [counts, setCounts] = useState({ total: 0, filtered: 0 });
-  const [visibleRange, setVisibleRange] = useState<VirtualRange>({ startIndex: 0, endIndex: 0 });
   const [refreshToken, setRefreshToken] = useState(0);
   const [copyingActions, setCopyingActions] = useState(false);
   const [copiedActions, setCopiedActions] = useState(false);
@@ -132,16 +132,12 @@ export function InstanceTimelineModal({
   const queryKey = useMemo(() => JSON.stringify({ instanceId, refreshToken }), [instanceId, refreshToken]);
 
   const handleCountsChange = useCallback(
-    ({ filtered }: { total: number; filtered: number }) => {
+    ({ total, filtered }: { total: number; filtered: number }) => {
       // For this modal, the only "filter" is instance_id: total displayed is per-instance.
-      setCounts({ total: filtered, filtered });
+      setCounts({ total, filtered });
     },
     []
   );
-
-  const handleRangeChange = useCallback((range: VirtualRange) => {
-    setVisibleRange(range);
-  }, []);
 
   const loadRange = useCallback(
     async (offset: number, limit: number): Promise<LoadRangeResult<ActionLog>> => {
@@ -162,6 +158,67 @@ export function InstanceTimelineModal({
     },
     [instanceId]
   );
+
+  const columns = useMemo<DataTableColumn<ActionLog>[]>(() => {
+    return [
+      {
+        id: "time",
+        label: "Heure",
+        width: 110,
+        cell: ({ row }) => (
+          <span className="font-mono text-xs text-muted-foreground whitespace-nowrap">
+            {new Date(row.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+          </span>
+        ),
+      },
+      {
+        id: "action",
+        label: "Action",
+        width: 420,
+        cell: ({ row }) => {
+          const actionLabel = formatActionLabel(row.action_type);
+          const dotClass = getCategoryDotClass(row.action_type);
+          return (
+            <div className="min-w-0 flex items-center gap-2">
+              <span className={`h-2 w-2 rounded-full ${dotClass}`} />
+              <span className="truncate font-medium">{actionLabel}</span>
+              {row.error_message ? <span className="ml-auto text-xs text-red-600">Erreur</span> : null}
+            </div>
+          );
+        },
+      },
+      {
+        id: "status",
+        label: "Statut",
+        width: 140,
+        cell: ({ row }) => (
+          <Badge variant="outline" className="text-[11px]">
+            {row.status}
+          </Badge>
+        ),
+      },
+      {
+        id: "duration",
+        label: "Durée",
+        width: 110,
+        align: "right",
+        cell: ({ row }) => <span className="font-mono text-xs text-muted-foreground">{formatDuration(row.duration_ms)}</span>,
+      },
+      {
+        id: "transition",
+        label: "Transition",
+        width: 220,
+        cellClassName: "truncate",
+        cell: ({ row }) => (
+          <span className="font-mono text-[11px] text-muted-foreground truncate">
+            {(row.instance_status_before || row.instance_status_after)
+              ? `${row.instance_status_before ?? "-"} → ${row.instance_status_after ?? "-"}`
+              : "-"}
+          </span>
+        ),
+      },
+    ];
+  }, [actionTypes]);
 
   const fetchAllActions = useCallback(async (): Promise<ActionLog[]> => {
     const allActions: ActionLog[] = [];
@@ -332,102 +389,40 @@ export function InstanceTimelineModal({
 
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] flex-1 min-h-0">
             <div className="min-w-0">
-              <div className="flex items-center justify-between px-5 py-2 text-xs text-muted-foreground border-b">
-                <div>
-                  {counts.filtered > 0
-                    ? `Lignes ${visibleRange.startIndex + 1}–${Math.min(visibleRange.endIndex + 1, counts.filtered)}`
-                    : "Aucune action"}
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="font-mono">{counts.filtered > 0 ? `Total ${counts.filtered}` : ""}</div>
-                  {counts.filtered > 0 && (
+              <VirtualizedDataTable<ActionLog>
+                listId={`instance_timeline:${instanceId}`}
+                dataKey={queryKey}
+                title="Actions"
+                height={520}
+                rowHeight={40}
+                columns={columns}
+                loadRange={loadRange}
+                onCountsChange={handleCountsChange}
+                rightHeader={
+                  counts.filtered > 0 ? (
                     <Button
-                      variant="ghost"
+                      variant="outline"
                       size="sm"
-                      className="h-6 px-2 text-xs"
+                      className="h-8"
                       onClick={copyAllActionsToClipboard}
                       disabled={copyingActions}
                       title="Copier toutes les actions en JSON"
                     >
                       {copiedActions ? (
                         <>
-                          <Check className="h-3 w-3 mr-1 text-green-500" />
+                          <Check className="h-4 w-4 mr-2 text-green-600" />
                           Copié
                         </>
                       ) : (
                         <>
-                          <Copy className="h-3 w-3 mr-1" />
+                          <Copy className="h-4 w-4 mr-2" />
                           {copyingActions ? "Copie..." : "Copier JSON"}
                         </>
                       )}
                     </Button>
-                  )}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-[84px_1fr_110px_90px_140px] gap-2 px-5 py-2 text-[11px] font-semibold text-muted-foreground border-b bg-muted/30">
-                <div>Heure</div>
-                <div>Action</div>
-                <div>Statut</div>
-                <div className="text-right">Durée</div>
-                <div>Transition</div>
-              </div>
-
-              <VirtualizedRemoteList<ActionLog>
-                queryKey={queryKey}
-                height={520}
-                rowHeight={40}
-                className="border-t-0"
-                loadRange={loadRange}
-                onCountsChange={handleCountsChange}
-                onRangeChange={handleRangeChange}
-                renderRow={({ index, item, style, isLoaded }) => {
-                  const row = item;
-                  const actionLabel = row ? formatActionLabel(row.action_type) : "…";
-                  const dotClass = row ? getCategoryDotClass(row.action_type) : "bg-slate-300";
-                  const status = row?.status ?? "…";
-                  const transition =
-                    row && (row.instance_status_before || row.instance_status_after)
-                      ? `${row.instance_status_before ?? "-"} → ${row.instance_status_after ?? "-"}`
-                      : "-";
-
-                  const onClick = () => {
-                    if (!row) return;
-                    setSelectedLog(row);
-                  };
-
-                  return (
-                    <div
-                      style={style}
-                      onClick={onClick}
-                      className={`grid grid-cols-[84px_1fr_110px_90px_140px] gap-2 px-5 items-center border-b text-sm ${
-                        index % 2 === 0 ? "bg-background" : "bg-muted/10"
-                      } ${row ? "cursor-pointer hover:bg-muted/30" : ""}`}
-                    >
-                      <div className="font-mono text-xs text-muted-foreground">
-                        {isLoaded && row ? new Date(row.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "…"}
-                      </div>
-                      <div className="min-w-0 flex items-center gap-2">
-                        <span className={`h-2 w-2 rounded-full ${dotClass}`} />
-                        <span className="truncate font-medium">{actionLabel}</span>
-                        {row?.error_message ? <span className="ml-auto text-xs text-red-600">Erreur</span> : null}
-                      </div>
-                      <div>
-                        {isLoaded && row ? (
-                          <Badge variant="outline" className="text-[11px]">
-                            {status}
-                          </Badge>
-                        ) : (
-                          <Badge variant="outline" className="text-[11px]">…</Badge>
-                        )}
-                      </div>
-                      <div className="font-mono text-xs text-right text-muted-foreground">
-                        {isLoaded && row ? formatDuration(row.duration_ms) : "…"}
-                      </div>
-                      <div className="font-mono text-[11px] text-muted-foreground truncate">{transition}</div>
-                    </div>
-                  );
-                }}
+                  ) : null
+                }
+                onRowClick={(row) => setSelectedLog(row)}
               />
             </div>
 
