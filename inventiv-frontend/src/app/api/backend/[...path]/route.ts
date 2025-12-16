@@ -64,13 +64,16 @@ async function proxy(req: NextRequest, ctx: { params: Promise<{ path?: string[] 
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const body = method === "GET" || method === "HEAD" ? undefined : req.body;
+      // IMPORTANT:
+      // Avoid streaming bodies (ReadableStream) because Node/undici may require
+      // `duplex: "half"` which is not always available in our TS build environment.
+      // Buffering here is fine for our control-plane JSON payload sizes.
+      const hasBody = method !== "GET" && method !== "HEAD";
+      const body = hasBody ? await req.arrayBuffer() : undefined;
       const upstream = await fetch(url, {
         method,
         headers: filterHeaders(req),
-        body,
-        // Next.js 15+ requires duplex option when sending a body
-        ...(body ? { duplex: "half" as RequestDuplex } : {}),
+        body: body ? new Uint8Array(body) : undefined,
         // Never cache proxied API calls.
         cache: "no-store",
         redirect: "manual",
@@ -84,9 +87,16 @@ async function proxy(req: NextRequest, ctx: { params: Promise<{ path?: string[] 
 
       // Explicitly copy Set-Cookie headers from upstream to response
       // This ensures cookies are properly forwarded to the browser
-      const setCookieHeaders = upstream.headers.getSetCookie();
-      for (const cookie of setCookieHeaders) {
-        response.headers.append("Set-Cookie", cookie);
+      const h: any = upstream.headers as any;
+      const setCookieHeaders: string[] | undefined =
+        typeof h.getSetCookie === "function" ? h.getSetCookie() : undefined;
+      if (Array.isArray(setCookieHeaders) && setCookieHeaders.length > 0) {
+        for (const cookie of setCookieHeaders) {
+          response.headers.append("set-cookie", cookie);
+        }
+      } else {
+        const setCookie = upstream.headers.get("set-cookie");
+        if (setCookie) response.headers.set("set-cookie", setCookie);
       }
 
       return response;

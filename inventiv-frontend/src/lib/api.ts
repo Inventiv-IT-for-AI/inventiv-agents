@@ -2,8 +2,8 @@
 //
 // IMPORTANT:
 // - Client-side code must NOT default to localhost (would call the user's browser localhost).
-// - In staging/prod we prefer going through Next rewrites at `/api/backend/*`,
-//   which are configured in `next.config.ts` to proxy to `API_INTERNAL_URL` (docker) or `NEXT_PUBLIC_API_URL`.
+// - In all environments we prefer going through the same-origin Next.js proxy at `/api/backend/*`
+//   (implemented as route handlers under `src/app/api/backend/*`) so cookies/session auth works reliably.
 //
 // Server-side: talk directly to the internal service (docker network) when available.
 const SERVER_API_BASE_URL =
@@ -11,7 +11,7 @@ const SERVER_API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ??
   "http://127.0.0.1:8003";
 
-// Browser-side: always call same-origin proxy (Next rewrite).
+// Browser-side: always call same-origin proxy (Next route handlers).
 const BROWSER_API_BASE_URL = "/api/backend";
 
 export const API_BASE_URL =
