@@ -1,0 +1,69 @@
+{
+  "nav": {
+    "dashboard": "Dashboard",
+    "instances": "Instances",
+    "monitoring": "Monitoring",
+    "models": "Models",
+    "settings": "Settings",
+    "users": "Users",
+    "traces": "Traces",
+    "system": "System",
+    "systemStatus": "System Status"
+  },
+  "account": {
+    "title": "Account",
+    "myProfile": "My profile",
+    "logout": "Sign out",
+    "close": "Close",
+    "profileTitle": "My profile",
+    "save": "Save",
+    "saving": "Saving…",
+    "changePassword": "Change password",
+    "currentPassword": "Current",
+    "newPassword": "New",
+    "confirmPassword": "Confirm",
+    "updatePassword": "Update",
+    "updatingPassword": "Updating…",
+    "passwordUpdated": "Password updated",
+    "fillAllFields": "Please fill in all fields",
+    "confirmMismatch": "Confirmation does not match",
+    "networkError": "Network error",
+    "updateError": "Update failed",
+    "sessionExpired": "Session expired, please sign in again",
+    "conflict": "Username or email already used",
+    "locale": "Language"
+  },
+  "login": {
+    "title": "Sign in",
+    "loginLabel": "Email or username",
+    "loginPlaceholder": "admin or admin@inventiv.local",
+    "passwordLabel": "Password",
+    "submit": "Sign in",
+    "submitting": "Signing in…",
+    "invalidCredentials": "Invalid credentials",
+    "networkError": "Network error",
+    "language": "Language"
+  },
+  "usersPage": {
+    "title": "Users",
+    "subtitle": "Create / edit / delete users (admin).",
+    "refresh": "Refresh",
+    "create": "Create user",
+    "listTitle": "List",
+    "username": "Username",
+    "email": "Email",
+    "name": "Name",
+    "role": "Role",
+    "locale": "Language",
+    "actions": "Actions",
+    "edit": "Edit",
+    "delete": "Delete",
+    "none": "No users",
+    "cancel": "Cancel",
+    "save": "Save",
+    "password": "Password",
+    "passwordOptional": "New password (optional)"
+  }
+}
+
+

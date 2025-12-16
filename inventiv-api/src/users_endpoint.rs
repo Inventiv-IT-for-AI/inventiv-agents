@@ -19,6 +19,7 @@ pub struct UserResponse {
     pub role: String,
     pub first_name: Option<String>,
     pub last_name: Option<String>,
+    pub locale_code: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -31,6 +32,7 @@ pub struct CreateUserRequest {
     pub role: Option<String>,
     pub first_name: Option<String>,
     pub last_name: Option<String>,
+    pub locale_code: Option<String>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -41,6 +43,7 @@ pub struct UpdateUserRequest {
     pub role: Option<String>,
     pub first_name: Option<String>,
     pub last_name: Option<String>,
+    pub locale_code: Option<String>,
 }
 
 pub async fn list_users(
@@ -53,7 +56,7 @@ pub async fn list_users(
 
     let rows: Vec<UserResponse> = sqlx::query_as(
         r#"
-        SELECT id, username, email, role, first_name, last_name, created_at, updated_at
+        SELECT id, username, email, role, first_name, last_name, locale_code, created_at, updated_at
         FROM users
         ORDER BY created_at DESC
         "#,
@@ -76,7 +79,7 @@ pub async fn get_user(
 
     let row: Option<UserResponse> = sqlx::query_as(
         r#"
-        SELECT id, username, email, role, first_name, last_name, created_at, updated_at
+        SELECT id, username, email, role, first_name, last_name, locale_code, created_at, updated_at
         FROM users
         WHERE id = $1
         LIMIT 1
@@ -109,6 +112,11 @@ pub async fn create_user(
         .map(|u| u.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| email.clone());
+    let locale_code = req
+        .locale_code
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "en-US".to_string());
     let password = req.password;
     if email.is_empty() || password.trim().is_empty() {
         return (
@@ -126,10 +134,10 @@ pub async fn create_user(
     let id = Uuid::new_v4();
     let row: Option<UserResponse> = sqlx::query_as(
         r#"
-        INSERT INTO users (id, username, email, password_hash, role, first_name, last_name, created_at, updated_at)
-        VALUES ($1, $2, $3, crypt($4, gen_salt('bf')), $5, $6, $7, NOW(), NOW())
+        INSERT INTO users (id, username, email, password_hash, role, first_name, last_name, locale_code, created_at, updated_at)
+        VALUES ($1, $2, $3, crypt($4, gen_salt('bf')), $5, $6, $7, $8, NOW(), NOW())
         ON CONFLICT DO NOTHING
-        RETURNING id, username, email, role, first_name, last_name, created_at, updated_at
+        RETURNING id, username, email, role, first_name, last_name, locale_code, created_at, updated_at
         "#,
     )
     .bind(id)
@@ -139,6 +147,7 @@ pub async fn create_user(
     .bind(role)
     .bind(req.first_name)
     .bind(req.last_name)
+    .bind(locale_code)
     .fetch_optional(&state.db)
     .await
     .ok()
@@ -167,6 +176,7 @@ pub async fn update_user(
     let username = req.username.map(|u| u.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
     let email = req.email.map(|e| e.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
     let role = req.role.map(|r| r.trim().to_string()).filter(|s| !s.is_empty());
+    let locale_code = req.locale_code.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
 
     // Update base fields
     let res = sqlx::query(
@@ -177,6 +187,7 @@ pub async fn update_user(
             role = COALESCE($4, role),
             first_name = COALESCE($5, first_name),
             last_name = COALESCE($6, last_name),
+            locale_code = COALESCE($7, locale_code),
             updated_at = NOW()
         WHERE id = $1
         "#,
@@ -187,6 +198,7 @@ pub async fn update_user(
     .bind(role)
     .bind(req.first_name)
     .bind(req.last_name)
+    .bind(locale_code)
     .execute(&state.db)
     .await;
 
@@ -195,6 +207,18 @@ pub async fn update_user(
             return (StatusCode::NOT_FOUND, Json(json!({"error":"not_found"}))).into_response()
         }
         Err(e) => {
+            // Foreign key violation for locale_code
+            let code = match &e {
+                sqlx::Error::Database(db) => db.code().map(|c| c.to_string()),
+                _ => None,
+            };
+            if code.as_deref() == Some("23503") {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error":"invalid_locale","message":"unknown_locale"})),
+                )
+                    .into_response();
+            }
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error":"db_error","message": e.to_string()})),
@@ -237,7 +261,7 @@ pub async fn update_user(
 
     let row: Option<UserResponse> = sqlx::query_as(
         r#"
-        SELECT id, username, email, role, first_name, last_name, created_at, updated_at
+        SELECT id, username, email, role, first_name, last_name, locale_code, created_at, updated_at
         FROM users
         WHERE id = $1
         LIMIT 1

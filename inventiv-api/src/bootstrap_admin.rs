@@ -37,6 +37,9 @@ pub async fn ensure_default_admin(db: &Pool<Postgres>) {
     let email = env_string("DEFAULT_ADMIN_EMAIL", "admin@inventiv.local").to_ascii_lowercase();
     let first_name = env_string("DEFAULT_ADMIN_FIRST_NAME", "Admin");
     let last_name = env_string("DEFAULT_ADMIN_LAST_NAME", "User");
+    // Locale for the bootstrap admin account (BCP47).
+    // Default: fr-FR (as requested).
+    let locale_code = env_string("DEFAULT_ADMIN_LOCALE", "fr-FR");
     let update_password = env_bool("BOOTSTRAP_UPDATE_ADMIN_PASSWORD", false);
 
     let Some(password) = default_admin_password() else {
@@ -63,14 +66,16 @@ pub async fn ensure_default_admin(db: &Pool<Postgres>) {
                     email = COALESCE(NULLIF($2, ''), email),
                     first_name = COALESCE(NULLIF($3, ''), first_name),
                     last_name = COALESCE(NULLIF($4, ''), last_name),
+                    locale_code = COALESCE(NULLIF($5, ''), locale_code),
                     updated_at = NOW()
-                WHERE username = $5
+                WHERE username = $6
                 "#,
             )
             .bind(&password)
             .bind(&email)
             .bind(&first_name)
             .bind(&last_name)
+            .bind(&locale_code)
             .bind(&username)
             .execute(db)
             .await
@@ -87,8 +92,8 @@ pub async fn ensure_default_admin(db: &Pool<Postgres>) {
     // Create admin user. If another replica races, ON CONFLICT DO NOTHING makes it safe.
     let _ = sqlx::query(
         r#"
-        INSERT INTO users (id, username, email, password_hash, role, first_name, last_name, created_at, updated_at)
-        VALUES (gen_random_uuid(), $1, $2, crypt($3, gen_salt('bf')), 'admin', $4, $5, NOW(), NOW())
+        INSERT INTO users (id, username, email, password_hash, role, first_name, last_name, locale_code, created_at, updated_at)
+        VALUES (gen_random_uuid(), $1, $2, crypt($3, gen_salt('bf')), 'admin', $4, $5, $6, NOW(), NOW())
         ON CONFLICT DO NOTHING
         "#,
     )
@@ -97,6 +102,7 @@ pub async fn ensure_default_admin(db: &Pool<Postgres>) {
     .bind(&password)
     .bind(&first_name)
     .bind(&last_name)
+    .bind(&locale_code)
     .execute(db)
     .await;
 

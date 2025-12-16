@@ -29,6 +29,7 @@ mod auth;
 mod auth_endpoints;
 mod users_endpoint;
 mod bootstrap_admin;
+mod locales_endpoint;
  // Simple logger without sqlx macros
 
 // use audit_log::AuditLogger; // Commented out due to DATABASE_URL build issues
@@ -94,6 +95,8 @@ async fn main() {
     let protected = Router::new()
         .route("/auth/me", get(auth_endpoints::me).put(auth_endpoints::update_me))
         .route("/auth/me/password", axum::routing::put(auth_endpoints::change_password))
+        // Locales
+        .route("/locales", get(locales_endpoint::list_locales))
         .route("/deployments", post(create_deployment))
         // Instances
         .route("/instances", get(list_instances))

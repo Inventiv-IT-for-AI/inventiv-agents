@@ -7,7 +7,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useI18n } from "@/i18n/I18nProvider";
+import { LOCALE_LABELS, normalizeLocale } from "@/i18n/i18n";
 
 type User = {
   id: string;
@@ -16,14 +19,17 @@ type User = {
   role: string;
   first_name?: string | null;
   last_name?: string | null;
+  locale_code: string;
   created_at: string;
   updated_at: string;
 };
 
 export default function UsersPage() {
+  const { t } = useI18n();
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [locales, setLocales] = useState<{ code: string; name: string; native_name?: string | null; direction: string }[]>([]);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -36,6 +42,7 @@ export default function UsersPage() {
     role: "admin",
     first_name: "",
     last_name: "",
+    locale_code: "en-US",
   });
 
   const fetchUsers = async () => {
@@ -58,12 +65,24 @@ export default function UsersPage() {
     }
   };
 
+  const fetchLocales = async () => {
+    try {
+      const res = await fetch(apiUrl("/locales"));
+      if (!res.ok) return;
+      const data = await res.json();
+      if (Array.isArray(data)) setLocales(data);
+    } catch {
+      // ignore
+    }
+  };
+
   useEffect(() => {
     void fetchUsers();
+    void fetchLocales();
   }, []);
 
   const openCreate = () => {
-    setForm({ username: "admin", email: "", password: "", role: "admin", first_name: "", last_name: "" });
+    setForm({ username: "admin", email: "", password: "", role: "admin", first_name: "", last_name: "", locale_code: "en-US" });
     setCreateOpen(true);
   };
 
@@ -76,6 +95,7 @@ export default function UsersPage() {
       role: u.role,
       first_name: u.first_name ?? "",
       last_name: u.last_name ?? "",
+      locale_code: normalizeLocale(u.locale_code),
     });
     setEditOpen(true);
   };
@@ -91,6 +111,7 @@ export default function UsersPage() {
         role: form.role,
         first_name: form.first_name || null,
         last_name: form.last_name || null,
+        locale_code: normalizeLocale(form.locale_code),
       }),
     });
     if (!res.ok) {
@@ -113,6 +134,7 @@ export default function UsersPage() {
         role: form.role,
         first_name: form.first_name || null,
         last_name: form.last_name || null,
+        locale_code: normalizeLocale(form.locale_code),
         ...(form.password.trim() ? { password: form.password } : {}),
       }),
     });
@@ -141,20 +163,20 @@ export default function UsersPage() {
     <div className="p-8 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Users</h1>
-          <p className="text-muted-foreground">Créer / modifier / supprimer des users (admin).</p>
+          <h1 className="text-3xl font-bold tracking-tight">{t("usersPage.title")}</h1>
+          <p className="text-muted-foreground">{t("usersPage.subtitle")}</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={fetchUsers} disabled={loading}>
-            Refresh
+            {t("usersPage.refresh")}
           </Button>
-          <Button onClick={openCreate}>Créer un user</Button>
+          <Button onClick={openCreate}>{t("usersPage.create")}</Button>
         </div>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Liste</CardTitle>
+          <CardTitle>{t("usersPage.listTitle")}</CardTitle>
         </CardHeader>
         <CardContent>
           {error ? <div className="text-sm text-red-600 mb-3">{error}</div> : null}
@@ -164,11 +186,12 @@ export default function UsersPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Username</TableHead>
-                  <TableHead>Email</TableHead>
-                  <TableHead>Nom</TableHead>
-                  <TableHead>Rôle</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
+                  <TableHead>{t("usersPage.username")}</TableHead>
+                  <TableHead>{t("usersPage.email")}</TableHead>
+                  <TableHead>{t("usersPage.name")}</TableHead>
+                  <TableHead>{t("usersPage.role")}</TableHead>
+                  <TableHead>{t("usersPage.locale")}</TableHead>
+                  <TableHead className="text-right">{t("usersPage.actions")}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -178,20 +201,21 @@ export default function UsersPage() {
                     <TableCell className="font-medium">{u.email}</TableCell>
                     <TableCell>{`${u.first_name ?? ""} ${u.last_name ?? ""}`.trim() || "-"}</TableCell>
                     <TableCell>{u.role}</TableCell>
+                    <TableCell>{LOCALE_LABELS[normalizeLocale(u.locale_code)] ?? u.locale_code}</TableCell>
                     <TableCell className="text-right space-x-2">
                       <Button variant="outline" size="sm" onClick={() => openEdit(u)}>
-                        Edit
+                        {t("usersPage.edit")}
                       </Button>
                       <Button variant="destructive" size="sm" onClick={() => deleteUser(u)}>
-                        Delete
+                        {t("usersPage.delete")}
                       </Button>
                     </TableCell>
                   </TableRow>
                 ))}
                 {users.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="text-sm text-muted-foreground">
-                      Aucun user
+                    <TableCell colSpan={6} className="text-sm text-muted-foreground">
+                      {t("usersPage.none")}
                     </TableCell>
                   </TableRow>
                 ) : null}
@@ -205,23 +229,23 @@ export default function UsersPage() {
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent showCloseButton={false}>
           <DialogHeader>
-            <DialogTitle>Créer un user</DialogTitle>
+            <DialogTitle>{t("usersPage.create")}</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3 py-2">
             <div className="grid gap-2">
-              <Label>Username</Label>
+              <Label>{t("usersPage.username")}</Label>
               <Input value={form.username} onChange={(e) => setForm((s) => ({ ...s, username: e.target.value }))} />
             </div>
             <div className="grid gap-2">
-              <Label>Email</Label>
+              <Label>{t("usersPage.email")}</Label>
               <Input value={form.email} onChange={(e) => setForm((s) => ({ ...s, email: e.target.value }))} />
             </div>
             <div className="grid gap-2">
-              <Label>Mot de passe</Label>
+              <Label>{t("usersPage.password")}</Label>
               <Input type="password" value={form.password} onChange={(e) => setForm((s) => ({ ...s, password: e.target.value }))} />
             </div>
             <div className="grid gap-2">
-              <Label>Rôle</Label>
+              <Label>{t("usersPage.role")}</Label>
               <Input value={form.role} onChange={(e) => setForm((s) => ({ ...s, role: e.target.value }))} />
             </div>
             <div className="grid gap-2">
@@ -232,12 +256,27 @@ export default function UsersPage() {
               <Label>Nom</Label>
               <Input value={form.last_name} onChange={(e) => setForm((s) => ({ ...s, last_name: e.target.value }))} />
             </div>
+            <div className="grid gap-2">
+              <Label>{t("usersPage.locale")}</Label>
+              <Select value={form.locale_code} onValueChange={(v) => setForm((s) => ({ ...s, locale_code: normalizeLocale(v) }))}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder={LOCALE_LABELS[normalizeLocale(form.locale_code)] ?? form.locale_code} />
+                </SelectTrigger>
+                <SelectContent>
+                  {(locales.length ? locales.map((l) => l.code) : Object.keys(LOCALE_LABELS)).map((code) => (
+                    <SelectItem key={code} value={code}>
+                      {LOCALE_LABELS[normalizeLocale(code)] ?? code}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <DialogFooter className="sm:justify-between">
             <Button variant="outline" onClick={() => setCreateOpen(false)}>
-              Annuler
+              {t("usersPage.cancel")}
             </Button>
-            <Button onClick={createUser}>Créer</Button>
+            <Button onClick={createUser}>{t("usersPage.create")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -246,23 +285,23 @@ export default function UsersPage() {
       <Dialog open={editOpen} onOpenChange={(o) => { setEditOpen(o); if (!o) setSelected(null); }}>
         <DialogContent showCloseButton={false}>
           <DialogHeader>
-            <DialogTitle>Modifier user</DialogTitle>
+            <DialogTitle>{t("usersPage.edit")}</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3 py-2">
             <div className="grid gap-2">
-              <Label>Username</Label>
+              <Label>{t("usersPage.username")}</Label>
               <Input value={form.username} onChange={(e) => setForm((s) => ({ ...s, username: e.target.value }))} />
             </div>
             <div className="grid gap-2">
-              <Label>Email</Label>
+              <Label>{t("usersPage.email")}</Label>
               <Input value={form.email} onChange={(e) => setForm((s) => ({ ...s, email: e.target.value }))} />
             </div>
             <div className="grid gap-2">
-              <Label>Nouveau mot de passe (optionnel)</Label>
+              <Label>{t("usersPage.passwordOptional")}</Label>
               <Input type="password" value={form.password} onChange={(e) => setForm((s) => ({ ...s, password: e.target.value }))} />
             </div>
             <div className="grid gap-2">
-              <Label>Rôle</Label>
+              <Label>{t("usersPage.role")}</Label>
               <Input value={form.role} onChange={(e) => setForm((s) => ({ ...s, role: e.target.value }))} />
             </div>
             <div className="grid gap-2">
@@ -273,12 +312,27 @@ export default function UsersPage() {
               <Label>Nom</Label>
               <Input value={form.last_name} onChange={(e) => setForm((s) => ({ ...s, last_name: e.target.value }))} />
             </div>
+            <div className="grid gap-2">
+              <Label>{t("usersPage.locale")}</Label>
+              <Select value={form.locale_code} onValueChange={(v) => setForm((s) => ({ ...s, locale_code: normalizeLocale(v) }))}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder={LOCALE_LABELS[normalizeLocale(form.locale_code)] ?? form.locale_code} />
+                </SelectTrigger>
+                <SelectContent>
+                  {(locales.length ? locales.map((l) => l.code) : Object.keys(LOCALE_LABELS)).map((code) => (
+                    <SelectItem key={code} value={code}>
+                      {LOCALE_LABELS[normalizeLocale(code)] ?? code}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <DialogFooter className="sm:justify-between">
             <Button variant="outline" onClick={() => setEditOpen(false)}>
-              Annuler
+              {t("usersPage.cancel")}
             </Button>
-            <Button onClick={saveUser}>Enregistrer</Button>
+            <Button onClick={saveUser}>{t("usersPage.save")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -44,6 +44,7 @@ pub struct MeResponse {
     pub role: String,
     pub first_name: Option<String>,
     pub last_name: Option<String>,
+    pub locale_code: String,
 }
 
 #[derive(sqlx::FromRow)]
@@ -53,6 +54,7 @@ struct MeRow {
     role: String,
     first_name: Option<String>,
     last_name: Option<String>,
+    locale_code: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,6 +63,7 @@ pub struct UpdateMeRequest {
     pub email: Option<String>,
     pub first_name: Option<String>,
     pub last_name: Option<String>,
+    pub locale_code: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -151,7 +154,7 @@ pub async fn me(
 ) -> impl IntoResponse {
     let row: Option<MeRow> = sqlx::query_as(
         r#"
-        SELECT username, email, role, first_name, last_name
+        SELECT username, email, role, first_name, last_name, locale_code
         FROM users
         WHERE id = $1
         LIMIT 1
@@ -183,6 +186,7 @@ pub async fn me(
         role: r.role,
         first_name: r.first_name,
         last_name: r.last_name,
+        locale_code: r.locale_code,
     })
     .into_response()
 }
@@ -208,6 +212,10 @@ pub async fn update_me(
         .last_name
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+    let locale_code = req
+        .locale_code
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
 
     let res = sqlx::query(
         r#"
@@ -216,6 +224,7 @@ pub async fn update_me(
             email = COALESCE($3, email),
             first_name = COALESCE($4, first_name),
             last_name = COALESCE($5, last_name),
+            locale_code = COALESCE($6, locale_code),
             updated_at = NOW()
         WHERE id = $1
         "#,
@@ -225,6 +234,7 @@ pub async fn update_me(
     .bind(email)
     .bind(first_name)
     .bind(last_name)
+    .bind(locale_code)
     .execute(&state.db)
     .await;
 
@@ -253,6 +263,14 @@ pub async fn update_me(
                 )
                     .into_response();
             }
+            // Foreign key violation for locale_code
+            if code.as_deref() == Some("23503") {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error":"invalid_locale","message":"unknown_locale"})),
+                )
+                    .into_response();
+            }
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error":"db_error","message": e.to_string()})),
@@ -264,7 +282,7 @@ pub async fn update_me(
     // Return refreshed profile
     let row: Option<MeRow> = sqlx::query_as(
         r#"
-        SELECT username, email, role, first_name, last_name
+        SELECT username, email, role, first_name, last_name, locale_code
         FROM users
         WHERE id = $1
         LIMIT 1
@@ -284,6 +302,7 @@ pub async fn update_me(
             role: r.role,
             first_name: r.first_name,
             last_name: r.last_name,
+            locale_code: r.locale_code,
         })
         .into_response(),
         None => {

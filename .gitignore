@@ -13,6 +13,7 @@ venv/
 # Deploy (local-only)
 deploy/.env.*
 deploy/secrets/
+deploy/secrets-dev/
 deploy/certs/
 deploy/known_hosts
 deploy/known_hosts.*

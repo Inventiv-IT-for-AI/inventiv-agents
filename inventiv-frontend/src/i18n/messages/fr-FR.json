@@ -1,0 +1,69 @@
+{
+  "nav": {
+    "dashboard": "Dashboard",
+    "instances": "Instances",
+    "monitoring": "Monitoring",
+    "models": "Modèles",
+    "settings": "Paramètres",
+    "users": "Utilisateurs",
+    "traces": "Traces",
+    "system": "Système",
+    "systemStatus": "Statut système"
+  },
+  "account": {
+    "title": "Compte",
+    "myProfile": "Mon profil",
+    "logout": "Se déconnecter",
+    "close": "Fermer",
+    "profileTitle": "Mon profil",
+    "save": "Enregistrer",
+    "saving": "Enregistrement…",
+    "changePassword": "Changer le mot de passe",
+    "currentPassword": "Actuel",
+    "newPassword": "Nouveau",
+    "confirmPassword": "Confirmer",
+    "updatePassword": "Mettre à jour",
+    "updatingPassword": "Mise à jour…",
+    "passwordUpdated": "Mot de passe mis à jour",
+    "fillAllFields": "Veuillez remplir tous les champs",
+    "confirmMismatch": "La confirmation ne correspond pas",
+    "networkError": "Erreur réseau",
+    "updateError": "Erreur lors de la mise à jour",
+    "sessionExpired": "Session expirée, veuillez vous reconnecter",
+    "conflict": "Username ou email déjà utilisé",
+    "locale": "Langue"
+  },
+  "login": {
+    "title": "Connexion",
+    "loginLabel": "Email ou username",
+    "loginPlaceholder": "admin ou admin@inventiv.local",
+    "passwordLabel": "Mot de passe",
+    "submit": "Se connecter",
+    "submitting": "Connexion…",
+    "invalidCredentials": "Identifiants invalides",
+    "networkError": "Erreur réseau",
+    "language": "Langue"
+  },
+  "usersPage": {
+    "title": "Utilisateurs",
+    "subtitle": "Créer / modifier / supprimer des utilisateurs (admin).",
+    "refresh": "Rafraîchir",
+    "create": "Créer un utilisateur",
+    "listTitle": "Liste",
+    "username": "Username",
+    "email": "Email",
+    "name": "Nom",
+    "role": "Rôle",
+    "locale": "Langue",
+    "actions": "Actions",
+    "edit": "Modifier",
+    "delete": "Supprimer",
+    "none": "Aucun utilisateur",
+    "cancel": "Annuler",
+    "save": "Enregistrer",
+    "password": "Mot de passe",
+    "passwordOptional": "Nouveau mot de passe (optionnel)"
+  }
+}
+
+

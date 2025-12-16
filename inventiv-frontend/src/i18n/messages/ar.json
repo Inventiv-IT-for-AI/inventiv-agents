@@ -1,0 +1,69 @@
+{
+  "nav": {
+    "dashboard": "لوحة التحكم",
+    "instances": "المثيلات",
+    "monitoring": "المراقبة",
+    "models": "النماذج",
+    "settings": "الإعدادات",
+    "users": "المستخدمون",
+    "traces": "السجلات",
+    "system": "النظام",
+    "systemStatus": "حالة النظام"
+  },
+  "account": {
+    "title": "الحساب",
+    "myProfile": "ملفي",
+    "logout": "تسجيل الخروج",
+    "close": "إغلاق",
+    "profileTitle": "ملفي",
+    "save": "حفظ",
+    "saving": "جارٍ الحفظ…",
+    "changePassword": "تغيير كلمة المرور",
+    "currentPassword": "الحالية",
+    "newPassword": "الجديدة",
+    "confirmPassword": "تأكيد",
+    "updatePassword": "تحديث",
+    "updatingPassword": "جارٍ التحديث…",
+    "passwordUpdated": "تم تحديث كلمة المرور",
+    "fillAllFields": "يرجى ملء جميع الحقول",
+    "confirmMismatch": "التأكيد غير مطابق",
+    "networkError": "خطأ في الشبكة",
+    "updateError": "فشل التحديث",
+    "sessionExpired": "انتهت الجلسة، يرجى تسجيل الدخول من جديد",
+    "conflict": "اسم المستخدم أو البريد مستخدم بالفعل",
+    "locale": "اللغة"
+  },
+  "login": {
+    "title": "تسجيل الدخول",
+    "loginLabel": "البريد أو اسم المستخدم",
+    "loginPlaceholder": "admin أو admin@inventiv.local",
+    "passwordLabel": "كلمة المرور",
+    "submit": "تسجيل الدخول",
+    "submitting": "جارٍ تسجيل الدخول…",
+    "invalidCredentials": "بيانات الدخول غير صحيحة",
+    "networkError": "خطأ في الشبكة",
+    "language": "اللغة"
+  },
+  "usersPage": {
+    "title": "المستخدمون",
+    "subtitle": "إنشاء/تعديل/حذف المستخدمين (مدير).",
+    "refresh": "تحديث",
+    "create": "إنشاء مستخدم",
+    "listTitle": "القائمة",
+    "username": "اسم المستخدم",
+    "email": "البريد",
+    "name": "الاسم",
+    "role": "الدور",
+    "locale": "اللغة",
+    "actions": "إجراءات",
+    "edit": "تعديل",
+    "delete": "حذف",
+    "none": "لا يوجد مستخدمون",
+    "cancel": "إلغاء",
+    "save": "حفظ",
+    "password": "كلمة المرور",
+    "passwordOptional": "كلمة مرور جديدة (اختياري)"
+  }
+}
+
+
