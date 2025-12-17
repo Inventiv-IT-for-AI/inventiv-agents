@@ -551,6 +551,9 @@ async fn worker_heartbeat(
         payload.instance_id, status, payload.model_id, payload.gpu_utilization
     );
 
+    // We'll need metadata both for persistence on the instance row and for time-series sampling.
+    let meta_clone = payload.metadata.clone();
+
     let res = sqlx::query(
         r#"
         UPDATE instances
@@ -568,9 +571,63 @@ async fn worker_heartbeat(
     .bind(payload.model_id)
     .bind(payload.queue_depth)
     .bind(payload.gpu_utilization)
-    .bind(payload.metadata)
+    .bind(meta_clone.clone())
     .execute(&state.db)
     .await;
+
+    // Insert time series GPU samples (nvtop-like dashboard).
+    // Prefer per-GPU list in metadata.gpus, fallback to aggregate fields.
+    // Best-effort only: do not fail heartbeat on metrics insert.
+    if let Some(meta) = meta_clone.as_ref() {
+        if let Some(gpus) = meta.get("gpus").and_then(|v| v.as_array()) {
+            for g in gpus {
+                let idx = g.get("index").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                let util = g.get("gpu_utilization").and_then(|v| v.as_f64());
+                let used = g.get("gpu_mem_used_mb").and_then(|v| v.as_f64());
+                let total = g.get("gpu_mem_total_mb").and_then(|v| v.as_f64());
+                let _ = sqlx::query(
+                    r#"
+                    INSERT INTO gpu_samples (instance_id, gpu_index, gpu_utilization, vram_used_mb, vram_total_mb)
+                    VALUES ($1, $2, $3, $4, $5)
+                    "#,
+                )
+                .bind(payload.instance_id)
+                .bind(idx)
+                .bind(util)
+                .bind(used)
+                .bind(total)
+                .execute(&state.db)
+                .await;
+            }
+        } else {
+            // Fallback aggregate
+            let total = meta.get("gpu_mem_total_mb").and_then(|v| v.as_f64());
+            let _ = sqlx::query(
+                r#"
+                INSERT INTO gpu_samples (instance_id, gpu_index, gpu_utilization, vram_used_mb, vram_total_mb)
+                VALUES ($1, 0, $2, $3, $4)
+                "#,
+            )
+            .bind(payload.instance_id)
+            .bind(payload.gpu_utilization)
+            .bind(payload.gpu_mem_used_mb)
+            .bind(total)
+            .execute(&state.db)
+            .await;
+        }
+    } else {
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO gpu_samples (instance_id, gpu_index, gpu_utilization, vram_used_mb, vram_total_mb)
+            VALUES ($1, 0, $2, $3, NULL)
+            "#,
+        )
+        .bind(payload.instance_id)
+        .bind(payload.gpu_utilization)
+        .bind(payload.gpu_mem_used_mb)
+        .execute(&state.db)
+        .await;
+    }
 
     match res {
         Ok(r) if r.rows_affected() > 0 => {

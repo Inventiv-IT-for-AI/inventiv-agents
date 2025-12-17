@@ -147,6 +147,31 @@ export type RuntimeModel = {
     failed_requests: number;
 };
 
+export type GpuActivitySample = {
+    ts: string;
+    gpu_pct: number | null;
+    vram_pct: number | null;
+};
+
+export type GpuActivityGpuSeries = {
+    gpu_index: number;
+    samples: GpuActivitySample[];
+};
+
+export type GpuActivityInstanceSeries = {
+    instance_id: string;
+    instance_name: string | null;
+    provider_name: string | null;
+    gpu_count: number | null;
+    gpus: GpuActivityGpuSeries[];
+};
+
+export type GpuActivityResponse = {
+    window_s: number;
+    generated_at: string;
+    instances: GpuActivityInstanceSeries[];
+};
+
 export type ActionLog = {
     id: string;
     action_type: string;

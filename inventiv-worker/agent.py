@@ -22,7 +22,7 @@ VLLM_READY_URL = f"{VLLM_BASE_URL}/v1/models"
 
 WORKER_HEALTH_PORT = int(os.getenv("WORKER_HEALTH_PORT", "8080"))
 WORKER_VLLM_PORT = int(os.getenv("WORKER_VLLM_PORT", "8000"))
-HEARTBEAT_INTERVAL_S = float(os.getenv("WORKER_HEARTBEAT_INTERVAL_S", "10"))
+HEARTBEAT_INTERVAL_S = float(os.getenv("WORKER_HEARTBEAT_INTERVAL_S", "4"))
 
 
 def _auth_headers():
@@ -95,25 +95,41 @@ def _try_nvidia_smi():
         out = subprocess.check_output(
             [
                 "nvidia-smi",
-                "--query-gpu=utilization.gpu,memory.used,memory.total",
+                "--query-gpu=index,utilization.gpu,memory.used,memory.total",
                 "--format=csv,noheader,nounits",
             ],
             stderr=subprocess.DEVNULL,
             timeout=1,
             text=True,
         )
-        # Take the first GPU metrics (good enough for MVP)
-        first = (out.strip().splitlines() or [""])[0]
-        parts = [p.strip() for p in first.split(",")]
-        if len(parts) != 3:
+        gpus = []
+        for line in out.strip().splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) != 4:
+                continue
+            idx = int(parts[0])
+            util = float(parts[1])
+            mem_used = float(parts[2])
+            mem_total = float(parts[3])
+            gpus.append(
+                {
+                    "index": idx,
+                    "gpu_utilization": util,
+                    "gpu_mem_used_mb": mem_used,
+                    "gpu_mem_total_mb": mem_total,
+                }
+            )
+        if not gpus:
             return {}
-        util = float(parts[0])
-        mem_used = float(parts[1])
-        mem_total = float(parts[2])
+        # Aggregate for backward compatibility fields
+        avg_util = sum(x["gpu_utilization"] for x in gpus) / float(len(gpus))
+        total_used = sum(x["gpu_mem_used_mb"] for x in gpus)
+        total_total = sum(x["gpu_mem_total_mb"] for x in gpus)
         return {
-            "gpu_utilization": util,
-            "gpu_mem_used_mb": mem_used,
-            "gpu_mem_total_mb": mem_total,
+            "gpu_utilization": avg_util,
+            "gpu_mem_used_mb": total_used,
+            "gpu_mem_total_mb": total_total,
+            "gpus": gpus,
         }
     except Exception:
         return {}

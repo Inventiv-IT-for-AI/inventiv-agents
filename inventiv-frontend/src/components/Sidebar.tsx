@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LayoutDashboard, Settings, Activity, Archive, BarChart3, Server, Users, Terminal, KeyRound } from "lucide-react";
+import { LayoutDashboard, Settings, Activity, Archive, BarChart3, Server, Users, Terminal, KeyRound, Cpu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -212,6 +212,7 @@ export function Sidebar() {
                         <SidebarLink href="/" icon={LayoutDashboard} label="Dashboard" />
                         <SidebarLink href="/instances" icon={Server} label="Instances" />
                         <SidebarLink href="/models" icon={Activity} label="Models" />
+                        <SidebarLink href="/gpu-activity" icon={Cpu} label="GPU Activity" />
                         <SidebarLink href="/workbench" icon={Terminal} label="Workbench" />
                         <SidebarLink href="/monitoring" icon={BarChart3} label="Monitoring" />
                         <SidebarLink href="/api-keys" icon={KeyRound} label="API Keys" />

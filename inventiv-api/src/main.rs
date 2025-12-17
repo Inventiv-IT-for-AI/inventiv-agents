@@ -128,12 +128,15 @@ async fn main() {
             "/api_keys",
             get(api_keys::list_api_keys).post(api_keys::create_api_key),
         )
+        .route("/api_keys/search", get(api_keys::search_api_keys))
         .route(
             "/api_keys/:id",
             axum::routing::put(api_keys::update_api_key).delete(api_keys::revoke_api_key),
         )
         // Runtime models (models in service + historical + counters)
         .route("/runtime/models", get(list_runtime_models))
+        // GPU activity (nvtop-like)
+        .route("/gpu/activity", get(list_gpu_activity))
         .route("/deployments", post(create_deployment))
         // Realtime (SSE)
         .route("/events/stream", get(events_stream))
@@ -145,6 +148,7 @@ async fn main() {
         )
         // Instances
         .route("/instances", get(list_instances))
+        .route("/instances/search", get(search_instances))
         .route(
             "/instances/:id/archive",
             axum::routing::put(archive_instance),
@@ -263,6 +267,7 @@ async fn main() {
             "/users",
             get(users_endpoint::list_users).post(users_endpoint::create_user),
         )
+        .route("/users/search", get(users_endpoint::search_users))
         .route(
             "/users/:id",
             get(users_endpoint::get_user)
@@ -417,6 +422,150 @@ async fn list_runtime_models(State(state): State<Arc<AppState>>) -> Json<Vec<Run
     .unwrap_or_default();
 
     Json(rows)
+}
+
+#[derive(Deserialize, IntoParams)]
+struct GpuActivityParams {
+    /// How far back to query (seconds). Default 300.
+    window_s: Option<i64>,
+}
+
+#[derive(Serialize, sqlx::FromRow)]
+struct GpuSampleRow {
+    time: chrono::DateTime<chrono::Utc>,
+    instance_id: uuid::Uuid,
+    gpu_index: i32,
+    gpu_utilization: Option<f64>,
+    vram_used_mb: Option<f64>,
+    vram_total_mb: Option<f64>,
+    instance_name: Option<String>,
+    provider_name: Option<String>,
+    gpu_count: Option<i32>,
+}
+
+#[derive(Serialize)]
+struct GpuActivitySample {
+    ts: String,
+    gpu_pct: Option<f64>,
+    vram_pct: Option<f64>,
+}
+
+#[derive(Serialize)]
+struct GpuActivityGpuSeries {
+    gpu_index: i32,
+    samples: Vec<GpuActivitySample>,
+}
+
+#[derive(Serialize)]
+struct GpuActivityInstanceSeries {
+    instance_id: uuid::Uuid,
+    instance_name: Option<String>,
+    provider_name: Option<String>,
+    gpu_count: Option<i32>,
+    gpus: Vec<GpuActivityGpuSeries>,
+}
+
+#[derive(Serialize)]
+struct GpuActivityResponse {
+    window_s: i64,
+    generated_at: String,
+    instances: Vec<GpuActivityInstanceSeries>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/gpu/activity",
+    params(GpuActivityParams),
+    responses((status = 200, description = "GPU activity (per-GPU time series)", body = GpuActivityResponse))
+)]
+async fn list_gpu_activity(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<GpuActivityParams>,
+) -> impl IntoResponse {
+    let window_s = params.window_s.unwrap_or(300).clamp(30, 3600);
+
+    let rows: Vec<GpuSampleRow> = sqlx::query_as::<Postgres, GpuSampleRow>(
+        r#"
+        SELECT
+          gs.time,
+          gs.instance_id,
+          gs.gpu_index,
+          gs.gpu_utilization,
+          gs.vram_used_mb,
+          gs.vram_total_mb,
+          i.provider_instance_id::text as instance_name,
+          p.name as provider_name,
+          i.gpu_count as gpu_count
+        FROM gpu_samples gs
+        JOIN instances i ON i.id = gs.instance_id
+        LEFT JOIN providers p ON p.id = i.provider_id
+        WHERE gs.time > NOW() - make_interval(secs => $1)
+        ORDER BY gs.instance_id, gs.gpu_index, gs.time ASC
+        "#,
+    )
+    .bind(window_s)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    use std::collections::BTreeMap;
+    let mut map: BTreeMap<
+        uuid::Uuid,
+        (
+            Option<String>,
+            Option<String>,
+            Option<i32>,
+            BTreeMap<i32, Vec<GpuActivitySample>>,
+        ),
+    > = BTreeMap::new();
+
+    for r in rows {
+        let vram_pct = match (r.vram_used_mb, r.vram_total_mb) {
+            (Some(u), Some(t)) if t > 0.0 => Some((u / t) * 100.0),
+            _ => None,
+        };
+        let sample = GpuActivitySample {
+            ts: r.time.to_rfc3339(),
+            gpu_pct: r.gpu_utilization,
+            vram_pct,
+        };
+        let entry = map.entry(r.instance_id).or_insert((
+            r.instance_name.clone(),
+            r.provider_name.clone(),
+            r.gpu_count,
+            BTreeMap::new(),
+        ));
+        entry.3.entry(r.gpu_index).or_default().push(sample);
+    }
+
+    let instances = map
+        .into_iter()
+        .map(
+            |(instance_id, (instance_name, provider_name, gpu_count, gmap))| {
+                let gpus = gmap
+                    .into_iter()
+                    .map(|(gpu_index, samples)| GpuActivityGpuSeries { gpu_index, samples })
+                    .collect();
+                GpuActivityInstanceSeries {
+                    instance_id,
+                    instance_name,
+                    provider_name,
+                    gpu_count,
+                    gpus,
+                }
+            },
+        )
+        .collect();
+
+    (
+        StatusCode::OK,
+        Json(GpuActivityResponse {
+            window_s,
+            generated_at: chrono::Utc::now().to_rfc3339(),
+            instances,
+        }),
+    )
+        .into_response()
 }
 
 async fn bump_runtime_model_counters(db: &Pool<Postgres>, model_id: &str, ok: bool) {
@@ -1108,6 +1257,26 @@ pub struct ListInstanceParams {
     pub archived: Option<bool>,
 }
 
+#[derive(Deserialize, IntoParams, utoipa::ToSchema)]
+pub struct SearchInstancesParams {
+    pub archived: Option<bool>,
+    pub offset: Option<i64>,
+    pub limit: Option<i64>,
+    /// Sort field allowlist: created_at|status|provider|region|zone|type|cost_per_hour|total_cost
+    pub sort_by: Option<String>,
+    /// "asc" | "desc"
+    pub sort_dir: Option<String>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct SearchInstancesResponse {
+    pub offset: i64,
+    pub limit: i64,
+    pub total_count: i64,
+    pub filtered_count: i64,
+    pub rows: Vec<InstanceResponse>,
+}
+
 async fn root() -> &'static str {
     "Inventiv Backend API (Product Plane) - CQRS Enabled"
 }
@@ -1136,6 +1305,10 @@ struct DeploymentResponse {
 #[derive(Deserialize, IntoParams, utoipa::ToSchema)]
 pub struct ListModelsParams {
     pub active: Option<bool>,
+    /// Optional sort field (allowlist).
+    pub order_by: Option<String>,
+    /// "asc" | "desc"
+    pub order_dir: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
@@ -1172,26 +1345,43 @@ async fn list_models(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<ListModelsParams>,
 ) -> impl IntoResponse {
-    let rows: Vec<LlmModel> = if params.active == Some(true) {
-        sqlx::query_as(
-            r#"SELECT id, name, model_id, required_vram_gb, context_length, is_active, data_volume_gb, metadata, created_at, updated_at
-               FROM models
-               WHERE is_active = true
-               ORDER BY name"#,
-        )
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default()
-    } else {
-        sqlx::query_as(
-            r#"SELECT id, name, model_id, required_vram_gb, context_length, is_active, data_volume_gb, metadata, created_at, updated_at
-               FROM models
-               ORDER BY name"#,
-        )
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default()
+    let dir = match params
+        .order_dir
+        .as_deref()
+        .unwrap_or("asc")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "desc" => "DESC",
+        _ => "ASC",
     };
+    let order_by = match params.order_by.as_deref() {
+        Some("model_id") => "model_id",
+        Some("required_vram_gb") => "required_vram_gb",
+        Some("context_length") => "context_length",
+        Some("data_volume_gb") => "data_volume_gb",
+        Some("is_active") => "is_active",
+        Some("created_at") => "created_at",
+        Some("updated_at") => "updated_at",
+        _ => "name",
+    };
+
+    let base = r#"SELECT id, name, model_id, required_vram_gb, context_length, is_active, data_volume_gb, metadata, created_at, updated_at
+                 FROM models"#;
+    let where_clause = if params.active == Some(true) {
+        " WHERE is_active = true"
+    } else {
+        ""
+    };
+    let sql = format!(
+        r#"{base}{where_clause}
+           ORDER BY {order_by} {dir}, id {dir}"#
+    );
+
+    let rows: Vec<LlmModel> = sqlx::query_as(&sql)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default();
     (StatusCode::OK, Json(rows)).into_response()
 }
 
@@ -2118,6 +2308,110 @@ async fn list_instances(
     .unwrap_or(vec![]);
 
     Json(instances)
+}
+
+#[utoipa::path(
+    get,
+    path = "/instances/search",
+    params(SearchInstancesParams),
+    responses((status = 200, description = "Paged search instances (virtualized UI)", body = SearchInstancesResponse))
+)]
+async fn search_instances(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<SearchInstancesParams>,
+) -> Json<SearchInstancesResponse> {
+    let show_archived = params.archived.unwrap_or(false);
+    let offset = params.offset.unwrap_or(0).max(0);
+    let limit = params.limit.unwrap_or(200).clamp(1, 500);
+    let dir = match params
+        .sort_dir
+        .as_deref()
+        .unwrap_or("desc")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "asc" => "ASC",
+        _ => "DESC",
+    };
+
+    let total_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM instances")
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0);
+    let filtered_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM instances WHERE is_archived = $1")
+            .bind(show_archived)
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or(0);
+
+    let total_cost_expr = "(EXTRACT(EPOCH FROM (COALESCE(i.terminated_at, NOW()) - i.created_at)) / 3600.0) * cast(it.cost_per_hour as float8)";
+    let order_by = match params.sort_by.as_deref() {
+        Some("status") => "i.status",
+        Some("provider") => "p.name",
+        Some("region") => "r.name",
+        Some("zone") => "z.name",
+        Some("type") => "it.name",
+        Some("cost_per_hour") => "it.cost_per_hour",
+        Some("total_cost") => total_cost_expr,
+        _ => "i.created_at",
+    };
+
+    let sql = format!(
+        r#"
+        SELECT 
+            i.id, i.provider_id, i.zone_id, i.instance_type_id,
+            i.model_id,
+            m.name as model_name,
+            m.model_id as model_code,
+            i.provider_instance_id::text as provider_instance_id,
+            i.status::text as status, 
+            i.ip_address::text as ip_address, 
+            i.created_at,
+            i.terminated_at,
+            i.last_health_check,
+            (i.last_reconciliation AT TIME ZONE 'UTC') as last_reconciliation,
+            i.health_check_failures,
+            i.deletion_reason,
+            i.error_code,
+            i.error_message,
+            i.is_archived,
+            i.deleted_by_provider,
+            COALESCE(p.name, 'Unknown Provider') as provider_name,
+            COALESCE(z.name, 'Unknown Zone') as zone,
+            COALESCE(r.name, 'Unknown Region') as region,
+            COALESCE(it.name, 'Unknown Type') as instance_type,
+            it.vram_per_gpu_gb as gpu_vram,
+            it.gpu_count as gpu_count,
+            cast(it.cost_per_hour as float8) as cost_per_hour,
+            {total_cost_expr} as total_cost
+        FROM instances i
+        LEFT JOIN providers p ON i.provider_id = p.id
+        LEFT JOIN zones z ON i.zone_id = z.id
+        LEFT JOIN regions r ON z.region_id = r.id
+        LEFT JOIN instance_types it ON i.instance_type_id = it.id
+        LEFT JOIN models m ON m.id = i.model_id
+        WHERE i.is_archived = $1
+        ORDER BY {order_by} {dir} NULLS LAST, i.id {dir}
+        LIMIT $2 OFFSET $3
+        "#
+    );
+
+    let rows: Vec<InstanceResponse> = sqlx::query_as::<Postgres, InstanceResponse>(&sql)
+        .bind(show_archived)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default();
+
+    Json(SearchInstancesResponse {
+        offset,
+        limit,
+        total_count,
+        filtered_count,
+        rows,
+    })
 }
 
 #[utoipa::path(
