@@ -1583,7 +1583,9 @@ pub async fn process_provisioning(
                         .await
                         .ok();
                         let attach_start = Instant::now();
-                        let attach_res = provider.attach_volume(&zone, &server_id, &vol_id).await;
+                        let attach_res = provider
+                            .attach_volume(&zone, &server_id, &vol_id, delete_on_terminate)
+                            .await;
                         if let Some(lid) = attach_log {
                             let dur = attach_start.elapsed().as_millis() as i32;
                             match &attach_res {
