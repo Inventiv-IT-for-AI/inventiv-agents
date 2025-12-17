@@ -12,6 +12,7 @@ import { useCatalog } from "@/hooks/useCatalog";
 import { StatsCard } from "@/components/shared/StatsCard";
 import { CreateInstanceModal } from "@/components/instances/CreateInstanceModal";
 import { TerminateInstanceModal } from "@/components/instances/TerminateInstanceModal";
+import { ReinstallInstanceModal } from "@/components/instances/ReinstallInstanceModal";
 import { Server, Activity, AlertCircle, RefreshCcw as RefreshIcon } from "lucide-react";
 import { InstanceTable } from "@/components/instances/InstanceTable";
 import { InstanceDetailsModal } from "@/components/instances/InstanceDetailsModal";
@@ -24,6 +25,8 @@ export default function InstancesPage() {
     const [isCreateOpen, setIsCreateOpen] = useState(false);
     const [isTerminateOpen, setIsTerminateOpen] = useState(false);
     const [instanceToTerminate, setInstanceToTerminate] = useState<string | null>(null);
+    const [isReinstallOpen, setIsReinstallOpen] = useState(false);
+    const [instanceToReinstall, setInstanceToReinstall] = useState<string | null>(null);
     const [isDetailsOpen, setIsDetailsOpen] = useState(false);
     const [selectedInstance, setSelectedInstance] = useState<Instance | null>(null);
 
@@ -49,6 +52,11 @@ export default function InstancesPage() {
     const openTerminateModal = (id: string) => {
         setInstanceToTerminate(id);
         setIsTerminateOpen(true);
+    };
+
+    const openReinstallModal = (id: string) => {
+        setInstanceToReinstall(id);
+        setIsReinstallOpen(true);
     };
 
     const openDetailsModal = (instance: Instance) => {
@@ -122,6 +130,7 @@ export default function InstancesPage() {
                         instances={instances}
                         onViewDetails={openDetailsModal}
                         onTerminate={openTerminateModal}
+                        onReinstall={openReinstallModal}
                         onArchive={handleArchive}
                     />
                 </CardContent>
@@ -145,6 +154,17 @@ export default function InstancesPage() {
                     setInstanceToTerminate(null);
                 }}
                 instanceId={instanceToTerminate}
+                onSuccess={refreshInstances}
+            />
+
+            {/* Reinstall Instance Modal */}
+            <ReinstallInstanceModal
+                open={isReinstallOpen}
+                onClose={() => {
+                    setIsReinstallOpen(false);
+                    setInstanceToReinstall(null);
+                }}
+                instanceId={instanceToReinstall}
                 onSuccess={refreshInstances}
             />
 

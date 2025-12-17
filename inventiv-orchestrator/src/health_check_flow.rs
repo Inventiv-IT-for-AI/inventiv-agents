@@ -1,20 +1,26 @@
 use std::net::TcpStream;
-use std::time::Duration as StdDuration;
 use std::process::Stdio;
+use std::time::Duration as StdDuration;
 
 use sqlx::{Pool, Postgres};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
-use crate::state_machine;
 use crate::logger;
+use crate::state_machine;
 
 fn tail_str(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         return s.to_string();
     }
     // Keep last max_chars characters (best effort for UTF-8).
-    s.chars().rev().take(max_chars).collect::<String>().chars().rev().collect()
+    s.chars()
+        .rev()
+        .take(max_chars)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect()
 }
 
 fn extract_phases(stdout: &str) -> Vec<String> {
@@ -102,7 +108,10 @@ async fn check_instance_readyz_http(ip: &str, port: u16) -> bool {
     }
 }
 
-pub(crate) async fn check_vllm_http_models(ip: &str, port: u16) -> (bool, Vec<String>, i32, Option<String>) {
+pub(crate) async fn check_vllm_http_models(
+    ip: &str,
+    port: u16,
+) -> (bool, Vec<String>, i32, Option<String>) {
     let clean_ip = ip.split('/').next().unwrap_or(ip);
     let url = format!("http://{}:{}/v1/models", clean_ip, port);
     let start = std::time::Instant::now();
@@ -111,7 +120,12 @@ pub(crate) async fn check_vllm_http_models(ip: &str, port: u16) -> (bool, Vec<St
         .timeout(StdDuration::from_secs(4))
         .build();
     let Ok(client) = client else {
-        return (false, Vec::new(), 0, Some("client_build_failed".to_string()));
+        return (
+            false,
+            Vec::new(),
+            0,
+            Some("client_build_failed".to_string()),
+        );
     };
     let resp = match client.get(&url).send().await {
         Ok(r) => r,
@@ -122,7 +136,12 @@ pub(crate) async fn check_vllm_http_models(ip: &str, port: u16) -> (bool, Vec<St
     };
     let ms = start.elapsed().as_millis().min(i32::MAX as u128) as i32;
     if !resp.status().is_success() {
-        return (false, Vec::new(), ms, Some(format!("status={}", resp.status())));
+        return (
+            false,
+            Vec::new(),
+            ms,
+            Some(format!("status={}", resp.status())),
+        );
     }
     let v: serde_json::Value = match resp.json().await {
         Ok(v) => v,
@@ -139,7 +158,11 @@ pub(crate) async fn check_vllm_http_models(ip: &str, port: u16) -> (bool, Vec<St
     (true, ids, ms, None)
 }
 
-async fn check_vllm_warmup_http(ip: &str, port: u16, model_id: &str) -> (bool, i32, Option<String>) {
+async fn check_vllm_warmup_http(
+    ip: &str,
+    port: u16,
+    model_id: &str,
+) -> (bool, i32, Option<String>) {
     let clean_ip = ip.split('/').next().unwrap_or(ip);
     let url = format!("http://{}:{}/v1/chat/completions", clean_ip, port);
     let start = std::time::Instant::now();
@@ -192,7 +215,11 @@ async fn check_instance_ssh(ip: &str) -> bool {
     .unwrap_or(false)
 }
 
-async fn provider_setting_i64(db: &Pool<Postgres>, provider_id: uuid::Uuid, key: &str) -> Option<i64> {
+async fn provider_setting_i64(
+    db: &Pool<Postgres>,
+    provider_id: uuid::Uuid,
+    key: &str,
+) -> Option<i64> {
     sqlx::query_scalar(
         r#"
         SELECT value_int
@@ -208,7 +235,11 @@ async fn provider_setting_i64(db: &Pool<Postgres>, provider_id: uuid::Uuid, key:
     .flatten()
 }
 
-async fn provider_setting_bool(db: &Pool<Postgres>, provider_id: uuid::Uuid, key: &str) -> Option<bool> {
+async fn provider_setting_bool(
+    db: &Pool<Postgres>,
+    provider_id: uuid::Uuid,
+    key: &str,
+) -> Option<bool> {
     sqlx::query_scalar(
         r#"
         SELECT value_bool
@@ -224,7 +255,11 @@ async fn provider_setting_bool(db: &Pool<Postgres>, provider_id: uuid::Uuid, key
     .flatten()
 }
 
-async fn provider_setting_text(db: &Pool<Postgres>, provider_id: uuid::Uuid, key: &str) -> Option<String> {
+async fn provider_setting_text(
+    db: &Pool<Postgres>,
+    provider_id: uuid::Uuid,
+    key: &str,
+) -> Option<String> {
     sqlx::query_scalar(
         r#"
         SELECT value_text
@@ -240,7 +275,11 @@ async fn provider_setting_text(db: &Pool<Postgres>, provider_id: uuid::Uuid, key
     .flatten()
     .and_then(|s: String| {
         let t = s.trim().to_string();
-        if t.is_empty() { None } else { Some(t) }
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
     })
 }
 
@@ -249,12 +288,23 @@ fn sh_escape_single(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\"'\"'"))
 }
 
-async fn maybe_trigger_worker_install_over_ssh(db: &Pool<Postgres>, instance_id: uuid::Uuid, ip: &str) {
+async fn maybe_trigger_worker_install_over_ssh(
+    db: &Pool<Postgres>,
+    instance_id: uuid::Uuid,
+    ip: &str,
+    force: bool,
+    correlation_id: Option<String>,
+) {
     let auto_install = std::env::var("WORKER_AUTO_INSTALL")
         .ok()
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false);
-    if !auto_install {
+    if !auto_install && !force {
         return;
     }
 
@@ -267,12 +317,13 @@ async fn maybe_trigger_worker_install_over_ssh(db: &Pool<Postgres>, instance_id:
     let worker_auth_token = std::env::var("WORKER_AUTH_TOKEN").unwrap_or_default();
     let worker_hf_token = worker_hf_token();
 
-    let provider_id: Option<uuid::Uuid> = sqlx::query_scalar("SELECT provider_id FROM instances WHERE id = $1")
-        .bind(instance_id)
-        .fetch_optional(db)
-        .await
-        .ok()
-        .flatten();
+    let provider_id: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT provider_id FROM instances WHERE id = $1")
+            .bind(instance_id)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
 
     let model_id_from_db: Option<String> = sqlx::query_scalar(
         r#"
@@ -289,7 +340,11 @@ async fn maybe_trigger_worker_install_over_ssh(db: &Pool<Postgres>, instance_id:
     .flatten()
     .and_then(|s: String| {
         let t = s.trim().to_string();
-        if t.is_empty() { None } else { Some(t) }
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
     });
 
     let model_id = model_id_from_db
@@ -302,7 +357,11 @@ async fn maybe_trigger_worker_install_over_ssh(db: &Pool<Postgres>, instance_id:
     let vllm_image = if let Some(pid) = provider_id {
         provider_setting_text(db, pid, "WORKER_VLLM_IMAGE")
             .await
-            .or_else(|| std::env::var("WORKER_VLLM_IMAGE").ok().filter(|s| !s.trim().is_empty()))
+            .or_else(|| {
+                std::env::var("WORKER_VLLM_IMAGE")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            })
             .unwrap_or_else(|| "vllm/vllm-openai:latest".to_string())
     } else {
         std::env::var("WORKER_VLLM_IMAGE")
@@ -313,7 +372,11 @@ async fn maybe_trigger_worker_install_over_ssh(db: &Pool<Postgres>, instance_id:
     let vllm_mode = if let Some(pid) = provider_id {
         provider_setting_text(db, pid, "WORKER_VLLM_MODE")
             .await
-            .or_else(|| std::env::var("WORKER_VLLM_MODE").ok().filter(|s| !s.trim().is_empty()))
+            .or_else(|| {
+                std::env::var("WORKER_VLLM_MODE")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            })
             .map(|s| s.trim().to_ascii_lowercase())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "mono".to_string())
@@ -333,7 +396,11 @@ async fn maybe_trigger_worker_install_over_ssh(db: &Pool<Postgres>, instance_id:
         provider_setting_i64(db, pid, "WORKER_HEALTH_PORT")
             .await
             .and_then(|v| u16::try_from(v).ok())
-            .or_else(|| std::env::var("WORKER_HEALTH_PORT").ok().and_then(|s| s.parse::<u16>().ok()))
+            .or_else(|| {
+                std::env::var("WORKER_HEALTH_PORT")
+                    .ok()
+                    .and_then(|s| s.parse::<u16>().ok())
+            })
             .unwrap_or(8080)
     } else {
         std::env::var("WORKER_HEALTH_PORT")
@@ -345,7 +412,11 @@ async fn maybe_trigger_worker_install_over_ssh(db: &Pool<Postgres>, instance_id:
         provider_setting_i64(db, pid, "WORKER_VLLM_PORT")
             .await
             .and_then(|v| u16::try_from(v).ok())
-            .or_else(|| std::env::var("WORKER_VLLM_PORT").ok().and_then(|s| s.parse::<u16>().ok()))
+            .or_else(|| {
+                std::env::var("WORKER_VLLM_PORT")
+                    .ok()
+                    .and_then(|s| s.parse::<u16>().ok())
+            })
             .unwrap_or(8000)
     } else {
         std::env::var("WORKER_VLLM_PORT")
@@ -407,15 +478,23 @@ async fn maybe_trigger_worker_install_over_ssh(db: &Pool<Postgres>, instance_id:
             return;
         }
 
-        // If we just completed a successful install, wait longer (model load can take a while).
-        // This avoids repeatedly restarting vLLM/agent and never reaching READY.
-        if status == "success" && last_phase == "done" && age_s < 30 * 60 {
-            return;
-        }
+        // If forced, allow immediate re-run even after a success/failure (manual operator action).
+        if force {
+            // But if the last one was very recent, still apply a small guard to avoid accidental double-click loops.
+            if age_s < 15 {
+                return;
+            }
+        } else {
+            // If we just completed a successful install, wait longer (model load can take a while).
+            // This avoids repeatedly restarting vLLM/agent and never reaching READY.
+            if status == "success" && last_phase == "done" && age_s < 30 * 60 {
+                return;
+            }
 
-        // If it failed recently, apply a short backoff before retrying.
-        if status == "failed" && age_s < 5 * 60 {
-            return;
+            // If it failed recently, apply a short backoff before retrying.
+            if status == "failed" && age_s < 5 * 60 {
+                return;
+            }
         }
     }
 
@@ -430,7 +509,9 @@ async fn maybe_trigger_worker_install_over_ssh(db: &Pool<Postgres>, instance_id:
         "agent_url": agent_url,
         "worker_health_port": worker_health_port,
         "worker_vllm_port": worker_vllm_port,
-        "has_hf_token": !worker_hf_token.trim().is_empty()
+        "has_hf_token": !worker_hf_token.trim().is_empty(),
+        "force": force,
+        "correlation_id": correlation_id
     });
 
     let log_id = logger::log_event_with_metadata(
@@ -734,7 +815,14 @@ echo "[inventiv-worker] ssh bootstrap done"
         Err(e) => {
             if let Some(lid) = log_id {
                 let dur = started.elapsed().as_millis() as i32;
-                let _ = logger::log_event_complete(db, lid, "failed", dur, Some(&format!("ssh spawn failed: {}", e))).await;
+                let _ = logger::log_event_complete(
+                    db,
+                    lid,
+                    "failed",
+                    dur,
+                    Some(&format!("ssh spawn failed: {}", e)),
+                )
+                .await;
             }
             return;
         }
@@ -764,7 +852,11 @@ echo "[inventiv-worker] ssh bootstrap done"
             .unwrap_or(900)
     };
 
-    let out = tokio::time::timeout(std::time::Duration::from_secs(ssh_timeout_s), child.wait_with_output()).await;
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(ssh_timeout_s),
+        child.wait_with_output(),
+    )
+    .await;
     match out {
         Ok(Ok(output)) => {
             if let Some(lid) = log_id {
@@ -775,21 +867,56 @@ echo "[inventiv-worker] ssh bootstrap done"
                 let last_phase = phases.last().cloned();
 
                 if let serde_json::Value::Object(ref mut obj) = meta {
-                    obj.insert("ssh_exit_success".to_string(), serde_json::json!(output.status.success()));
-                    obj.insert("ssh_exit_status".to_string(), serde_json::json!(output.status.to_string()));
-                    obj.insert("ssh_stdout_tail".to_string(), serde_json::json!(tail_str(&stdout, 8000)));
-                    obj.insert("ssh_stderr_tail".to_string(), serde_json::json!(tail_str(&stderr, 8000)));
+                    obj.insert(
+                        "ssh_exit_success".to_string(),
+                        serde_json::json!(output.status.success()),
+                    );
+                    obj.insert(
+                        "ssh_exit_status".to_string(),
+                        serde_json::json!(output.status.to_string()),
+                    );
+                    obj.insert(
+                        "ssh_stdout_tail".to_string(),
+                        serde_json::json!(tail_str(&stdout, 8000)),
+                    );
+                    obj.insert(
+                        "ssh_stderr_tail".to_string(),
+                        serde_json::json!(tail_str(&stderr, 8000)),
+                    );
                     obj.insert("phases".to_string(), serde_json::json!(phases));
                     if let Some(p) = last_phase {
                         obj.insert("last_phase".to_string(), serde_json::json!(p));
                     }
-                    obj.insert("ssh_timeout_s".to_string(), serde_json::json!(ssh_timeout_s));
+                    obj.insert(
+                        "ssh_timeout_s".to_string(),
+                        serde_json::json!(ssh_timeout_s),
+                    );
                 }
                 if output.status.success() {
-                    let _ = logger::log_event_complete_with_metadata(db, lid, "success", dur, None, Some(meta)).await;
+                    let _ = logger::log_event_complete_with_metadata(
+                        db,
+                        lid,
+                        "success",
+                        dur,
+                        None,
+                        Some(meta),
+                    )
+                    .await;
                 } else {
-                    let msg = format!("ssh bootstrap failed (exit={}): {}", output.status, tail_str(&stderr, 2000));
-                    let _ = logger::log_event_complete_with_metadata(db, lid, "failed", dur, Some(&msg), Some(meta)).await;
+                    let msg = format!(
+                        "ssh bootstrap failed (exit={}): {}",
+                        output.status,
+                        tail_str(&stderr, 2000)
+                    );
+                    let _ = logger::log_event_complete_with_metadata(
+                        db,
+                        lid,
+                        "failed",
+                        dur,
+                        Some(&msg),
+                        Some(meta),
+                    )
+                    .await;
                 }
             }
         }
@@ -797,7 +924,10 @@ echo "[inventiv-worker] ssh bootstrap done"
             if let Some(lid) = log_id {
                 let dur = started.elapsed().as_millis() as i32;
                 if let serde_json::Value::Object(ref mut obj) = meta {
-                    obj.insert("ssh_timeout_s".to_string(), serde_json::json!(ssh_timeout_s));
+                    obj.insert(
+                        "ssh_timeout_s".to_string(),
+                        serde_json::json!(ssh_timeout_s),
+                    );
                 }
                 let _ = logger::log_event_complete_with_metadata(
                     db,
@@ -814,7 +944,10 @@ echo "[inventiv-worker] ssh bootstrap done"
             if let Some(lid) = log_id {
                 let dur = started.elapsed().as_millis() as i32;
                 if let serde_json::Value::Object(ref mut obj) = meta {
-                    obj.insert("ssh_timeout_s".to_string(), serde_json::json!(ssh_timeout_s));
+                    obj.insert(
+                        "ssh_timeout_s".to_string(),
+                        serde_json::json!(ssh_timeout_s),
+                    );
                     obj.insert("ssh_timed_out".to_string(), serde_json::json!(true));
                 }
                 let _ = logger::log_event_complete_with_metadata(
@@ -829,6 +962,17 @@ echo "[inventiv-worker] ssh bootstrap done"
             }
         }
     }
+}
+
+/// Manual operator action: force a (re)install of the worker over SSH.
+/// This bypasses WORKER_AUTO_INSTALL gating and relaxes backoff (still avoids double-run when very recent/in progress).
+pub async fn trigger_worker_reinstall_over_ssh(
+    db: &Pool<Postgres>,
+    instance_id: uuid::Uuid,
+    ip: &str,
+    correlation_id: Option<String>,
+) {
+    maybe_trigger_worker_install_over_ssh(db, instance_id, ip, true, correlation_id).await;
 }
 
 /// Health-check flow for BOOTING instances (probe + call state-machine transitions).
@@ -857,13 +1001,19 @@ pub async fn check_and_transition_instance(
     let ip = match ip {
         Some(ip) => ip,
         None => {
-            println!("⚠️  Instance {} has no IP, skipping health check", instance_id);
+            println!(
+                "⚠️  Instance {} has no IP, skipping health check",
+                instance_id
+            );
             return;
         }
     };
 
     if provider.as_ref().map(|p| p.provider_code.as_str()) == Some("mock") {
-        println!("✅ Instance {} is on mock provider: auto-ready", instance_id);
+        println!(
+            "✅ Instance {} is on mock provider: auto-ready",
+            instance_id
+        );
         let hc_start = std::time::Instant::now();
         let log_id = logger::log_event_with_metadata(
             &db,
@@ -884,7 +1034,10 @@ pub async fn check_and_transition_instance(
     }
 
     let Some(provider) = provider else {
-        println!("⚠️  Instance {} has no provider, skipping health check", instance_id);
+        println!(
+            "⚠️  Instance {} has no provider, skipping health check",
+            instance_id
+        );
         return;
     };
 
@@ -900,10 +1053,17 @@ pub async fn check_and_transition_instance(
 
     let auto_install = std::env::var("WORKER_AUTO_INSTALL")
         .ok()
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false);
     let patterns = inventiv_common::worker_target::parse_instance_type_patterns(
-        std::env::var("WORKER_AUTO_INSTALL_INSTANCE_PATTERNS").ok().as_deref(),
+        std::env::var("WORKER_AUTO_INSTALL_INSTANCE_PATTERNS")
+            .ok()
+            .as_deref(),
     );
     let expect_worker = auto_install
         && provider.provider_code.as_str() == "scaleway"
@@ -915,14 +1075,18 @@ pub async fn check_and_transition_instance(
     // Timeout: provider-scoped (DB) -> env -> default.
     // Workers can take longer (image pulls + model downloads).
     let timeout_secs: i64 = if expect_worker {
-        provider_setting_i64(&db, provider.provider_id, "WORKER_INSTANCE_STARTUP_TIMEOUT_S")
-            .await
-            .or_else(|| {
-                std::env::var("WORKER_INSTANCE_STARTUP_TIMEOUT_S")
-                    .ok()
-                    .and_then(|s| s.trim().parse::<i64>().ok())
-            })
-            .unwrap_or(3600)
+        provider_setting_i64(
+            &db,
+            provider.provider_id,
+            "WORKER_INSTANCE_STARTUP_TIMEOUT_S",
+        )
+        .await
+        .or_else(|| {
+            std::env::var("WORKER_INSTANCE_STARTUP_TIMEOUT_S")
+                .ok()
+                .and_then(|s| s.trim().parse::<i64>().ok())
+        })
+        .unwrap_or(3600)
     } else {
         provider_setting_i64(&db, provider.provider_id, "INSTANCE_STARTUP_TIMEOUT_S")
             .await
@@ -942,7 +1106,10 @@ pub async fn check_and_transition_instance(
             instance_id,
             age.num_seconds()
         );
-        let timeout_msg = format!("Instance failed to become healthy within {} seconds", timeout_secs);
+        let timeout_msg = format!(
+            "Instance failed to become healthy within {} seconds",
+            timeout_secs
+        );
         let _ = state_machine::booting_to_startup_failed(
             &db,
             instance_id,
@@ -958,12 +1125,20 @@ pub async fn check_and_transition_instance(
     let worker_port: u16 = provider_setting_i64(&db, provider.provider_id, "WORKER_HEALTH_PORT")
         .await
         .and_then(|v| u16::try_from(v).ok())
-        .or_else(|| std::env::var("WORKER_HEALTH_PORT").ok().and_then(|s| s.parse::<u16>().ok()))
+        .or_else(|| {
+            std::env::var("WORKER_HEALTH_PORT")
+                .ok()
+                .and_then(|s| s.parse::<u16>().ok())
+        })
         .unwrap_or(8080);
     let vllm_port: u16 = provider_setting_i64(&db, provider.provider_id, "WORKER_VLLM_PORT")
         .await
         .and_then(|v| u16::try_from(v).ok())
-        .or_else(|| std::env::var("WORKER_VLLM_PORT").ok().and_then(|s| s.parse::<u16>().ok()))
+        .or_else(|| {
+            std::env::var("WORKER_VLLM_PORT")
+                .ok()
+                .and_then(|s| s.parse::<u16>().ok())
+        })
         .unwrap_or(8000);
 
     let is_ready_http = check_instance_readyz_http(&ip, worker_port).await;
@@ -988,38 +1163,61 @@ pub async fn check_and_transition_instance(
         .flatten()
         .and_then(|s: String| {
             let t = s.trim().to_string();
-            if t.is_empty() { None } else { Some(t) }
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
         });
         let expected_model_id = model_id_from_db
-            .or_else(|| std::env::var("WORKER_MODEL_ID").ok().filter(|s| !s.trim().is_empty()))
+            .or_else(|| {
+                std::env::var("WORKER_MODEL_ID")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            })
             .unwrap_or_default();
 
         let warmup_enabled = std::env::var("WORKER_VLLM_WARMUP")
             .ok()
-            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .map(|v| {
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
             .unwrap_or(true);
 
         let (http_ok, ids, latency_ms, http_err) = check_vllm_http_models(&ip, vllm_port).await;
         let expected = expected_model_id.trim();
         let model_loaded = expected.is_empty() || ids.iter().any(|x| x == expected);
         let model_err = if http_ok && !model_loaded && !expected.is_empty() {
-            Some(format!("model_not_listed (expected={}, got_count={})", expected, ids.len()))
+            Some(format!(
+                "model_not_listed (expected={}, got_count={})",
+                expected,
+                ids.len()
+            ))
         } else {
             None
         };
 
         // Best-effort warmup (doesn't gate readiness unless you want it to).
-        let (warmup_ok, warmup_ms, warmup_err) = if warmup_enabled && http_ok && model_loaded && !expected.is_empty() {
-            check_vllm_warmup_http(&ip, vllm_port, expected).await
-        } else {
-            (true, 0, None)
-        };
+        let (warmup_ok, warmup_ms, warmup_err) =
+            if warmup_enabled && http_ok && model_loaded && !expected.is_empty() {
+                check_vllm_warmup_http(&ip, vllm_port, expected).await
+            } else {
+                (true, 0, None)
+            };
 
         model_check_ok = http_ok && model_loaded;
 
         // Log:
         // - log each readiness step (rate-limited on failure)
-        async fn should_log_step(db: &Pool<Postgres>, instance_id: uuid::Uuid, action_type: &str, ok: bool) -> bool {
+        async fn should_log_step(
+            db: &Pool<Postgres>,
+            instance_id: uuid::Uuid,
+            action_type: &str,
+            ok: bool,
+        ) -> bool {
             if ok {
                 // success: log only if we never logged a success before
                 let already_ok: bool = sqlx::query_scalar(
@@ -1066,9 +1264,18 @@ pub async fn check_and_transition_instance(
                     "result": if http_ok { "success" } else { "failed" },
                     "error": http_err
                 })),
-            ).await.ok();
+            )
+            .await
+            .ok();
             if let Some(lid) = log_id {
-                let _ = logger::log_event_complete(&db, lid, if http_ok { "success" } else { "failed" }, 0, http_err.as_deref()).await;
+                let _ = logger::log_event_complete(
+                    &db,
+                    lid,
+                    if http_ok { "success" } else { "failed" },
+                    0,
+                    http_err.as_deref(),
+                )
+                .await;
             }
         }
 
@@ -1087,9 +1294,18 @@ pub async fn check_and_transition_instance(
                     "result": if model_loaded { "success" } else { "failed" },
                     "error": model_err
                 })),
-            ).await.ok();
+            )
+            .await
+            .ok();
             if let Some(lid) = log_id {
-                let _ = logger::log_event_complete(&db, lid, if model_loaded { "success" } else { "failed" }, 0, model_err.as_deref()).await;
+                let _ = logger::log_event_complete(
+                    &db,
+                    lid,
+                    if model_loaded { "success" } else { "failed" },
+                    0,
+                    model_err.as_deref(),
+                )
+                .await;
             }
         }
 
@@ -1110,9 +1326,18 @@ pub async fn check_and_transition_instance(
                         "result": if warmup_ok { "success" } else { "failed" },
                         "error": warmup_err
                     })),
-                ).await.ok();
+                )
+                .await
+                .ok();
                 if let Some(lid) = log_id {
-                    let _ = logger::log_event_complete(&db, lid, if warmup_ok { "success" } else { "failed" }, 0, warmup_err.as_deref()).await;
+                    let _ = logger::log_event_complete(
+                        &db,
+                        lid,
+                        if warmup_ok { "success" } else { "failed" },
+                        0,
+                        warmup_err.as_deref(),
+                    )
+                    .await;
                 }
             }
         }
@@ -1127,7 +1352,9 @@ pub async fn check_and_transition_instance(
             ids.get(0).cloned()
         };
         if model_check_ok {
-            let Some(mid) = inferred_model_id else { return; };
+            let Some(mid) = inferred_model_id else {
+                return;
+            };
             let _ = sqlx::query(
                 r#"
                 UPDATE instances
@@ -1150,10 +1377,17 @@ pub async fn check_and_transition_instance(
     }
 
     // Worker targets are only considered healthy when /readyz succeeds.
-    let is_healthy = if expect_worker { is_ready_http && model_check_ok } else { is_ready_http || is_ssh };
+    let is_healthy = if expect_worker {
+        is_ready_http && model_check_ok
+    } else {
+        is_ready_http || is_ssh
+    };
 
     if is_healthy {
-        println!("✅ Instance {} health check PASSED! Transitioning to ready", instance_id);
+        println!(
+            "✅ Instance {} health check PASSED! Transitioning to ready",
+            instance_id
+        );
         let hc_start = std::time::Instant::now();
         let log_id = logger::log_event_with_metadata(
             &db,
@@ -1180,7 +1414,7 @@ pub async fn check_and_transition_instance(
         // For worker targets: if SSH is up but readyz isn't, trigger a bootstrap over SSH and
         // do NOT increment failures (installation can take several minutes).
         if expect_worker && is_ssh {
-            maybe_trigger_worker_install_over_ssh(&db, instance_id, &ip).await;
+            maybe_trigger_worker_install_over_ssh(&db, instance_id, &ip, false, None).await;
             return;
         }
 
@@ -1204,13 +1438,22 @@ pub async fn check_and_transition_instance(
                 "mode": "ssh_22_or_worker_readyz",
                 "worker_health_port": worker_port
             })),
-        ).await.ok();
+        )
+        .await
+        .ok();
 
         let _ = state_machine::update_booting_health_failures(&db, instance_id, new_failures).await;
 
         if let Some(lid) = log_id {
             let dur = hc_start.elapsed().as_millis() as i32;
-            let _ = logger::log_event_complete(&db, lid, "failed", dur, Some("Worker readyz not reachable and SSH port 22 not reachable")).await;
+            let _ = logger::log_event_complete(
+                &db,
+                lid,
+                "failed",
+                dur,
+                Some("Worker readyz not reachable and SSH port 22 not reachable"),
+            )
+            .await;
         }
 
         if new_failures >= 30 {
@@ -1228,4 +1471,3 @@ pub async fn check_and_transition_instance(
         }
     }
 }
-

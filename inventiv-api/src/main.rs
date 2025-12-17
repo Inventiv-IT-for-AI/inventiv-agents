@@ -153,6 +153,10 @@ async fn main() {
             "/instances/:id",
             get(get_instance).delete(terminate_instance),
         )
+        .route(
+            "/instances/:id/reinstall",
+            axum::routing::post(reinstall_instance),
+        )
         // Action logs
         .route("/action_logs", get(list_action_logs))
         .route(
@@ -2520,6 +2524,209 @@ async fn terminate_instance(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to queue termination",
+            )
+                .into_response()
+        }
+    }
+}
+
+// COMMAND : REINSTALL INSTANCE (force SSH bootstrap again)
+#[utoipa::path(
+    post,
+    path = "/instances/{id}/reinstall",
+    params(
+        ("id" = Uuid, Path, description = "Instance Database UUID")
+    ),
+    responses(
+        (status = 202, description = "Reinstall Accepted")
+    )
+)]
+async fn reinstall_instance(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<uuid::Uuid>,
+) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+    let log_id = simple_logger::log_action_with_metadata(
+        &state.db,
+        "REQUEST_REINSTALL",
+        "in_progress",
+        Some(id),
+        None,
+        Some(serde_json::json!({
+            "instance_id": id.to_string(),
+        })),
+    )
+    .await
+    .ok();
+
+    // Validate instance exists and is eligible
+    let instance_row: Option<(Option<String>, Option<String>, String)> = sqlx::query_as(
+        "SELECT provider_instance_id::text, ip_address::text, status::text FROM instances WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+
+    let Some((provider_instance_id_opt, ip_opt, status)) = instance_row else {
+        if let Some(log_id) = log_id {
+            let duration = start.elapsed().as_millis() as i32;
+            simple_logger::log_action_complete(
+                &state.db,
+                log_id,
+                "failed",
+                duration,
+                Some("Instance not found"),
+            )
+            .await
+            .ok();
+        }
+        return (StatusCode::NOT_FOUND, "Instance not found").into_response();
+    };
+
+    if status == "terminated" {
+        if let Some(log_id) = log_id {
+            let duration = start.elapsed().as_millis() as i32;
+            simple_logger::log_action_complete_with_metadata(
+                &state.db,
+                log_id,
+                "failed",
+                duration,
+                Some("Instance is terminated"),
+                Some(serde_json::json!({"status": status})),
+            )
+            .await
+            .ok();
+        }
+        return (StatusCode::BAD_REQUEST, "Instance is terminated").into_response();
+    }
+    if status == "terminating" {
+        if let Some(log_id) = log_id {
+            let duration = start.elapsed().as_millis() as i32;
+            simple_logger::log_action_complete_with_metadata(
+                &state.db,
+                log_id,
+                "failed",
+                duration,
+                Some("Instance is terminating"),
+                Some(serde_json::json!({"status": status})),
+            )
+            .await
+            .ok();
+        }
+        return (StatusCode::CONFLICT, "Instance is terminating").into_response();
+    }
+
+    // Must have a reachable VM to reinstall.
+    if provider_instance_id_opt.as_deref().unwrap_or("").is_empty()
+        || ip_opt.as_deref().unwrap_or("").is_empty()
+    {
+        if let Some(log_id) = log_id {
+            let duration = start.elapsed().as_millis() as i32;
+            simple_logger::log_action_complete_with_metadata(
+                &state.db,
+                log_id,
+                "failed",
+                duration,
+                Some("Missing provider_instance_id or ip_address"),
+                Some(serde_json::json!({
+                    "provider_instance_id_present": provider_instance_id_opt.as_deref().unwrap_or("").is_empty() == false,
+                    "ip_address_present": ip_opt.as_deref().unwrap_or("").is_empty() == false,
+                })),
+            )
+            .await
+            .ok();
+        }
+        return (
+            StatusCode::BAD_REQUEST,
+            "Instance not reachable (missing provider_instance_id or ip_address)",
+        )
+            .into_response();
+    }
+
+    // Mark as booting again (repair workflow) to re-enable health-check flow.
+    let _ = sqlx::query(
+        "UPDATE instances
+         SET status = 'booting',
+             error_code = NULL,
+             error_message = NULL
+         WHERE id = $1
+           AND status NOT IN ('terminated', 'terminating')",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await;
+
+    // Publish reinstall command to orchestrator
+    let event = serde_json::json!({
+        "type": "CMD:REINSTALL",
+        "instance_id": id.to_string(),
+        "correlation_id": log_id.map(|id| id.to_string()),
+    })
+    .to_string();
+
+    match state.redis_client.get_multiplexed_async_connection().await {
+        Ok(mut conn) => match conn
+            .publish::<_, _, ()>("orchestrator_events", &event)
+            .await
+        {
+            Ok(_) => {
+                if let Some(log_id) = log_id {
+                    let duration = start.elapsed().as_millis() as i32;
+                    simple_logger::log_action_complete_with_metadata(
+                        &state.db,
+                        log_id,
+                        "success",
+                        duration,
+                        None,
+                        Some(serde_json::json!({"redis_published": true, "event_type": "CMD:REINSTALL"})),
+                    )
+                    .await
+                    .ok();
+                }
+                (StatusCode::ACCEPTED, "Reinstall initiated").into_response()
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to publish to Redis: {:?}", e);
+                if let Some(log_id) = log_id {
+                    let duration = start.elapsed().as_millis() as i32;
+                    simple_logger::log_action_complete_with_metadata(
+                        &state.db,
+                        log_id,
+                        "failed",
+                        duration,
+                        Some(&error_msg),
+                        Some(serde_json::json!({"redis_published": false, "event_type": "CMD:REINSTALL"})),
+                    )
+                    .await
+                    .ok();
+                }
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to queue reinstall",
+                )
+                    .into_response()
+            }
+        },
+        Err(e) => {
+            let error_msg = format!("Failed to connect to Redis: {:?}", e);
+            if let Some(log_id) = log_id {
+                let duration = start.elapsed().as_millis() as i32;
+                simple_logger::log_action_complete_with_metadata(
+                    &state.db,
+                    log_id,
+                    "failed",
+                    duration,
+                    Some(&error_msg),
+                    Some(serde_json::json!({"redis_published": false, "event_type": "CMD:REINSTALL"})),
+                )
+                .await
+                .ok();
+            }
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to queue reinstall",
             )
                 .into_response()
         }

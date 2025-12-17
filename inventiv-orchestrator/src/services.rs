@@ -1,4 +1,5 @@
 use crate::finops_events;
+use crate::health_check_flow;
 use crate::logger;
 use crate::provider_manager::ProviderManager;
 use crate::worker_storage;
@@ -493,6 +494,107 @@ pub async fn process_termination(
                     .ok();
             }
         }
+    }
+}
+
+pub async fn process_reinstall(
+    pool: Pool<Postgres>,
+    _redis_client: redis::Client,
+    instance_id: String,
+    correlation_id: Option<String>,
+) {
+    let start = Instant::now();
+    let id_uuid = match Uuid::parse_str(&instance_id) {
+        Ok(v) => v,
+        Err(e) => {
+            println!(
+                "❌ Invalid instance_id for reinstall '{}': {:?}",
+                instance_id, e
+            );
+            return;
+        }
+    };
+
+    println!("🔧 Processing Reinstall Async: {}", id_uuid);
+
+    let log_id_execute = logger::log_event_with_metadata(
+        &pool,
+        "EXECUTE_REINSTALL",
+        "in_progress",
+        id_uuid,
+        None,
+        Some(json!({ "correlation_id": correlation_id })),
+    )
+    .await
+    .ok();
+
+    // Fetch instance IP and provider_instance_id (must exist for a real reinstall)
+    let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT ip_address::text, provider_instance_id::text
+         FROM instances
+         WHERE id = $1",
+    )
+    .bind(id_uuid)
+    .fetch_optional(&pool)
+    .await
+    .ok()
+    .flatten();
+
+    let Some((ip_opt, provider_instance_id_opt)) = row else {
+        if let Some(lid) = log_id_execute {
+            let dur = start.elapsed().as_millis() as i32;
+            logger::log_event_complete(&pool, lid, "failed", dur, Some("Instance not found"))
+                .await
+                .ok();
+        }
+        return;
+    };
+
+    let ip = ip_opt.unwrap_or_default();
+    let provider_instance_id = provider_instance_id_opt.unwrap_or_default();
+    if ip.trim().is_empty() || provider_instance_id.trim().is_empty() {
+        if let Some(lid) = log_id_execute {
+            let dur = start.elapsed().as_millis() as i32;
+            logger::log_event_complete(
+                &pool,
+                lid,
+                "failed",
+                dur,
+                Some("Missing ip_address or provider_instance_id"),
+            )
+            .await
+            .ok();
+        }
+        return;
+    }
+
+    // Move instance back to booting so health checks can converge to READY again.
+    let _ = sqlx::query(
+        "UPDATE instances
+         SET status = 'booting',
+             error_code = NULL,
+             error_message = NULL
+         WHERE id = $1
+           AND status NOT IN ('terminated', 'terminating')",
+    )
+    .bind(id_uuid)
+    .execute(&pool)
+    .await;
+
+    // Force SSH bootstrap (restarts vLLM/agent) even if auto-install is disabled.
+    health_check_flow::trigger_worker_reinstall_over_ssh(
+        &pool,
+        id_uuid,
+        &ip,
+        correlation_id.clone(),
+    )
+    .await;
+
+    if let Some(lid) = log_id_execute {
+        let dur = start.elapsed().as_millis() as i32;
+        logger::log_event_complete(&pool, lid, "success", dur, Some("Reinstall triggered"))
+            .await
+            .ok();
     }
 }
 
@@ -1067,7 +1169,9 @@ pub async fn process_provisioning(
                 };
 
                 let worker_health_port: u16 = if let Some(pid) = provider_id {
-                    sqlx::query_scalar("SELECT value_int FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_HEALTH_PORT'")
+                    sqlx::query_scalar::<_, i64>(
+                        "SELECT value_int FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_HEALTH_PORT'",
+                    )
                         .bind(pid)
                         .fetch_optional(&pool)
                         .await
@@ -1083,7 +1187,9 @@ pub async fn process_provisioning(
                         .unwrap_or(8080)
                 };
                 let worker_vllm_port: u16 = if let Some(pid) = provider_id {
-                    sqlx::query_scalar("SELECT value_int FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_VLLM_PORT'")
+                    sqlx::query_scalar::<_, i64>(
+                        "SELECT value_int FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_VLLM_PORT'",
+                    )
                         .bind(pid)
                         .fetch_optional(&pool)
                         .await
@@ -1249,7 +1355,9 @@ pub async fn process_provisioning(
                 };
                 if expose {
                     let worker_health_port: u16 = if let Some(pid) = provider_id {
-                        sqlx::query_scalar("SELECT value_int FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_HEALTH_PORT'")
+                        sqlx::query_scalar::<_, i64>(
+                            "SELECT value_int FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_HEALTH_PORT'",
+                        )
                             .bind(pid)
                             .fetch_optional(&pool)
                             .await
@@ -1265,7 +1373,9 @@ pub async fn process_provisioning(
                             .unwrap_or(8080)
                     };
                     let worker_vllm_port: u16 = if let Some(pid) = provider_id {
-                        sqlx::query_scalar("SELECT value_int FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_VLLM_PORT'")
+                        sqlx::query_scalar::<_, i64>(
+                            "SELECT value_int FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_VLLM_PORT'",
+                        )
                             .bind(pid)
                             .fetch_optional(&pool)
                             .await
@@ -1284,7 +1394,7 @@ pub async fn process_provisioning(
                         .ensure_inbound_tcp_ports(
                             &zone,
                             &server_id,
-                            vec![worker_vllm_port as i32, worker_health_port as i32],
+                            vec![worker_vllm_port, worker_health_port],
                         )
                         .await
                     {

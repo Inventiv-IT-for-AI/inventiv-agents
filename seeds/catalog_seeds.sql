@@ -202,6 +202,9 @@ INSERT INTO action_types (code, label, icon, color_class, category, is_active) V
   ('TERMINATOR_RETRY', 'Terminator Retry', 'Cloud', 'bg-orange-600 hover:bg-orange-700 text-white', 'terminate', TRUE),
   ('TERMINATION_CONFIRMED', 'Termination Confirmed', 'Database', 'bg-red-500 hover:bg-red-600 text-white', 'terminate', TRUE),
   ('INSTANCE_TERMINATED', 'Instance Terminated', 'Database', 'bg-red-500 hover:bg-red-600 text-white', 'terminate', TRUE),
+  -- Reinstall workflow
+  ('REQUEST_REINSTALL', 'Request Reinstall', 'Wrench', 'bg-sky-600 hover:bg-sky-700 text-white', 'repair', TRUE),
+  ('EXECUTE_REINSTALL', 'Execute Reinstall', 'Server', 'bg-sky-600 hover:bg-sky-700 text-white', 'repair', TRUE),
 
   -- Archive / reconciliation
   ('ARCHIVE_INSTANCE', 'Archive Instance', 'Archive', 'bg-gray-600 hover:bg-gray-700 text-white', 'archive', TRUE),

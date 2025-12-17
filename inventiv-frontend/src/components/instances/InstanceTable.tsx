@@ -3,7 +3,7 @@
 import { formatDistanceToNow, parseISO } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Eye, Archive } from "lucide-react";
+import { Eye, Archive, Wrench } from "lucide-react";
 import { CopyButton } from "@/components/shared/CopyButton";
 import type { Instance } from "@/lib/types";
 import { displayOrDash, formatEur } from "@/lib/utils";
@@ -13,6 +13,7 @@ type InstanceTableProps = {
   instances: Instance[];
   onViewDetails: (instance: Instance) => void;
   onTerminate: (id: string) => void;
+  onReinstall: (id: string) => void;
   onArchive: (id: string) => void;
 };
 
@@ -20,6 +21,7 @@ export function InstanceTable({
   instances,
   onViewDetails,
   onTerminate,
+  onReinstall,
   onArchive,
 }: InstanceTableProps) {
   
@@ -131,7 +133,7 @@ export function InstanceTable({
       {
         id: "actions",
         label: "Actions",
-        width: 220,
+        width: 280,
         align: "right",
         disableReorder: true,
         sortable: false,
@@ -149,16 +151,31 @@ export function InstanceTable({
               <Eye className="h-4 w-4" />
             </Button>
             {row.status.toLowerCase() !== "terminated" ? (
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onTerminate(row.id);
-                }}
-              >
-                Terminer
-              </Button>
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onReinstall(row.id);
+                  }}
+                  disabled={!row.ip_address || ["terminating"].includes(row.status.toLowerCase())}
+                  title={!row.ip_address ? "IP manquante" : "Réinstaller le worker"}
+                >
+                  <Wrench className="h-4 w-4 mr-2" />
+                  Reinstall
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onTerminate(row.id);
+                  }}
+                >
+                  Terminer
+                </Button>
+              </>
             ) : (
               <Button
                 variant="secondary"
@@ -176,7 +193,7 @@ export function InstanceTable({
         ),
       },
     ];
-  }, [onArchive, onTerminate, onViewDetails]);
+  }, [onArchive, onReinstall, onTerminate, onViewDetails]);
 
   return (
     <InventivDataTable<Instance>
