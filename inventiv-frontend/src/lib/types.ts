@@ -71,6 +71,36 @@ export type InstanceType = {
     bandwidth_bps?: number;
 };
 
+// -----------------------------
+// Models (LLM catalog)
+// -----------------------------
+
+export type LlmModel = {
+    id: string;
+    name: string;
+    model_id: string; // HF repo id (or local path)
+    required_vram_gb: number;
+    context_length: number;
+    is_active: boolean;
+    data_volume_gb?: number | null;
+    metadata?: Record<string, unknown> | null;
+    created_at: string;
+    updated_at: string;
+};
+
+// -----------------------------
+// API Keys (OpenAI clients)
+// -----------------------------
+
+export type ApiKey = {
+    id: string;
+    name: string;
+    key_prefix: string;
+    created_at: string;
+    last_used_at?: string | null;
+    revoked_at?: string | null;
+};
+
 export type ActionLog = {
     id: string;
     action_type: string;

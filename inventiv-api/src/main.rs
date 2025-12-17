@@ -5,6 +5,9 @@ use axum::{
     http::{StatusCode, HeaderMap},
     response::IntoResponse,
 };
+use axum::body::Body;
+use axum::response::Response;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::middleware;
 use tower_http::cors::{CorsLayer, Any};
 use serde::{Deserialize, Serialize};
@@ -15,6 +18,10 @@ use redis::AsyncCommands;
 use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
 use std::fs;
 use axum::body::Bytes;
+use inventiv_common::LlmModel;
+use std::convert::Infallible;
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::StreamExt;
 
 // Swagger
 use utoipa::{OpenApi, IntoParams};
@@ -29,6 +36,7 @@ mod auth;
 mod auth_endpoints;
 mod users_endpoint;
 mod bootstrap_admin;
+mod api_keys;
  // Simple logger without sqlx macros
 
 // use audit_log::AuditLogger; // Commented out due to DATABASE_URL build issues
@@ -90,11 +98,27 @@ async fn main() {
         .route("/internal/worker/register", post(proxy_worker_register))
         .route("/internal/worker/heartbeat", post(proxy_worker_heartbeat));
 
+    // OpenAI-compatible proxy routes (auth = cookie/JWT OR API key)
+    let openai = Router::new()
+        .route("/v1/models", get(openai_list_models))
+        .route("/v1/chat/completions", post(openai_proxy_chat_completions))
+        .route("/v1/completions", post(openai_proxy_completions))
+        .route("/v1/embeddings", post(openai_proxy_embeddings))
+        .route_layer(middleware::from_fn_with_state(state.db.clone(), auth::require_user_or_api_key));
+
     // Protected routes (require user session)
     let protected = Router::new()
         .route("/auth/me", get(auth_endpoints::me).put(auth_endpoints::update_me))
         .route("/auth/me/password", axum::routing::put(auth_endpoints::change_password))
+        // API Keys (dashboard-managed)
+        .route("/api_keys", get(api_keys::list_api_keys).post(api_keys::create_api_key))
+        .route("/api_keys/:id", axum::routing::put(api_keys::update_api_key).delete(api_keys::revoke_api_key))
         .route("/deployments", post(create_deployment))
+        // Realtime (SSE)
+        .route("/events/stream", get(events_stream))
+        // Models (catalog)
+        .route("/models", get(list_models).post(create_model))
+        .route("/models/:id", get(get_model).put(update_model).delete(delete_model))
         // Instances
         .route("/instances", get(list_instances))
         .route("/instances/:id/archive", axum::routing::put(archive_instance))
@@ -107,16 +131,16 @@ async fn main() {
         .route("/reconcile", post(manual_reconcile_trigger))
         .route("/catalog/sync", post(manual_catalog_sync_trigger))
         // Settings
-        .route("/providers", get(settings::list_providers))
+        .route("/providers", get(settings::list_providers).post(settings::create_provider))
         .route("/providers/search", get(settings::search_providers))
         .route("/providers/:id", axum::routing::put(settings::update_provider))
-        .route("/regions", get(settings::list_regions))
+        .route("/regions", get(settings::list_regions).post(settings::create_region))
         .route("/regions/search", get(settings::search_regions))
         .route("/regions/:id", axum::routing::put(settings::update_region))
-        .route("/zones", get(settings::list_zones))
+        .route("/zones", get(settings::list_zones).post(settings::create_zone))
         .route("/zones/search", get(settings::search_zones))
         .route("/zones/:id", axum::routing::put(settings::update_zone))
-        .route("/instance_types", get(settings::list_instance_types))
+        .route("/instance_types", get(settings::list_instance_types).post(settings::create_instance_type))
         .route("/instance_types/search", get(settings::search_instance_types))
         .route("/instance_types/:id", axum::routing::put(settings::update_instance_type))
         // Instance Type <-> Zones
@@ -139,6 +163,7 @@ async fn main() {
     let app = Router::new()
         .merge(public)
         .merge(worker)
+        .merge(openai)
         .merge(protected)
         .layer(cors) // Apply CORS to ALL routes
         .with_state(state);
@@ -156,6 +181,299 @@ fn orchestrator_internal_url() -> String {
         .unwrap_or_else(|| "http://orchestrator:8001".to_string())
         .trim_end_matches('/')
         .to_string()
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct ReadyWorkerRow {
+    id: uuid::Uuid,
+    ip_address: String,
+    worker_vllm_port: Option<i32>,
+    worker_queue_depth: Option<i32>,
+    worker_last_heartbeat: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn stable_hash_u64(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
+}
+
+fn openai_worker_stale_seconds() -> i64 {
+    std::env::var("OPENAI_WORKER_STALE_SECONDS")
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .filter(|v| *v >= 10 && *v <= 24 * 60 * 60)
+        .unwrap_or(300) // 5 minutes
+}
+
+async fn select_ready_worker_for_model(
+    db: &Pool<Postgres>,
+    model: &str,
+    sticky_key: Option<&str>,
+) -> Option<(uuid::Uuid, String)> {
+    // `model` here is the vLLM/OpenAI model id (HF repo id).
+    // We route based on `instances.worker_model_id` (set by worker heartbeat/register).
+    let model = model.trim();
+    let stale = openai_worker_stale_seconds();
+    let rows = sqlx::query_as::<Postgres, ReadyWorkerRow>(
+        r#"
+        SELECT
+          id,
+          ip_address::text as ip_address,
+          worker_vllm_port,
+          worker_queue_depth,
+          worker_last_heartbeat
+        FROM instances
+        WHERE status::text = 'ready'
+          AND ip_address IS NOT NULL
+          AND (worker_status = 'ready' OR worker_status IS NULL)
+          AND ($1::text = '' OR worker_model_id = $1)
+          AND (worker_last_heartbeat IS NULL OR worker_last_heartbeat > NOW() - ($2::bigint * INTERVAL '1 second'))
+        ORDER BY worker_queue_depth NULLS LAST, worker_last_heartbeat DESC NULLS LAST, created_at DESC
+        LIMIT 50
+        "#,
+    )
+    .bind(model)
+    .bind(stale)
+    .fetch_all(db)
+    .await
+    .ok()?;
+
+    if rows.is_empty() {
+        return None;
+    }
+
+    let chosen = if let Some(key) = sticky_key.filter(|k| !k.trim().is_empty()) {
+        // Stable-ish affinity to an instance across requests (best effort).
+        let mut sorted = rows;
+        sorted.sort_by_key(|r| r.id);
+        let idx = (stable_hash_u64(key) as usize) % sorted.len();
+        sorted[idx].clone()
+    } else {
+        rows[0].clone()
+    };
+
+    let ip = chosen.ip_address.split('/').next().unwrap_or(&chosen.ip_address).to_string();
+    let port = chosen.worker_vllm_port.unwrap_or(8000).max(1) as i32;
+    Some((chosen.id, format!("http://{}:{}", ip, port)))
+}
+
+async fn resolve_openai_model_id(db: &Pool<Postgres>, requested: Option<&str>) -> Option<String> {
+    // Accept either:
+    // - HF repo id (models.model_id)
+    // - UUID (models.id) as string
+    // If missing, fallback to WORKER_MODEL_ID env (dev convenience).
+    let Some(raw) = requested
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("WORKER_MODEL_ID").ok().filter(|s| !s.trim().is_empty()))
+    else {
+        return None;
+    };
+
+    // If it looks like a UUID, try resolve -> HF repo id.
+    if let Ok(uid) = uuid::Uuid::parse_str(&raw) {
+        let hf: Option<String> = sqlx::query_scalar("SELECT model_id FROM models WHERE id = $1 AND is_active = true")
+            .bind(uid)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
+        return hf.or(Some(raw));
+    }
+
+    // If it matches an active catalog entry by HF repo id, return it; else keep as-is.
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM models WHERE model_id = $1 AND is_active = true)")
+        .bind(&raw)
+        .fetch_one(db)
+        .await
+        .unwrap_or(false);
+    if exists { Some(raw) } else { Some(raw) }
+}
+
+async fn openai_list_models(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // Return *live* models based on worker heartbeats:
+    // - if at least 1 READY worker serves model_id and heartbeat is recent -> exposed in /v1/models
+    // - if no workers for a model for a while -> disappears (staleness window)
+    #[derive(Serialize, sqlx::FromRow)]
+    struct Row { model_id: String, last_seen: chrono::DateTime<chrono::Utc> }
+    #[derive(Serialize)]
+    struct ModelObj { id: String, object: &'static str, created: i64, owned_by: &'static str }
+    #[derive(Serialize)]
+    struct Resp { object: &'static str, data: Vec<ModelObj> }
+
+    let stale = openai_worker_stale_seconds();
+    let rows = sqlx::query_as::<Postgres, Row>(
+        r#"
+        SELECT
+          worker_model_id as model_id,
+          MAX(worker_last_heartbeat) as last_seen
+        FROM instances
+        WHERE status::text = 'ready'
+          AND ip_address IS NOT NULL
+          AND worker_status = 'ready'
+          AND worker_model_id IS NOT NULL
+          AND worker_last_heartbeat IS NOT NULL
+          AND worker_last_heartbeat > NOW() - ($1::bigint * INTERVAL '1 second')
+        GROUP BY worker_model_id
+        ORDER BY worker_model_id
+        "#
+    )
+    .bind(stale)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    let data = rows.into_iter().map(|r| ModelObj{
+        id: r.model_id,
+        object: "model",
+        created: r.last_seen.timestamp(),
+        owned_by: "inventiv",
+    }).collect();
+
+    Json(Resp{ object: "list", data })
+}
+
+async fn openai_proxy_chat_completions(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    openai_proxy_to_worker(&state, "/v1/chat/completions", headers, body).await
+}
+
+async fn openai_proxy_completions(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    openai_proxy_to_worker(&state, "/v1/completions", headers, body).await
+}
+
+async fn openai_proxy_embeddings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    openai_proxy_to_worker(&state, "/v1/embeddings", headers, body).await
+}
+
+async fn openai_proxy_to_worker(
+    state: &Arc<AppState>,
+    path: &str,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let v: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_json"}))).into_response();
+        }
+    };
+    let requested_model = v.get("model").and_then(|m| m.as_str());
+    let model_id = match resolve_openai_model_id(&state.db, requested_model).await {
+        Some(m) => m,
+        None => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error":"missing_model"}))).into_response();
+        }
+    };
+    let stream = v.get("stream").and_then(|b| b.as_bool()).unwrap_or(false);
+
+    // Sticky key: user-provided; forwarded to worker-local HAProxy to keep affinity in multi-vLLM mode.
+    // Also used best-effort for instance selection (stable hashing).
+    let sticky = header_value(&headers, "X-Inventiv-Session");
+
+    let Some((instance_id, base_url)) = select_ready_worker_for_model(&state.db, &model_id, sticky.as_deref()).await else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({
+            "error":"no_ready_worker",
+            "message":"No READY worker found for requested model",
+            "model": model_id
+        }))).into_response();
+    };
+
+    let target = format!("{}{}", base_url.trim_end_matches('/'), path);
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(0)) // streaming can be long
+        .build();
+    let Ok(client) = client else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"http_client_build_failed"}))).into_response();
+    };
+
+    // Forward headers best-effort.
+    let mut out_headers = reqwest::header::HeaderMap::new();
+    for (k, v) in headers.iter() {
+        let name = k.as_str().to_ascii_lowercase();
+        if name == "host" || name == "content-length" || name == "connection" {
+            continue;
+        }
+        out_headers.insert(k, v.clone());
+    }
+    // Ensure sticky header is forwarded (HAProxy config uses it).
+    if let Some(sid) = sticky.as_deref() {
+        if let Ok(val) = reqwest::header::HeaderValue::from_str(sid) {
+            out_headers.insert(reqwest::header::HeaderName::from_static("x-inventiv-session"), val);
+        }
+    }
+
+    // Proxy request.
+    let upstream = match client
+        .post(&target)
+        .headers(out_headers)
+        .body(body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = simple_logger::log_action_with_metadata(
+                &state.db,
+                "OPENAI_PROXY",
+                "failed",
+                Some(instance_id),
+                Some("upstream_request_failed"),
+                Some(json!({"target": target, "error": e.to_string()})),
+            ).await;
+            return (StatusCode::BAD_GATEWAY, Json(json!({"error":"upstream_unreachable","message":e.to_string()}))).into_response();
+        }
+    };
+
+    let status = upstream.status();
+    let mut resp_headers = axum::http::HeaderMap::new();
+    // Preserve content-type for SSE streaming.
+    if let Some(ct) = upstream.headers().get(reqwest::header::CONTENT_TYPE) {
+        if let Ok(cts) = ct.to_str() {
+            if let Ok(v) = axum::http::HeaderValue::from_str(cts) {
+                resp_headers.insert(axum::http::header::CONTENT_TYPE, v);
+            }
+        }
+    }
+
+    if stream {
+        let byte_stream = upstream.bytes_stream().map(|chunk| {
+            chunk.map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "upstream_stream_error"))
+        });
+        return (status, resp_headers, Body::from_stream(byte_stream)).into_response();
+    }
+
+    let bytes = match upstream.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            return (StatusCode::BAD_GATEWAY, Json(json!({"error":"upstream_read_failed","message":e.to_string()}))).into_response();
+        }
+    };
+    (status, resp_headers, bytes).into_response()
 }
 
 fn extract_bearer(headers: &HeaderMap) -> Option<String> {
@@ -445,6 +763,8 @@ struct DeploymentRequest {
     provider_id: Option<uuid::Uuid>,
     zone: String,
     instance_type: String,
+    /// Optional model selection (UUID from /models). If omitted, orchestrator may fallback to env default.
+    model_id: Option<uuid::Uuid>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -452,6 +772,201 @@ struct DeploymentResponse {
     status: String,
     instance_id: String,  // Renamed from deployment_id for clarity
     message: Option<String>,
+}
+
+#[derive(Deserialize, IntoParams, utoipa::ToSchema)]
+pub struct ListModelsParams {
+    pub active: Option<bool>,
+}
+
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
+pub struct CreateModelRequest {
+    pub name: String,
+    /// Hugging Face model repo id (or local path)
+    pub model_id: String,
+    pub required_vram_gb: i32,
+    pub context_length: i32,
+    pub is_active: Option<bool>,
+    /// Recommended data volume size (GB) for this model (optional).
+    pub data_volume_gb: Option<i64>,
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
+pub struct UpdateModelRequest {
+    pub name: Option<String>,
+    pub model_id: Option<String>,
+    pub required_vram_gb: Option<i32>,
+    pub context_length: Option<i32>,
+    pub is_active: Option<bool>,
+    pub data_volume_gb: Option<i64>,
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/models",
+    params(ListModelsParams),
+    responses((status = 200, description = "List models", body = [inventiv_common::LlmModel]))
+)]
+async fn list_models(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<ListModelsParams>,
+) -> impl IntoResponse {
+    let rows: Vec<LlmModel> = if params.active == Some(true) {
+        sqlx::query_as(
+            r#"SELECT id, name, model_id, required_vram_gb, context_length, is_active, data_volume_gb, metadata, created_at, updated_at
+               FROM models
+               WHERE is_active = true
+               ORDER BY name"#,
+        )
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default()
+    } else {
+        sqlx::query_as(
+            r#"SELECT id, name, model_id, required_vram_gb, context_length, is_active, data_volume_gb, metadata, created_at, updated_at
+               FROM models
+               ORDER BY name"#,
+        )
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default()
+    };
+    (StatusCode::OK, Json(rows)).into_response()
+}
+
+#[utoipa::path(
+    get,
+    path = "/models/{id}",
+    responses((status = 200, description = "Get model", body = inventiv_common::LlmModel))
+)]
+async fn get_model(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(uid) = uuid::Uuid::parse_str(&id) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_id"}))).into_response();
+    };
+    let row: Option<LlmModel> = sqlx::query_as(
+        r#"SELECT id, name, model_id, required_vram_gb, context_length, is_active, data_volume_gb, metadata, created_at, updated_at
+           FROM models WHERE id = $1"#,
+    )
+    .bind(uid)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap_or(None);
+    match row {
+        Some(m) => (StatusCode::OK, Json(m)).into_response(),
+        None => (StatusCode::NOT_FOUND, Json(json!({"error":"not_found"}))).into_response(),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/models",
+    request_body = CreateModelRequest,
+    responses((status = 201, description = "Created", body = inventiv_common::LlmModel))
+)]
+async fn create_model(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<CreateModelRequest>,
+) -> impl IntoResponse {
+    let id = uuid::Uuid::new_v4();
+    let is_active = payload.is_active.unwrap_or(true);
+    let metadata = sqlx::types::Json(payload.metadata.unwrap_or_else(|| json!({})));
+    let res: Result<LlmModel, sqlx::Error> = sqlx::query_as(
+        r#"INSERT INTO models (id, name, model_id, required_vram_gb, context_length, is_active, data_volume_gb, metadata, created_at, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW())
+           RETURNING id, name, model_id, required_vram_gb, context_length, is_active, data_volume_gb, metadata, created_at, updated_at"#,
+    )
+    .bind(id)
+    .bind(payload.name)
+    .bind(payload.model_id)
+    .bind(payload.required_vram_gb)
+    .bind(payload.context_length)
+    .bind(is_active)
+    .bind(payload.data_volume_gb)
+    .bind(metadata)
+    .fetch_one(&state.db)
+    .await;
+    match res {
+        Ok(m) => (StatusCode::CREATED, Json(m)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"db_error","message": e.to_string()}))).into_response(),
+    }
+}
+
+#[utoipa::path(
+    put,
+    path = "/models/{id}",
+    request_body = UpdateModelRequest,
+    responses((status = 200, description = "Updated", body = inventiv_common::LlmModel))
+)]
+async fn update_model(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(payload): Json<UpdateModelRequest>,
+) -> impl IntoResponse {
+    let Ok(uid) = uuid::Uuid::parse_str(&id) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_id"}))).into_response();
+    };
+    let metadata = payload.metadata.map(sqlx::types::Json);
+    let row: Result<LlmModel, sqlx::Error> = sqlx::query_as(
+        r#"UPDATE models
+           SET name = COALESCE($2, name),
+               model_id = COALESCE($3, model_id),
+               required_vram_gb = COALESCE($4, required_vram_gb),
+               context_length = COALESCE($5, context_length),
+               is_active = COALESCE($6, is_active),
+               data_volume_gb = COALESCE($7, data_volume_gb),
+               metadata = COALESCE($8, metadata),
+               updated_at = NOW()
+           WHERE id = $1
+           RETURNING id, name, model_id, required_vram_gb, context_length, is_active, data_volume_gb, metadata, created_at, updated_at"#,
+    )
+    .bind(uid)
+    .bind(payload.name)
+    .bind(payload.model_id)
+    .bind(payload.required_vram_gb)
+    .bind(payload.context_length)
+    .bind(payload.is_active)
+    .bind(payload.data_volume_gb)
+    .bind(metadata)
+    .fetch_one(&state.db)
+    .await;
+    match row {
+        Ok(m) => (StatusCode::OK, Json(m)).into_response(),
+        Err(sqlx::Error::RowNotFound) => (StatusCode::NOT_FOUND, Json(json!({"error":"not_found"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"db_error","message": e.to_string()}))).into_response(),
+    }
+}
+
+#[utoipa::path(
+    delete,
+    path = "/models/{id}",
+    responses((status = 200, description = "Deleted"))
+)]
+async fn delete_model(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(uid) = uuid::Uuid::parse_str(&id) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_id"}))).into_response();
+    };
+    let res = sqlx::query("DELETE FROM models WHERE id = $1")
+        .bind(uid)
+        .execute(&state.db)
+        .await;
+    match res {
+        Ok(r) if r.rows_affected() > 0 => (StatusCode::OK, Json(json!({"status":"ok"}))).into_response(),
+        Ok(_) => (StatusCode::NOT_FOUND, Json(json!({"error":"not_found"}))).into_response(),
+        Err(e) => {
+            // Most likely FK violation if instances still reference this model.
+            let msg = e.to_string();
+            let code = if msg.contains("foreign key") { StatusCode::CONFLICT } else { StatusCode::INTERNAL_SERVER_ERROR };
+            (code, Json(json!({"error":"db_error","message": msg}))).into_response()
+        }
+    }
 }
 
 // COMMAND : CREATE DEPLOYMENT
@@ -685,10 +1200,11 @@ async fn create_deployment(
     // Persist resolved ids (even if inactive) to keep request traceable in instances table
     let resolved_zone_id: Option<uuid::Uuid> = zone_row.map(|(id, _z_active, _r_active)| id);
     let resolved_type_id: Option<uuid::Uuid> = type_row.map(|(id, _active)| id);
-    let _ = sqlx::query("UPDATE instances SET zone_id=$2, instance_type_id=$3 WHERE id=$1")
+    let _ = sqlx::query("UPDATE instances SET zone_id=$2, instance_type_id=$3, model_id=$4 WHERE id=$1")
         .bind(instance_id_uuid)
         .bind(resolved_zone_id)
         .bind(resolved_type_id)
+        .bind(payload.model_id)
         .execute(&state.db)
         .await;
 
@@ -705,6 +1221,22 @@ async fn create_deployment(
         None => validation_error = Some(("INVALID_INSTANCE_TYPE", "Invalid instance type (not found for provider)")),
         Some((_id, active)) if !active => validation_error = Some(("INACTIVE_INSTANCE_TYPE", "Instance type is inactive")),
         _ => {}
+    }
+
+    // Validate model (optional)
+    if validation_error.is_none() {
+        if let Some(mid) = payload.model_id {
+            let m: Option<bool> = sqlx::query_scalar("SELECT is_active FROM models WHERE id = $1")
+                .bind(mid)
+                .fetch_optional(&state.db)
+                .await
+                .unwrap_or(None);
+            match m {
+                None => validation_error = Some(("INVALID_MODEL", "Invalid model_id (not found)")),
+                Some(false) => validation_error = Some(("INACTIVE_MODEL", "Model is inactive")),
+                Some(true) => {}
+            }
+        }
     }
 
     if let Some((code, msg)) = validation_error {
@@ -741,6 +1273,131 @@ async fn create_deployment(
             }),
         )
             .into_response();
+    }
+
+    // Guardrails for Scaleway worker auto-install:
+    // - instance type must be available in the zone (instance_type_zones.is_available)
+    // - instance type must match the allowlist patterns when WORKER_AUTO_INSTALL=1
+    let provider_code: String = sqlx::query_scalar("SELECT COALESCE(code, '') FROM providers WHERE id = $1")
+        .bind(provider_id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or_default();
+
+    let auto_install = std::env::var("WORKER_AUTO_INSTALL")
+        .ok()
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+
+    if auto_install && provider_code.to_ascii_lowercase() == "scaleway" {
+        let (Some(zid), Some(tid)) = (resolved_zone_id, resolved_type_id) else {
+            // Should not happen after validation, but keep it safe.
+            let msg = "Missing resolved zone/type id after validation";
+            let _ = sqlx::query(
+                "UPDATE instances SET status='provisioning_failed', error_code=$2, error_message=$3, failed_at=NOW()
+                 WHERE id=$1"
+            )
+            .bind(instance_id_uuid)
+            .bind("INVALID_CATALOG_STATE")
+            .bind(msg)
+            .execute(&state.db)
+            .await;
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(DeploymentResponse { status: "failed".to_string(), instance_id, message: Some(msg.to_string()) }),
+            )
+                .into_response();
+        };
+
+        let is_available: bool = sqlx::query_scalar(
+            r#"
+            SELECT COALESCE(itz.is_available, false)
+            FROM instance_type_zones itz
+            WHERE itz.instance_type_id = $1
+              AND itz.zone_id = $2
+            "#,
+        )
+        .bind(tid)
+        .bind(zid)
+        .fetch_optional(&state.db)
+        .await
+        .unwrap_or(None)
+        .unwrap_or(false);
+
+        if !is_available {
+            let code = "INSTANCE_TYPE_NOT_AVAILABLE_IN_ZONE";
+            let msg = "Instance type is not available in this zone (catalog)";
+            let _ = sqlx::query(
+                "UPDATE instances SET status='provisioning_failed', error_code=$2, error_message=$3, failed_at=NOW()
+                 WHERE id=$1"
+            )
+            .bind(instance_id_uuid)
+            .bind(code)
+            .bind(msg)
+            .execute(&state.db)
+            .await;
+
+            if let Some(id) = log_id {
+                let duration = start.elapsed().as_millis() as i32;
+                simple_logger::log_action_complete_with_metadata(
+                    &state.db,
+                    id,
+                    "failed",
+                    duration,
+                    Some(msg),
+                    Some(serde_json::json!({"error_code": code})),
+                )
+                .await
+                .ok();
+            }
+
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(DeploymentResponse { status: "failed".to_string(), instance_id, message: Some(msg.to_string()) }),
+            )
+                .into_response();
+        }
+
+        let patterns = inventiv_common::worker_target::parse_instance_type_patterns(
+            std::env::var("WORKER_AUTO_INSTALL_INSTANCE_PATTERNS").ok().as_deref(),
+        );
+        let is_supported = inventiv_common::worker_target::instance_type_matches_patterns(&payload.instance_type, &patterns);
+        if !is_supported {
+            let code = "INSTANCE_TYPE_NOT_SUPPORTED";
+            let msg = format!(
+                "Instance type '{}' not supported for worker auto-install (patterns={:?})",
+                payload.instance_type, patterns
+            );
+            let _ = sqlx::query(
+                "UPDATE instances SET status='provisioning_failed', error_code=$2, error_message=$3, failed_at=NOW()
+                 WHERE id=$1"
+            )
+            .bind(instance_id_uuid)
+            .bind(code)
+            .bind(&msg)
+            .execute(&state.db)
+            .await;
+
+            if let Some(id) = log_id {
+                let duration = start.elapsed().as_millis() as i32;
+                simple_logger::log_action_complete_with_metadata(
+                    &state.db,
+                    id,
+                    "failed",
+                    duration,
+                    Some(&msg),
+                    Some(serde_json::json!({"error_code": code, "patterns": patterns})),
+                )
+                .await
+                .ok();
+            }
+
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(DeploymentResponse { status: "failed".to_string(), instance_id, message: Some(msg) }),
+            )
+                .into_response();
+        }
     }
     
     println!("🚀 New Instance Creation Request: {}", instance_id);
@@ -1415,4 +2072,182 @@ async fn list_action_types(
     .unwrap_or_default();
 
     Json(rows)
+}
+
+// ============================================================================
+// REALTIME (SSE)
+// ============================================================================
+
+#[derive(Deserialize)]
+struct EventsStreamParams {
+    // Optional: narrow action log events to a specific instance
+    instance_id: Option<uuid::Uuid>,
+    // Comma-separated topics. Default: instances,actions
+    topics: Option<String>,
+}
+
+#[derive(Serialize)]
+struct InstancesChangedPayload {
+    ids: Vec<uuid::Uuid>,
+    emitted_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Serialize)]
+struct ActionLogsChangedPayload {
+    ids: Vec<uuid::Uuid>,
+    instance_ids: Vec<uuid::Uuid>,
+    emitted_at: chrono::DateTime<chrono::Utc>,
+}
+
+async fn events_stream(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<EventsStreamParams>,
+) -> Sse<ReceiverStream<Result<Event, Infallible>>> {
+    let topics_raw = params.topics.unwrap_or_else(|| "instances,actions".to_string());
+    let topics: std::collections::HashSet<String> = topics_raw
+        .split(',')
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let db = state.db.clone();
+    let instance_id_filter = params.instance_id;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(32);
+
+    tokio::spawn(async move {
+        // Start at "now" so we don't flood on connect; the UI will do an initial fetch anyway.
+        let mut last_instances_ts = chrono::Utc::now();
+        let mut last_actions_ts = chrono::Utc::now();
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+
+        // Quick handshake
+        let hello = Event::default()
+            .event("hello")
+            .data(r#"{"ok":true}"#);
+        if tx.send(Ok(hello)).await.is_err() {
+            return;
+        }
+
+        loop {
+            interval.tick().await;
+
+            if topics.contains("instances") {
+                let rows: Vec<(uuid::Uuid, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+                    r#"
+                    SELECT
+                      id,
+                      GREATEST(
+                        COALESCE(created_at, 'epoch'::timestamptz),
+                        COALESCE(ready_at, 'epoch'::timestamptz),
+                        COALESCE(failed_at, 'epoch'::timestamptz),
+                        COALESCE(terminated_at, 'epoch'::timestamptz),
+                        COALESCE(last_health_check, 'epoch'::timestamptz),
+                        COALESCE((last_reconciliation AT TIME ZONE 'UTC'), 'epoch'::timestamptz),
+                        COALESCE(worker_last_heartbeat, 'epoch'::timestamptz)
+                      ) AS changed_at
+                    FROM instances
+                    WHERE GREATEST(
+                        COALESCE(created_at, 'epoch'::timestamptz),
+                        COALESCE(ready_at, 'epoch'::timestamptz),
+                        COALESCE(failed_at, 'epoch'::timestamptz),
+                        COALESCE(terminated_at, 'epoch'::timestamptz),
+                        COALESCE(last_health_check, 'epoch'::timestamptz),
+                        COALESCE((last_reconciliation AT TIME ZONE 'UTC'), 'epoch'::timestamptz),
+                        COALESCE(worker_last_heartbeat, 'epoch'::timestamptz)
+                      ) > $1
+                    ORDER BY changed_at ASC
+                    LIMIT 200
+                    "#,
+                )
+                .bind(last_instances_ts)
+                .fetch_all(&db)
+                .await
+                .unwrap_or_default();
+
+                if !rows.is_empty() {
+                    let mut max_ts = last_instances_ts;
+                    let ids: Vec<uuid::Uuid> = rows
+                        .into_iter()
+                        .map(|(id, ts)| {
+                            if ts > max_ts {
+                                max_ts = ts;
+                            }
+                            id
+                        })
+                        .collect();
+                    last_instances_ts = max_ts;
+
+                    let payload = InstancesChangedPayload {
+                        ids,
+                        emitted_at: chrono::Utc::now(),
+                    };
+                    let ev = Event::default()
+                        .event("instance.updated")
+                        .data(serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string()));
+                    if tx.send(Ok(ev)).await.is_err() {
+                        return;
+                    }
+                }
+            }
+
+            if topics.contains("actions") || topics.contains("action_logs") {
+                // Important: action logs often "update in place" (status in_progress -> success/failed)
+                // by setting completed_at + duration + metadata. Track changes using changed_at.
+                let rows: Vec<(uuid::Uuid, Option<uuid::Uuid>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+                    r#"
+                    SELECT
+                      id,
+                      instance_id,
+                      GREATEST(created_at, COALESCE(completed_at, created_at)) AS changed_at
+                    FROM action_logs
+                    WHERE GREATEST(created_at, COALESCE(completed_at, created_at)) > $1
+                      AND ($2::uuid IS NULL OR instance_id = $2)
+                    ORDER BY changed_at ASC
+                    LIMIT 500
+                    "#,
+                )
+                .bind(last_actions_ts)
+                .bind(instance_id_filter)
+                .fetch_all(&db)
+                .await
+                .unwrap_or_default();
+
+                if !rows.is_empty() {
+                    let mut max_ts = last_actions_ts;
+                    let mut ids = Vec::with_capacity(rows.len());
+                    let mut inst_ids = std::collections::BTreeSet::new();
+                    for (id, inst, ts) in rows {
+                        ids.push(id);
+                        if let Some(iid) = inst {
+                            inst_ids.insert(iid);
+                        }
+                        if ts > max_ts {
+                            max_ts = ts;
+                        }
+                    }
+                    last_actions_ts = max_ts;
+
+                    let payload = ActionLogsChangedPayload {
+                        ids,
+                        instance_ids: inst_ids.into_iter().collect(),
+                        emitted_at: chrono::Utc::now(),
+                    };
+                    // Keep event name stable for the UI: treat it as "action log changed".
+                    let ev = Event::default()
+                        .event("action_log.created")
+                        .data(serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string()));
+                    if tx.send(Ok(ev)).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+
+    Sse::new(ReceiverStream::new(rx)).keep_alive(
+        KeepAlive::new()
+            .interval(std::time::Duration::from_secs(15))
+            .text("keepalive"),
+    )
 }

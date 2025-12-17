@@ -106,7 +106,7 @@ impl MockProvider {
 
 #[async_trait]
 impl CloudProvider for MockProvider {
-    async fn create_instance(&self, zone: &str, instance_type: &str, _image_id: &str) -> Result<String> {
+    async fn create_instance(&self, zone: &str, instance_type: &str, _image_id: &str, _cloud_init: Option<&str>) -> Result<String> {
         self.validate_zone_and_type(zone, instance_type).await?;
 
         let server_id = format!("mock-{}", uuid::Uuid::new_v4());

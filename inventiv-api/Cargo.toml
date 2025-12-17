@@ -20,6 +20,8 @@ dotenv = "0.15"
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 tower-http = { version = "0.6.8", features = ["cors"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 jsonwebtoken = "9.3"
 time = { version = "0.3", features = ["serde"] }
+tokio-stream = "0.1"
+rand = "0.8"

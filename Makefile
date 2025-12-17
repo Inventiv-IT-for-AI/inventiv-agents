@@ -1,6 +1,15 @@
 VERSION := $(shell cat VERSION)
 GIT_SHA := $(shell git rev-parse --short=12 HEAD)
 
+# Port offset (for running multiple worktrees side-by-side on the same host).
+# Example:
+#   make PORT_OFFSET=0 up ui          -> UI on 3000
+#   make PORT_OFFSET=10000 up ui      -> UI on 13000 (no collisions)
+PORT_OFFSET ?= 0
+
+# UI host port (computed from PORT_OFFSET by default)
+UI_HOST_PORT ?= $(shell off="$(PORT_OFFSET)"; if [ -z "$$off" ]; then off=0; fi; echo $$((3000 + $$off)))
+
 # Container promotion (immutable tags)
 IMAGE_TAG ?= $(GIT_SHA)
 # Convenience tags (opt-in)
@@ -21,6 +30,11 @@ COMPOSE ?= docker compose
 DEV_ENV_FILE ?= env/dev.env
 STG_ENV_FILE ?= env/staging.env
 PRD_ENV_FILE ?= env/prod.env
+
+# Load dev env variables into Make (optional).
+# This allows setting PORT_OFFSET (and other non-secret defaults) per worktree
+# without passing them on every command line.
+-include $(DEV_ENV_FILE)
 
 # Fail fast with helpful guidance when env files are missing.
 define require_env_file
@@ -95,7 +109,8 @@ help:
 	@echo "  make images-publish-prod # build+push v$(VERSION) then retag to :prod"
 	@echo ""
 	@echo "## DEV local (docker-compose.yml — hot reload)"
-	@echo "  make up | down | ps | logs"
+	@echo "  make up | down | ps | logs     # down keeps DB/Redis volumes"
+	@echo "  make nuke                       # down -v (wipe DB/Redis volumes)"
 	@echo "  make ui            # start Next.js UI on http://localhost:3000"
 	@echo "  make dev-create | dev-start | dev-stop | dev-delete"
 	@echo "  make dev-restart-orchestrator"
@@ -207,11 +222,24 @@ images-promote-prod:
 
 # README-friendly aliases
 up: dev-create
-down: dev-delete
+down: dev-stop
 ps: dev-ps
 logs: dev-logs
 
+# Destructive reset (removes named volumes like db_data/redis_data)
+.PHONY: nuke
+nuke: dev-delete
+
 ui:
+	@$(MAKE) check-dev-env
+	@echo "🖥️  UI (Docker) on http://localhost:$(UI_HOST_PORT)  [PORT_OFFSET=$(PORT_OFFSET)]"
+	@UI_HOST_PORT=$(UI_HOST_PORT) PORT_OFFSET=$(PORT_OFFSET) \
+	  $(COMPOSE_LOCAL) --profile ui up -d --remove-orphans frontend
+
+# Optional: run UI locally on host (kept for convenience / debugging).
+# Note: requires the API to be exposed on the host (not the default anymore).
+.PHONY: ui-local
+ui-local:
 	@$(MAKE) check-dev-env
 	@set -e; \
 	if [ ! -d "inventiv-frontend" ]; then \
@@ -225,7 +253,20 @@ ui:
 	  echo "NEXT_PUBLIC_API_URL=http://localhost:8003" > inventiv-frontend/.env.local; \
 	  echo "✅ Created inventiv-frontend/.env.local (NEXT_PUBLIC_API_URL=http://localhost:8003)"; \
 	fi; \
-	cd inventiv-frontend && npm run dev -- --port 3000
+	cd inventiv-frontend && npm run dev -- --port $(UI_HOST_PORT)
+
+# Expose API on host loopback for local tunnels (cloudflared), without changing docker-compose.yml.
+# It starts a tiny socat container bound to 127.0.0.1:(8003+PORT_OFFSET) that forwards to api:8003 on the compose network.
+.PHONY: api-expose api-unexpose
+api-expose:
+	@$(MAKE) check-dev-env
+	@chmod +x ./scripts/dev_expose_api_loopback.sh 2>/dev/null || true
+	@PORT_OFFSET=$(PORT_OFFSET) ./scripts/dev_expose_api_loopback.sh
+
+api-unexpose:
+	@API_HOST_PORT=$$(echo $$((8003 + $${PORT_OFFSET:-0}))); \
+	docker rm -f "inventiv-api-loopback-$${API_HOST_PORT}" >/dev/null 2>&1 || true; \
+	echo "✅ Removed API loopback proxy (if it existed) on port $${API_HOST_PORT}"
 
 dev-create:
 	@echo "🚀 DEV create (docker-compose.yml, hot reload)"

@@ -21,6 +21,7 @@ mod watch_dog_job;
 mod provisioning_job;
 mod services; // NEW
 mod finops_events;
+mod worker_storage;
 use tokio::time::{sleep, Duration};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres};

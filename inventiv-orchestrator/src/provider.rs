@@ -3,7 +3,7 @@ use anyhow::Result;
 
 #[async_trait]
 pub trait CloudProvider: Send + Sync {
-    async fn create_instance(&self, zone: &str, instance_type: &str, image_id: &str) -> Result<String>;
+    async fn create_instance(&self, zone: &str, instance_type: &str, image_id: &str, cloud_init: Option<&str>) -> Result<String>;
     async fn start_instance(&self, zone: &str, server_id: &str) -> Result<bool>;
     async fn terminate_instance(&self, zone: &str, server_id: &str) -> Result<bool>;
     async fn get_instance_ip(&self, zone: &str, server_id: &str) -> Result<Option<String>>;

@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CheckCircle, Search, Microchip } from "lucide-react";
 import { apiUrl } from "@/lib/api";
-import { Provider, Region, Zone, InstanceType } from "@/lib/types";
+import { Provider, Region, Zone, InstanceType, LlmModel } from "@/lib/types";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatEur } from "@/lib/utils";
@@ -47,6 +47,13 @@ export function CreateInstanceModal({
     const [typeQuery, setTypeQuery] = useState("");
     const [filterGpuCount, setFilterGpuCount] = useState<string>("all"); // "all" | number as string
     const [filterVramPerGpu, setFilterVramPerGpu] = useState<string>("all"); // "all" | number as string
+
+    const [models, setModels] = useState<LlmModel[]>([]);
+    const [selectedModelId, setSelectedModelId] = useState<string>("");
+    const selectedModel = useMemo(() => {
+        if (!selectedModelId) return null;
+        return models.find((m) => m.id === selectedModelId) ?? null;
+    }, [models, selectedModelId]);
 
     const selectedProviderId = useMemo(() => {
         if (selectedProviderCode === "all") return "";
@@ -150,6 +157,16 @@ export function CreateInstanceModal({
         const qs = selectedProviderCode !== "all" ? `?provider_code=${encodeURIComponent(selectedProviderCode)}` : "";
 
         const run = async () => {
+            // Fetch models (active only) once per open.
+            if (models.length === 0) {
+                const mres = await fetch(apiUrl("models?active=true"));
+                const mdata = mres.ok ? ((await mres.json()) as LlmModel[]) : [];
+                if (!cancelled) {
+                    setModels(mdata);
+                    if (!selectedModelId && mdata.length > 0) setSelectedModelId(mdata[0].id);
+                }
+            }
+
             const combos: Combo[] = [];
             for (const z of candidateZones) {
                 const cached = typesByZoneRef.get(z.id);
@@ -189,11 +206,15 @@ export function CreateInstanceModal({
             cancelled = true;
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open, selectedProviderCode, selectedProviderId, selectedRegionId, selectedZoneId, zones, providers, regions]);
+    }, [open, selectedProviderCode, selectedProviderId, selectedRegionId, selectedZoneId, zones, providers, regions, models.length, selectedModelId, typesByZoneRef]);
 
     const handleDeploy = async () => {
         if (!selectedCombo) {
             alert("Please select all required fields");
+            return;
+        }
+        if (!selectedModelId) {
+            alert("Please select a model");
             return;
         }
 
@@ -210,6 +231,7 @@ export function CreateInstanceModal({
                     provider_code: providerCodeForDeploy,
                     zone: zoneForDeploy?.code || "",
                     instance_type: typeForDeploy?.code || "",
+                    model_id: selectedModelId,
                 }),
             });
 
@@ -239,6 +261,7 @@ export function CreateInstanceModal({
         setSelectedRegionId("all");
         setSelectedZoneId("all");
         setSelectedComboKey("");
+        setSelectedModelId("");
         onClose();
     };
 
@@ -258,77 +281,11 @@ export function CreateInstanceModal({
                         <span className="text-xl font-bold">Demande de création prise en compte</span>
                     </div>
                 ) : (
-                    <div className="grid gap-6 py-4 lg:grid-cols-[360px_1fr]">
-                        {/* Left: Provider/Region/Zone + Selected summary */}
-                        <div className="grid gap-4">
-                            <div className="grid grid-cols-4 items-center gap-4">
-                            <Label className="text-right">Provider</Label>
-                            <Select value={selectedProviderCode} onValueChange={onProviderChange}>
-                                <SelectTrigger className="col-span-3">
-                                    <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="all">Tout</SelectItem>
-                                    {providers.filter((p) => p.is_active ?? true).map((p) => (
-                                        <SelectItem key={p.id} value={p.code}>
-                                            {p.name}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                        </div>
-
-                        <div className="grid grid-cols-4 items-center gap-4">
-                            <Label className="text-right">Region</Label>
-                            <Select
-                                value={selectedRegionId}
-                                onValueChange={onRegionChange}
-                                disabled={deployStep === "submitting"}
-                            >
-                                <SelectTrigger className="col-span-3">
-                                    <SelectValue placeholder="Tout" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="all">Tout</SelectItem>
-                                    {regions
-                                        .filter((r) => r.is_active && (!selectedProviderId || r.provider_id === selectedProviderId))
-                                        .map((r) => (
-                                        <SelectItem key={r.id} value={r.id}>
-                                            {r.name}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                        </div>
-
-                        <div className="grid grid-cols-4 items-center gap-4">
-                            <Label className="text-right">Zone</Label>
-                            <Select
-                                value={selectedZoneId}
-                                onValueChange={onZoneChange}
-                                disabled={deployStep === "submitting"}
-                            >
-                                <SelectTrigger className="col-span-3">
-                                    <SelectValue placeholder="Tout" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="all">Tout</SelectItem>
-                                    {zones.map((z) => (
-                                        <SelectItem key={z.id} value={z.id}>
-                                            {z.name}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                        </div>
-
-                        {/* No separate details panel: selection highlight is sufficient */}
-                        </div>
-
-                        {/* Right: Filters + Types cards */}
+                    <div className="grid gap-6 py-4">
+                        {/* Filters + Types cards */}
                         <div className="grid gap-3">
-                            <div className="flex flex-wrap items-center gap-2">
-                                <div className="relative flex-1 min-w-[240px]">
+                            <div className="flex flex-col gap-2">
+                                <div className="relative">
                                     <Search className="h-4 w-4 text-muted-foreground absolute left-3 top-1/2 -translate-y-1/2" />
                                     <Input
                                         className="pl-9"
@@ -339,32 +296,87 @@ export function CreateInstanceModal({
                                     />
                                 </div>
 
-                                <Select value={filterGpuCount} onValueChange={setFilterGpuCount}>
-                                    <SelectTrigger className="w-[140px]">
-                                        <SelectValue placeholder="GPU" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="all">GPU: tous</SelectItem>
-                                        {gpuCountOptions.map((g) => (
-                                            <SelectItem key={g} value={String(g)}>{g} GPU</SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
+                                {/* Provider/Region/Zone aligned next to GPU/VRAM, under the SearchBox */}
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <Select value={selectedProviderCode} onValueChange={onProviderChange}>
+                                        <SelectTrigger className="w-[190px]">
+                                            <SelectValue placeholder="Provider : tous" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="all">Provider : tous</SelectItem>
+                                            {providers.filter((p) => p.is_active ?? true).map((p) => (
+                                                <SelectItem key={p.id} value={p.code}>
+                                                    {p.name}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
 
-                                <Select value={filterVramPerGpu} onValueChange={setFilterVramPerGpu}>
-                                    <SelectTrigger className="w-[160px]">
-                                        <SelectValue placeholder="VRAM/GPU" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="all">VRAM: toutes</SelectItem>
-                                        {vramOptions.map((v) => (
-                                            <SelectItem key={v} value={String(v)}>{`≥ ${v} GB/GPU`}</SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
+                                    <Select
+                                        value={selectedRegionId}
+                                        onValueChange={onRegionChange}
+                                        disabled={deployStep === "submitting"}
+                                    >
+                                        <SelectTrigger className="w-[190px]">
+                                            <SelectValue placeholder="Region : toutes" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="all">Region : toutes</SelectItem>
+                                            {regions
+                                                .filter((r) => r.is_active && (!selectedProviderId || r.provider_id === selectedProviderId))
+                                                .map((r) => (
+                                                <SelectItem key={r.id} value={r.id}>
+                                                    {r.name}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+
+                                    <Select
+                                        value={selectedZoneId}
+                                        onValueChange={onZoneChange}
+                                        disabled={deployStep === "submitting"}
+                                    >
+                                        <SelectTrigger className="w-[190px]">
+                                            <SelectValue placeholder="Zone : toutes" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="all">Zone : toutes</SelectItem>
+                                            {zones.map((z) => (
+                                                <SelectItem key={z.id} value={z.id}>
+                                                    {z.name}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+
+                                    <Select value={filterGpuCount} onValueChange={setFilterGpuCount}>
+                                        <SelectTrigger className="w-[140px]">
+                                            <SelectValue placeholder="GPU : tout" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="all">GPU : tout</SelectItem>
+                                            {gpuCountOptions.map((g) => (
+                                                <SelectItem key={g} value={String(g)}>{g} GPU</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+
+                                    <Select value={filterVramPerGpu} onValueChange={setFilterVramPerGpu}>
+                                        <SelectTrigger className="w-[170px]">
+                                            <SelectValue placeholder="VRAM : toutes" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="all">VRAM : toutes</SelectItem>
+                                            {vramOptions.map((v) => (
+                                                <SelectItem key={v} value={String(v)}>{`≥ ${v} GB/GPU`}</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
                             </div>
 
-                            <ScrollArea className="h-[420px] rounded-md border">
+                            <ScrollArea className="h-[420px] rounded-md border [&>[data-radix-scroll-area-scrollbar][data-orientation=vertical]]:bg-muted/30">
                                 <div className="p-2 space-y-2">
                                     {filteredCombos.length === 0 ? (
                                         <div className="text-sm text-muted-foreground p-4">Aucun type ne correspond aux filtres.</div>
@@ -463,6 +475,41 @@ export function CreateInstanceModal({
                                     )}
                                 </div>
                             </ScrollArea>
+                        </div>
+
+                        {/* Model selector (bottom) */}
+                        <div className="grid gap-2">
+                            <Label>Model</Label>
+                            <Select
+                                value={selectedModelId}
+                                onValueChange={setSelectedModelId}
+                                disabled={deployStep === "submitting" || models.length === 0}
+                            >
+                                <SelectTrigger className="w-full">
+                                    <SelectValue
+                                        placeholder={models.length === 0 ? "No models available (create one in Models)" : "Select a model"}
+                                    />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {models.map((m) => (
+                                        <SelectItem key={m.id} value={m.id}>
+                                            {m.name} — {m.model_id}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                            {selectedModel ? (
+                                <div className="text-xs text-muted-foreground">
+                                    VRAM req: <span className="font-mono text-foreground">{selectedModel.required_vram_gb}GB</span>
+                                    {" • "}ctx: <span className="font-mono text-foreground">{selectedModel.context_length}</span>
+                                    {selectedModel.data_volume_gb ? (
+                                        <>
+                                            {" • "}disk:{" "}
+                                            <span className="font-mono text-foreground">{selectedModel.data_volume_gb}GB</span>
+                                        </>
+                                    ) : null}
+                                </div>
+                            ) : null}
                         </div>
                     </div>
                 )}
