@@ -849,10 +849,61 @@ pub async fn process_provisioning(
                 // model is mandatory; do not fallback silently here
                 let worker_model = model_from_db.expect("model is mandatory (validated before provisioning)");
 
-                let vllm_image = std::env::var("WORKER_VLLM_IMAGE")
-                    .ok()
-                    .filter(|s| !s.trim().is_empty())
-                    .unwrap_or_else(|| "vllm/vllm-openai:latest".to_string());
+                let provider_id: Option<Uuid> = sqlx::query_scalar("SELECT provider_id FROM instances WHERE id = $1")
+                    .bind(instance_uuid)
+                    .fetch_optional(&pool)
+                    .await
+                    .unwrap_or(None);
+
+                let vllm_image = if let Some(pid) = provider_id {
+                    sqlx::query_scalar("SELECT value_text FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_VLLM_IMAGE'")
+                        .bind(pid)
+                        .fetch_optional(&pool)
+                        .await
+                        .ok()
+                        .flatten()
+                        .filter(|s: &String| !s.trim().is_empty())
+                        .or_else(|| std::env::var("WORKER_VLLM_IMAGE").ok().filter(|s| !s.trim().is_empty()))
+                        .unwrap_or_else(|| "vllm/vllm-openai:latest".to_string())
+                } else {
+                    std::env::var("WORKER_VLLM_IMAGE")
+                        .ok()
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or_else(|| "vllm/vllm-openai:latest".to_string())
+                };
+
+                let worker_health_port: u16 = if let Some(pid) = provider_id {
+                    sqlx::query_scalar("SELECT value_int FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_HEALTH_PORT'")
+                        .bind(pid)
+                        .fetch_optional(&pool)
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|v| u16::try_from(v).ok())
+                        .or_else(|| std::env::var("WORKER_HEALTH_PORT").ok().and_then(|s| s.parse::<u16>().ok()))
+                        .unwrap_or(8080)
+                } else {
+                    std::env::var("WORKER_HEALTH_PORT")
+                        .ok()
+                        .and_then(|s| s.parse::<u16>().ok())
+                        .unwrap_or(8080)
+                };
+                let worker_vllm_port: u16 = if let Some(pid) = provider_id {
+                    sqlx::query_scalar("SELECT value_int FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_VLLM_PORT'")
+                        .bind(pid)
+                        .fetch_optional(&pool)
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|v| u16::try_from(v).ok())
+                        .or_else(|| std::env::var("WORKER_VLLM_PORT").ok().and_then(|s| s.parse::<u16>().ok()))
+                        .unwrap_or(8000)
+                } else {
+                    std::env::var("WORKER_VLLM_PORT")
+                        .ok()
+                        .and_then(|s| s.parse::<u16>().ok())
+                        .unwrap_or(8000)
+                };
 
                 let agent_url = std::env::var("WORKER_AGENT_SOURCE_URL")
                     .ok()
@@ -868,6 +919,8 @@ pub async fn process_provisioning(
                     &cp_url,
                     &worker_model,
                     &vllm_image,
+                    worker_vllm_port,
+                    worker_health_port,
                     &agent_url,
                     &worker_auth_token,
                     &worker_hf_token,
@@ -941,13 +994,65 @@ pub async fn process_provisioning(
             // Without this, Scaleway security groups may block inbound traffic by default,
             // which makes `curl http://<ip>:8000/...` fail even if the worker is running.
             if auto_install && is_scaleway && is_worker_target {
-                let expose = std::env::var("WORKER_EXPOSE_PORTS")
-                    .ok()
-                    .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-                    .unwrap_or(true);
+                let provider_id: Option<Uuid> = sqlx::query_scalar("SELECT provider_id FROM instances WHERE id = $1")
+                    .bind(instance_uuid)
+                    .fetch_optional(&pool)
+                    .await
+                    .unwrap_or(None);
+                let expose = if let Some(pid) = provider_id {
+                    sqlx::query_scalar("SELECT value_bool FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_EXPOSE_PORTS'")
+                        .bind(pid)
+                        .fetch_optional(&pool)
+                        .await
+                        .ok()
+                        .flatten()
+                        .unwrap_or_else(|| {
+                            std::env::var("WORKER_EXPOSE_PORTS")
+                                .ok()
+                                .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+                                .unwrap_or(true)
+                        })
+                } else {
+                    std::env::var("WORKER_EXPOSE_PORTS")
+                        .ok()
+                        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+                        .unwrap_or(true)
+                };
                 if expose {
-                    match provider.ensure_inbound_tcp_ports(&zone, &server_id, vec![8000, 8080]).await {
-                        Ok(true) => println!("🔓 worker ports opened on security group (8000/8080)"),
+                    let worker_health_port: u16 = if let Some(pid) = provider_id {
+                        sqlx::query_scalar("SELECT value_int FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_HEALTH_PORT'")
+                            .bind(pid)
+                            .fetch_optional(&pool)
+                            .await
+                            .ok()
+                            .flatten()
+                            .and_then(|v| u16::try_from(v).ok())
+                            .or_else(|| std::env::var("WORKER_HEALTH_PORT").ok().and_then(|s| s.parse::<u16>().ok()))
+                            .unwrap_or(8080)
+                    } else {
+                        std::env::var("WORKER_HEALTH_PORT")
+                            .ok()
+                            .and_then(|s| s.parse::<u16>().ok())
+                            .unwrap_or(8080)
+                    };
+                    let worker_vllm_port: u16 = if let Some(pid) = provider_id {
+                        sqlx::query_scalar("SELECT value_int FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_VLLM_PORT'")
+                            .bind(pid)
+                            .fetch_optional(&pool)
+                            .await
+                            .ok()
+                            .flatten()
+                            .and_then(|v| u16::try_from(v).ok())
+                            .or_else(|| std::env::var("WORKER_VLLM_PORT").ok().and_then(|s| s.parse::<u16>().ok()))
+                            .unwrap_or(8000)
+                    } else {
+                        std::env::var("WORKER_VLLM_PORT")
+                            .ok()
+                            .and_then(|s| s.parse::<u16>().ok())
+                            .unwrap_or(8000)
+                    };
+                    match provider.ensure_inbound_tcp_ports(&zone, &server_id, vec![worker_vllm_port as i32, worker_health_port as i32]).await {
+                        Ok(true) => println!("🔓 worker ports opened on security group ({}/{})", worker_vllm_port, worker_health_port),
                         Ok(false) => eprintln!("⚠️ provider does not support ensure_inbound_tcp_ports (skipped)"),
                         Err(e) => eprintln!("⚠️ failed to open worker ports: {}", e),
                     }
@@ -994,7 +1099,33 @@ pub async fn process_provisioning(
                 } else {
                     // model is mandatory; do not fallback silently here
                     let worker_model = model_from_db.expect("model is mandatory (validated before provisioning)");
-                    if let Some(gb) = worker_storage::recommended_data_volume_gb(&worker_model) {
+                    let provider_id: Option<Uuid> = sqlx::query_scalar("SELECT provider_id FROM instances WHERE id = $1")
+                        .bind(instance_uuid)
+                        .fetch_optional(&pool)
+                        .await
+                        .unwrap_or(None);
+                    let default_gb: i64 = if let Some(pid) = provider_id {
+                        sqlx::query_scalar("SELECT value_int FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_DATA_VOLUME_GB_DEFAULT'")
+                            .bind(pid)
+                            .fetch_optional(&pool)
+                            .await
+                            .ok()
+                            .flatten()
+                            .unwrap_or_else(|| {
+                                std::env::var("WORKER_DATA_VOLUME_GB_DEFAULT")
+                                    .ok()
+                                    .and_then(|v| v.trim().parse::<i64>().ok())
+                                    .filter(|gb| *gb > 0)
+                                    .unwrap_or(200)
+                            })
+                    } else {
+                        std::env::var("WORKER_DATA_VOLUME_GB_DEFAULT")
+                            .ok()
+                            .and_then(|v| v.trim().parse::<i64>().ok())
+                            .filter(|gb| *gb > 0)
+                            .unwrap_or(200)
+                    };
+                    if let Some(gb) = worker_storage::recommended_data_volume_gb(&worker_model, default_gb) {
                         data_conf = Some((gb, None, true));
                     }
                 }
@@ -1350,6 +1481,8 @@ fn build_worker_cloud_init(
     control_plane_url: &str,
     model_id: &str,
     vllm_image: &str,
+    vllm_port: u16,
+    worker_health_port: u16,
     agent_source_url: &str,
     worker_auth_token: &str,
     worker_hf_token: &str,
@@ -1375,6 +1508,8 @@ fn build_worker_cloud_init(
     cloud.push_str(&format!("      CONTROL_PLANE_URL=\"{}\"\n", control_plane_url));
     cloud.push_str(&format!("      MODEL_ID=\"{}\"\n", model_id));
     cloud.push_str(&format!("      VLLM_IMAGE=\"{}\"\n", vllm_image));
+    cloud.push_str(&format!("      VLLM_PORT=\"{}\"\n", vllm_port));
+    cloud.push_str(&format!("      WORKER_HEALTH_PORT=\"{}\"\n", worker_health_port));
     cloud.push_str(&format!("      AGENT_URL=\"{}\"\n", agent_source_url));
     cloud.push_str(&format!("      WORKER_AUTH_TOKEN=\"{}\"\n", worker_auth_token));
     cloud.push_str(&format!("      WORKER_HF_TOKEN=\"{}\"\n", worker_hf_token));
@@ -1418,7 +1553,7 @@ fn build_worker_cloud_init(
     cloud.push_str("      docker run -d --restart unless-stopped \\\n");
     cloud.push_str("        --name vllm \\\n");
     cloud.push_str("        --gpus all \\\n");
-    cloud.push_str("        -p 8000:8000 \\\n");
+    cloud.push_str(&format!("        -p {0}:{0} \\\n", vllm_port));
     cloud.push_str("        -e HUGGING_FACE_HUB_TOKEN=\"$WORKER_HF_TOKEN\" \\\n");
     cloud.push_str("        -e HUGGINGFACE_HUB_TOKEN=\"$WORKER_HF_TOKEN\" \\\n");
     cloud.push_str("        -e HF_TOKEN=\"$WORKER_HF_TOKEN\" \\\n");
@@ -1426,7 +1561,7 @@ fn build_worker_cloud_init(
     cloud.push_str("        -e TRANSFORMERS_CACHE=/opt/inventiv-worker/hf \\\n");
     cloud.push_str("        -v /opt/inventiv-worker:/opt/inventiv-worker \\\n");
     cloud.push_str("        \"$VLLM_IMAGE\" \\\n");
-    cloud.push_str("        --host 0.0.0.0 --port 8000 \\\n");
+    cloud.push_str(&format!("        --host 0.0.0.0 --port {} \\\n", vllm_port));
     cloud.push_str("        --model \"$MODEL_ID\" \\\n");
     cloud.push_str("        --dtype float16\n");
     cloud.push_str("\n");
@@ -1437,9 +1572,9 @@ fn build_worker_cloud_init(
     cloud.push_str("        -e CONTROL_PLANE_URL=\"$CONTROL_PLANE_URL\" \\\n");
     cloud.push_str("        -e INSTANCE_ID=\"$INSTANCE_ID\" \\\n");
     cloud.push_str("        -e MODEL_ID=\"$MODEL_ID\" \\\n");
-    cloud.push_str("        -e VLLM_BASE_URL=\"http://127.0.0.1:8000\" \\\n");
-    cloud.push_str("        -e WORKER_HEALTH_PORT=8080 \\\n");
-    cloud.push_str("        -e WORKER_VLLM_PORT=8000 \\\n");
+    cloud.push_str(&format!("        -e VLLM_BASE_URL=\"http://127.0.0.1:{}\" \\\n", vllm_port));
+    cloud.push_str("        -e WORKER_HEALTH_PORT=\"$WORKER_HEALTH_PORT\" \\\n");
+    cloud.push_str("        -e WORKER_VLLM_PORT=\"$VLLM_PORT\" \\\n");
     cloud.push_str("        -e WORKER_HEARTBEAT_INTERVAL_S=10 \\\n");
     cloud.push_str("        -e WORKER_AUTH_TOKEN=\"$WORKER_AUTH_TOKEN\" \\\n");
     cloud.push_str("        -v /opt/inventiv-worker/agent.py:/app/agent.py:ro \\\n");

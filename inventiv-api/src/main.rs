@@ -138,6 +138,7 @@ async fn main() {
         .route("/providers/search", get(settings::search_providers))
         .route("/providers/:id", axum::routing::put(settings::update_provider))
         .route("/settings/definitions", get(provider_settings::list_settings_definitions))
+        .route("/settings/global", get(provider_settings::list_global_settings).put(provider_settings::upsert_global_setting))
         // Provider-scoped params
         .route("/providers/params", get(provider_settings::list_provider_params))
         .route("/providers/:id/params", axum::routing::put(provider_settings::update_provider_params))
@@ -214,12 +215,38 @@ fn stable_hash_u64(s: &str) -> u64 {
     h.finish()
 }
 
-fn openai_worker_stale_seconds() -> i64 {
+fn openai_worker_stale_seconds_env() -> i64 {
     std::env::var("OPENAI_WORKER_STALE_SECONDS")
         .ok()
         .and_then(|s| s.trim().parse::<i64>().ok())
         .filter(|v| *v >= 10 && *v <= 24 * 60 * 60)
         .unwrap_or(300) // 5 minutes
+}
+
+async fn openai_worker_stale_seconds_db(db: &Pool<Postgres>) -> i64 {
+    // Global settings override (DB) -> env -> settings_definitions default -> hard default.
+    let from_db: Option<i64> = sqlx::query_scalar("SELECT value_int FROM global_settings WHERE key = 'OPENAI_WORKER_STALE_SECONDS'")
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten();
+    if let Some(v) = from_db {
+        return v.clamp(10, 24 * 60 * 60);
+    }
+
+    let env_v = openai_worker_stale_seconds_env();
+    if env_v > 0 {
+        return env_v;
+    }
+
+    let def_v: Option<i64> = sqlx::query_scalar(
+        "SELECT default_int FROM settings_definitions WHERE key = 'OPENAI_WORKER_STALE_SECONDS' AND scope = 'global'",
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    def_v.unwrap_or(300).clamp(10, 24 * 60 * 60)
 }
 
 #[derive(Serialize, sqlx::FromRow, utoipa::ToSchema)]
@@ -240,7 +267,7 @@ struct RuntimeModelRow {
     responses((status = 200, description = "Runtime models (live capacity + history + counters)", body = Vec<RuntimeModelRow>))
 )]
 async fn list_runtime_models(State(state): State<Arc<AppState>>) -> Json<Vec<RuntimeModelRow>> {
-    let stale = openai_worker_stale_seconds();
+    let stale = openai_worker_stale_seconds_db(&state.db).await;
 
     // Live capacity aggregation (only "ready" + recent heartbeats).
     // Note: instance_types may be null in some edge cases; we treat missing as 0.
@@ -316,7 +343,7 @@ async fn select_ready_worker_for_model(
     // `model` here is the vLLM/OpenAI model id (HF repo id).
     // We route based on `instances.worker_model_id` (set by worker heartbeat/register).
     let model = model.trim();
-    let stale = openai_worker_stale_seconds();
+    let stale = openai_worker_stale_seconds_db(db).await;
     let rows = sqlx::query_as::<Postgres, ReadyWorkerRow>(
         r#"
         SELECT
@@ -417,7 +444,7 @@ async fn openai_list_models(State(state): State<Arc<AppState>>) -> impl IntoResp
     #[derive(Serialize)]
     struct Resp { object: &'static str, data: Vec<ModelObj> }
 
-    let stale = openai_worker_stale_seconds();
+    let stale = openai_worker_stale_seconds_db(&state.db).await;
     let rows = sqlx::query_as::<Postgres, Row>(
         r#"
         SELECT

@@ -47,6 +47,22 @@ export type ProviderParams = {
     provider_code: string;
     worker_instance_startup_timeout_s?: number | null;
     instance_startup_timeout_s?: number | null;
+    worker_ssh_bootstrap_timeout_s?: number | null;
+    worker_health_port?: number | null;
+    worker_vllm_port?: number | null;
+    worker_data_volume_gb_default?: number | null;
+    worker_expose_ports?: boolean | null;
+    worker_vllm_mode?: string | null;
+    worker_vllm_image?: string | null;
+};
+
+export type GlobalSetting = {
+    key: string;
+    value_type: string;
+    value_int?: number | null;
+    value_bool?: boolean | null;
+    value_text?: string | null;
+    value_json?: Record<string, unknown> | null;
 };
 
 export type Region = {

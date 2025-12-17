@@ -12,18 +12,18 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Pencil, Settings2, Plus } from "lucide-react";
 import { ManageZonesModal } from "@/components/settings/ManageZonesModal";
-import type { Provider, ProviderParams, Region, Zone, InstanceType, LlmModel, ApiKey } from "@/lib/types";
+import type { Provider, ProviderParams, GlobalSetting, Region, Zone, InstanceType, LlmModel, ApiKey } from "@/lib/types";
 import { VirtualizedDataTable, type DataTableColumn } from "@/components/shared/VirtualizedDataTable";
 import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
 import { formatEur } from "@/lib/utils";
 import { ActiveToggle } from "@/components/shared/ActiveToggle";
 import { CopyButton } from "@/components/shared/CopyButton";
 export default function SettingsPage() {
-    const [activeTab, setActiveTab] = useState<"providers" | "regions" | "zones" | "types" | "models" | "provider_params" | "api_keys">("providers");
-    const [refreshTick, setRefreshTick] = useState({ providers: 0, regions: 0, zones: 0, types: 0, models: 0, provider_params: 0, api_keys: 0 });
+    const [activeTab, setActiveTab] = useState<"providers" | "regions" | "zones" | "types" | "models" | "provider_params" | "global_params" | "api_keys">("providers");
+    const [refreshTick, setRefreshTick] = useState({ providers: 0, regions: 0, zones: 0, types: 0, models: 0, provider_params: 0, global_params: 0, api_keys: 0 });
 
     type EntityType = "provider" | "region" | "zone" | "type" | "model";
-    type RefreshKey = "providers" | "regions" | "zones" | "types" | "models" | "provider_params" | "api_keys";
+    type RefreshKey = "providers" | "regions" | "zones" | "types" | "models" | "provider_params" | "global_params" | "api_keys";
     const refreshKeyFor = (t: EntityType): RefreshKey => {
         switch (t) {
             case "provider":
@@ -50,12 +50,23 @@ export default function SettingsPage() {
     const [editingProviderParams, setEditingProviderParams] = useState<ProviderParams | null>(null);
     const [workerStartupTimeoutS, setWorkerStartupTimeoutS] = useState<string>("");
     const [instanceStartupTimeoutS, setInstanceStartupTimeoutS] = useState<string>("");
-    const [settingsDefs, setSettingsDefs] = useState<Record<string, { min?: number; max?: number; def?: number; desc?: string }>>({});
+    const [sshBootstrapTimeoutS, setSshBootstrapTimeoutS] = useState<string>("");
+    const [workerHealthPort, setWorkerHealthPort] = useState<string>("");
+    const [workerVllmPort, setWorkerVllmPort] = useState<string>("");
+    const [dataVolumeDefaultGb, setDataVolumeDefaultGb] = useState<string>("");
+    const [exposePorts, setExposePorts] = useState<boolean>(true);
+    const [vllmMode, setVllmMode] = useState<string>("mono");
+    const [vllmImage, setVllmImage] = useState<string>("");
+    const [settingsDefs, setSettingsDefs] = useState<Record<string, { min?: number; max?: number; defInt?: number; defBool?: boolean; defText?: string; desc?: string }>>({});
+
+    const [globalSettings, setGlobalSettings] = useState<GlobalSetting[]>([]);
+    const [globalSettingsLoading, setGlobalSettingsLoading] = useState(false);
+    const [globalStaleSeconds, setGlobalStaleSeconds] = useState<string>("");
 
     const searchParams = useSearchParams();
     useEffect(() => {
         const tab = (searchParams.get("tab") || "").toLowerCase();
-        if (tab === "providers" || tab === "regions" || tab === "zones" || tab === "types" || tab === "models" || tab === "provider_params" || tab === "api_keys") {
+        if (tab === "providers" || tab === "regions" || tab === "zones" || tab === "types" || tab === "models" || tab === "provider_params" || tab === "global_params" || tab === "api_keys") {
             setActiveTab(tab as any);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -261,6 +272,13 @@ export default function SettingsPage() {
         setEditingProviderParams(row);
         setWorkerStartupTimeoutS(row.worker_instance_startup_timeout_s != null ? String(row.worker_instance_startup_timeout_s) : "");
         setInstanceStartupTimeoutS(row.instance_startup_timeout_s != null ? String(row.instance_startup_timeout_s) : "");
+        setSshBootstrapTimeoutS(row.worker_ssh_bootstrap_timeout_s != null ? String(row.worker_ssh_bootstrap_timeout_s) : "");
+        setWorkerHealthPort(row.worker_health_port != null ? String(row.worker_health_port) : "");
+        setWorkerVllmPort(row.worker_vllm_port != null ? String(row.worker_vllm_port) : "");
+        setDataVolumeDefaultGb(row.worker_data_volume_gb_default != null ? String(row.worker_data_volume_gb_default) : "");
+        setExposePorts(row.worker_expose_ports != null ? Boolean(row.worker_expose_ports) : (settingsDefs["WORKER_EXPOSE_PORTS"]?.defBool ?? true));
+        setVllmMode(row.worker_vllm_mode != null ? String(row.worker_vllm_mode) : (settingsDefs["WORKER_VLLM_MODE"]?.defText ?? "mono"));
+        setVllmImage(row.worker_vllm_image != null ? String(row.worker_vllm_image) : (settingsDefs["WORKER_VLLM_IMAGE"]?.defText ?? ""));
         setProviderParamsEditOpen(true);
     };
 
@@ -268,6 +286,10 @@ export default function SettingsPage() {
         if (!editingProviderParams) return;
         const workerV = workerStartupTimeoutS.trim() === "" ? null : Number(workerStartupTimeoutS.trim());
         const instV = instanceStartupTimeoutS.trim() === "" ? null : Number(instanceStartupTimeoutS.trim());
+        const sshV = sshBootstrapTimeoutS.trim() === "" ? null : Number(sshBootstrapTimeoutS.trim());
+        const healthPortV = workerHealthPort.trim() === "" ? null : Number(workerHealthPort.trim());
+        const vllmPortV = workerVllmPort.trim() === "" ? null : Number(workerVllmPort.trim());
+        const volGbV = dataVolumeDefaultGb.trim() === "" ? null : Number(dataVolumeDefaultGb.trim());
 
         const wDef = settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"];
         const iDef = settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"];
@@ -279,12 +301,33 @@ export default function SettingsPage() {
         if (workerV != null && (!Number.isFinite(workerV) || workerV < wMin || workerV > wMax)) return;
         if (instV != null && (!Number.isFinite(instV) || instV < iMin || instV > iMax)) return;
 
+        const sshDef = settingsDefs["WORKER_SSH_BOOTSTRAP_TIMEOUT_S"];
+        if (sshV != null && (!Number.isFinite(sshV) || sshV < (sshDef?.min ?? 60) || sshV > (sshDef?.max ?? 86400))) return;
+        const hpDef = settingsDefs["WORKER_HEALTH_PORT"];
+        if (healthPortV != null && (!Number.isFinite(healthPortV) || healthPortV < (hpDef?.min ?? 1) || healthPortV > (hpDef?.max ?? 65535))) return;
+        const vpDef = settingsDefs["WORKER_VLLM_PORT"];
+        if (vllmPortV != null && (!Number.isFinite(vllmPortV) || vllmPortV < (vpDef?.min ?? 1) || vllmPortV > (vpDef?.max ?? 65535))) return;
+        const vgDef = settingsDefs["WORKER_DATA_VOLUME_GB_DEFAULT"];
+        if (volGbV != null && (!Number.isFinite(volGbV) || volGbV < (vgDef?.min ?? 50) || volGbV > (vgDef?.max ?? 5000))) return;
+
+        const mode = vllmMode.trim().toLowerCase();
+        if (mode !== "mono" && mode !== "multi") return;
+        const img = vllmImage.trim();
+        if (img.length === 0) return;
+
         const res = await fetch(apiUrl(`providers/${editingProviderParams.provider_id}/params`), {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 worker_instance_startup_timeout_s: workerV,
                 instance_startup_timeout_s: instV,
+                worker_ssh_bootstrap_timeout_s: sshV,
+                worker_health_port: healthPortV,
+                worker_vllm_port: vllmPortV,
+                worker_data_volume_gb_default: volGbV,
+                worker_expose_ports: exposePorts,
+                worker_vllm_mode: mode,
+                worker_vllm_image: img,
             }),
         });
         if (!res.ok) return;
@@ -292,6 +335,13 @@ export default function SettingsPage() {
         setEditingProviderParams(null);
         setWorkerStartupTimeoutS("");
         setInstanceStartupTimeoutS("");
+        setSshBootstrapTimeoutS("");
+        setWorkerHealthPort("");
+        setWorkerVllmPort("");
+        setDataVolumeDefaultGb("");
+        setExposePorts(true);
+        setVllmMode("mono");
+        setVllmImage("");
         setRefreshTick((t) => ({ ...t, provider_params: t.provider_params + 1 }));
     };
 
@@ -359,6 +409,84 @@ export default function SettingsPage() {
                     <span className="text-muted-foreground text-sm">default</span>
                 ) : (
                     <span className="font-mono text-xs">{row.instance_startup_timeout_s}s</span>
+                ),
+        },
+        {
+            id: "worker_ssh_bootstrap_timeout_s",
+            label: "WORKER_SSH_BOOTSTRAP_TIMEOUT_S",
+            width: 270,
+            cell: ({ row }) =>
+                row.worker_ssh_bootstrap_timeout_s == null ? (
+                    <span className="text-muted-foreground text-sm">default</span>
+                ) : (
+                    <span className="font-mono text-xs">{row.worker_ssh_bootstrap_timeout_s}s</span>
+                ),
+        },
+        {
+            id: "worker_health_port",
+            label: "WORKER_HEALTH_PORT",
+            width: 190,
+            cell: ({ row }) =>
+                row.worker_health_port == null ? (
+                    <span className="text-muted-foreground text-sm">default</span>
+                ) : (
+                    <span className="font-mono text-xs">{row.worker_health_port}</span>
+                ),
+        },
+        {
+            id: "worker_vllm_port",
+            label: "WORKER_VLLM_PORT",
+            width: 180,
+            cell: ({ row }) =>
+                row.worker_vllm_port == null ? (
+                    <span className="text-muted-foreground text-sm">default</span>
+                ) : (
+                    <span className="font-mono text-xs">{row.worker_vllm_port}</span>
+                ),
+        },
+        {
+            id: "worker_data_volume_gb_default",
+            label: "WORKER_DATA_VOLUME_GB_DEFAULT",
+            width: 280,
+            cell: ({ row }) =>
+                row.worker_data_volume_gb_default == null ? (
+                    <span className="text-muted-foreground text-sm">default</span>
+                ) : (
+                    <span className="font-mono text-xs">{row.worker_data_volume_gb_default}GB</span>
+                ),
+        },
+        {
+            id: "worker_expose_ports",
+            label: "WORKER_EXPOSE_PORTS",
+            width: 200,
+            cell: ({ row }) =>
+                row.worker_expose_ports == null ? (
+                    <span className="text-muted-foreground text-sm">default</span>
+                ) : (
+                    <span className="text-sm">{row.worker_expose_ports ? "true" : "false"}</span>
+                ),
+        },
+        {
+            id: "worker_vllm_mode",
+            label: "WORKER_VLLM_MODE",
+            width: 190,
+            cell: ({ row }) =>
+                row.worker_vllm_mode == null ? (
+                    <span className="text-muted-foreground text-sm">default</span>
+                ) : (
+                    <span className="font-mono text-xs">{row.worker_vllm_mode}</span>
+                ),
+        },
+        {
+            id: "worker_vllm_image",
+            label: "WORKER_VLLM_IMAGE",
+            width: 360,
+            cellClassName: "truncate",
+            cell: ({ row }) =>
+                row.worker_vllm_image == null ? (
+                    <span className="text-muted-foreground text-sm">default</span>
+                ) : (
+                    <span className="font-mono text-xs">{row.worker_vllm_image}</span>
                 ),
         },
         {
@@ -591,13 +719,15 @@ export default function SettingsPage() {
         fetch(apiUrl("settings/definitions"))
             .then((r) => (r.ok ? r.json() : []))
             .then((rows) => {
-                const map: Record<string, { min?: number; max?: number; def?: number; desc?: string }> = {};
+                const map: Record<string, { min?: number; max?: number; defInt?: number; defBool?: boolean; defText?: string; desc?: string }> = {};
                 for (const row of rows as any[]) {
                     if (!row?.key) continue;
                     map[String(row.key)] = {
                         min: row.min_int ?? undefined,
                         max: row.max_int ?? undefined,
-                        def: row.default_int ?? undefined,
+                        defInt: row.default_int ?? undefined,
+                        defBool: row.default_bool ?? undefined,
+                        defText: row.default_text ?? undefined,
                         desc: row.description ?? undefined,
                     };
                 }
@@ -611,6 +741,22 @@ export default function SettingsPage() {
             .finally(() => setProviderParamsLoading(false));
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeTab, refreshTick.provider_params]);
+
+    useEffect(() => {
+        if (activeTab !== "global_params") return;
+        setGlobalSettingsLoading(true);
+        fetch(apiUrl("settings/global"))
+            .then((r) => (r.ok ? r.json() : []))
+            .then((rows) => {
+                setGlobalSettings(rows as GlobalSetting[]);
+                const stale = (rows as any[]).find((x) => x?.key === "OPENAI_WORKER_STALE_SECONDS");
+                if (stale && stale.value_int != null) setGlobalStaleSeconds(String(stale.value_int));
+                else setGlobalStaleSeconds("");
+            })
+            .catch(() => null)
+            .finally(() => setGlobalSettingsLoading(false));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeTab, refreshTick.global_params]);
 
     const modelColumns: DataTableColumn<ModelRow>[] = [
         { id: "name", label: "Name", width: 260, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
@@ -807,6 +953,7 @@ export default function SettingsPage() {
                     <TabsTrigger value="types">Instance Types</TabsTrigger>
                     <TabsTrigger value="models">Models</TabsTrigger>
                     <TabsTrigger value="provider_params">Provider Params</TabsTrigger>
+                    <TabsTrigger value="global_params">Global Params</TabsTrigger>
                     <TabsTrigger value="api_keys">API Keys</TabsTrigger>
                 </TabsList>
 
@@ -960,6 +1107,53 @@ export default function SettingsPage() {
                     </Card>
                 </TabsContent>
 
+                {/* GLOBAL PARAMS */}
+                <TabsContent value="global_params">
+                    <Card>
+                        <CardContent className="space-y-4">
+                            <div className="flex items-center justify-between gap-4">
+                                <div>
+                                    <div className="font-medium">OPENAI_WORKER_STALE_SECONDS</div>
+                                    <div className="text-sm text-muted-foreground">
+                                        Staleness window used for `/v1/models` and worker selection.
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <Input
+                                        value={globalStaleSeconds}
+                                        onChange={(e) => setGlobalStaleSeconds(e.target.value)}
+                                        placeholder={settingsDefs["OPENAI_WORKER_STALE_SECONDS"]?.defInt != null ? `default (${settingsDefs["OPENAI_WORKER_STALE_SECONDS"]?.defInt}s)` : "default"}
+                                        className="w-48"
+                                    />
+                                    <Button
+                                        size="sm"
+                                        onClick={async () => {
+                                            const v = globalStaleSeconds.trim() === "" ? null : Number(globalStaleSeconds.trim());
+                                            const def = settingsDefs["OPENAI_WORKER_STALE_SECONDS"];
+                                            const min = def?.min ?? 10;
+                                            const max = def?.max ?? 86400;
+                                            if (v != null && (!Number.isFinite(v) || v < min || v > max)) return;
+                                            const res = await fetch(apiUrl("settings/global"), {
+                                                method: "PUT",
+                                                headers: { "Content-Type": "application/json" },
+                                                body: JSON.stringify({ key: "OPENAI_WORKER_STALE_SECONDS", value_int: v }),
+                                            });
+                                            if (!res.ok) return;
+                                            setRefreshTick((t) => ({ ...t, global_params: t.global_params + 1 }));
+                                        }}
+                                        disabled={globalSettingsLoading}
+                                    >
+                                        Enregistrer
+                                    </Button>
+                                </div>
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                                Range: {(settingsDefs["OPENAI_WORKER_STALE_SECONDS"]?.min ?? 10)}..{(settingsDefs["OPENAI_WORKER_STALE_SECONDS"]?.max ?? 86400)}s. Leave empty for default.
+                            </div>
+                        </CardContent>
+                    </Card>
+                </TabsContent>
+
                 {/* API KEYS */}
                 <TabsContent value="api_keys">
                     <Card>
@@ -996,6 +1190,13 @@ export default function SettingsPage() {
                         setEditingProviderParams(null);
                         setWorkerStartupTimeoutS("");
                         setInstanceStartupTimeoutS("");
+                        setSshBootstrapTimeoutS("");
+                        setWorkerHealthPort("");
+                        setWorkerVllmPort("");
+                        setDataVolumeDefaultGb("");
+                        setExposePorts(true);
+                        setVllmMode("mono");
+                        setVllmImage("");
                     }
                 }}
             >
@@ -1017,7 +1218,7 @@ export default function SettingsPage() {
                                 id="worker_startup_timeout"
                                 value={workerStartupTimeoutS}
                                 onChange={(e) => setWorkerStartupTimeoutS(e.target.value)}
-                                placeholder={settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"]?.def != null ? `default (${settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"]?.def}s)` : "default"}
+                                placeholder={settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"]?.defInt != null ? `default (${settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"]?.defInt}s)` : "default"}
                                 className="col-span-3"
                             />
                         </div>
@@ -1030,14 +1231,105 @@ export default function SettingsPage() {
                                 id="instance_startup_timeout"
                                 value={instanceStartupTimeoutS}
                                 onChange={(e) => setInstanceStartupTimeoutS(e.target.value)}
-                                placeholder={settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"]?.def != null ? `default (${settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"]?.def}s)` : "default"}
+                                placeholder={settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"]?.defInt != null ? `default (${settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"]?.defInt}s)` : "default"}
                                 className="col-span-3"
                             />
                         </div>
 
+                        <div className="grid grid-cols-4 items-center gap-4">
+                            <Label htmlFor="ssh_bootstrap_timeout" className="text-right">
+                                WORKER_SSH_BOOTSTRAP_TIMEOUT_S
+                            </Label>
+                            <Input
+                                id="ssh_bootstrap_timeout"
+                                value={sshBootstrapTimeoutS}
+                                onChange={(e) => setSshBootstrapTimeoutS(e.target.value)}
+                                placeholder={settingsDefs["WORKER_SSH_BOOTSTRAP_TIMEOUT_S"]?.defInt != null ? `default (${settingsDefs["WORKER_SSH_BOOTSTRAP_TIMEOUT_S"]?.defInt}s)` : "default"}
+                                className="col-span-3"
+                            />
+                        </div>
+
+                        <div className="grid grid-cols-4 items-center gap-4">
+                            <Label htmlFor="worker_health_port" className="text-right">
+                                WORKER_HEALTH_PORT
+                            </Label>
+                            <Input
+                                id="worker_health_port"
+                                value={workerHealthPort}
+                                onChange={(e) => setWorkerHealthPort(e.target.value)}
+                                placeholder={settingsDefs["WORKER_HEALTH_PORT"]?.defInt != null ? `default (${settingsDefs["WORKER_HEALTH_PORT"]?.defInt})` : "default"}
+                                className="col-span-3"
+                            />
+                        </div>
+
+                        <div className="grid grid-cols-4 items-center gap-4">
+                            <Label htmlFor="worker_vllm_port" className="text-right">
+                                WORKER_VLLM_PORT
+                            </Label>
+                            <Input
+                                id="worker_vllm_port"
+                                value={workerVllmPort}
+                                onChange={(e) => setWorkerVllmPort(e.target.value)}
+                                placeholder={settingsDefs["WORKER_VLLM_PORT"]?.defInt != null ? `default (${settingsDefs["WORKER_VLLM_PORT"]?.defInt})` : "default"}
+                                className="col-span-3"
+                            />
+                        </div>
+
+                        <div className="grid grid-cols-4 items-center gap-4">
+                            <Label htmlFor="data_vol_default" className="text-right">
+                                WORKER_DATA_VOLUME_GB_DEFAULT
+                            </Label>
+                            <Input
+                                id="data_vol_default"
+                                value={dataVolumeDefaultGb}
+                                onChange={(e) => setDataVolumeDefaultGb(e.target.value)}
+                                placeholder={settingsDefs["WORKER_DATA_VOLUME_GB_DEFAULT"]?.defInt != null ? `default (${settingsDefs["WORKER_DATA_VOLUME_GB_DEFAULT"]?.defInt}GB)` : "default"}
+                                className="col-span-3"
+                            />
+                        </div>
+
+                        <div className="grid grid-cols-4 items-center gap-4">
+                            <Label htmlFor="expose_ports" className="text-right">
+                                WORKER_EXPOSE_PORTS
+                            </Label>
+                            <div className="col-span-3 flex items-center gap-3">
+                                <ActiveToggle checked={exposePorts} onCheckedChange={(v) => setExposePorts(v)} aria-label="Toggle expose ports" />
+                                <span className="text-xs text-muted-foreground">
+                                    default={String(settingsDefs["WORKER_EXPOSE_PORTS"]?.defBool ?? true)}
+                                </span>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-4 items-center gap-4">
+                            <Label className="text-right">WORKER_VLLM_MODE</Label>
+                            <div className="col-span-3">
+                                <Select value={vllmMode} onValueChange={(v) => setVllmMode(v)}>
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="Select mode" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="mono">mono</SelectItem>
+                                        <SelectItem value="multi">multi</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-4 items-center gap-4">
+                            <Label htmlFor="vllm_image" className="text-right">
+                                WORKER_VLLM_IMAGE
+                            </Label>
+                            <Input
+                                id="vllm_image"
+                                value={vllmImage}
+                                onChange={(e) => setVllmImage(e.target.value)}
+                                placeholder={settingsDefs["WORKER_VLLM_IMAGE"]?.defText != null ? `default (${settingsDefs["WORKER_VLLM_IMAGE"]?.defText})` : "default"}
+                                className="col-span-3 font-mono text-xs"
+                            />
+                        </div>
+
                         <div className="text-xs text-muted-foreground">
-                            Range (worker): {(settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"]?.min ?? 30)}..{(settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"]?.max ?? 86400)}s —{" "}
-                            Range (instance): {(settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"]?.min ?? 30)}..{(settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"]?.max ?? 86400)}s
+                            Values are validated against DB min/max where defined (and enforced server-side).
                         </div>
                     </div>
                     <DialogFooter>

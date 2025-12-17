@@ -103,6 +103,38 @@ ON CONFLICT (key) DO UPDATE SET
   default_int = EXCLUDED.default_int,
   description = EXCLUDED.description;
 
+-- Worker bootstrap / runtime knobs (provider-scoped)
+INSERT INTO settings_definitions (key, scope, value_type, min_int, max_int, default_int, default_bool, default_text, description)
+VALUES
+  ('WORKER_SSH_BOOTSTRAP_TIMEOUT_S', 'provider', 'int', 60, 86400, 900, NULL, NULL, 'SSH bootstrap timeout for worker auto-install.'),
+  ('WORKER_HEALTH_PORT',            'provider', 'int', 1, 65535, 8080, NULL, NULL, 'Worker health server port (agent /readyz).'),
+  ('WORKER_VLLM_PORT',              'provider', 'int', 1, 65535, 8000, NULL, NULL, 'vLLM OpenAI-compatible port on the worker.'),
+  ('WORKER_DATA_VOLUME_GB_DEFAULT', 'provider', 'int', 50, 5000, 200, NULL, NULL, 'Fallback data volume size when model has no explicit recommendation.'),
+  ('WORKER_EXPOSE_PORTS',           'provider', 'bool', NULL, NULL, NULL, true, NULL, 'Provider security group opens inbound worker ports (dev convenience).'),
+  ('WORKER_VLLM_MODE',              'provider', 'text', NULL, NULL, NULL, NULL, 'mono', 'vLLM mode: mono|multi (multi = 1 vLLM per GPU behind HAProxy).'),
+  ('WORKER_VLLM_IMAGE',             'provider', 'text', NULL, NULL, NULL, NULL, 'vllm/vllm-openai:latest', 'Docker image for vLLM OpenAI server.')
+ON CONFLICT (key) DO UPDATE SET
+  scope = EXCLUDED.scope,
+  value_type = EXCLUDED.value_type,
+  min_int = EXCLUDED.min_int,
+  max_int = EXCLUDED.max_int,
+  default_int = EXCLUDED.default_int,
+  default_bool = EXCLUDED.default_bool,
+  default_text = EXCLUDED.default_text,
+  description = EXCLUDED.description;
+
+-- Global knobs
+INSERT INTO settings_definitions (key, scope, value_type, min_int, max_int, default_int, description)
+VALUES
+  ('OPENAI_WORKER_STALE_SECONDS', 'global', 'int', 10, 86400, 120, 'Worker staleness window for OpenAI proxy discovery (/v1/models).')
+ON CONFLICT (key) DO UPDATE SET
+  scope = EXCLUDED.scope,
+  value_type = EXCLUDED.value_type,
+  min_int = EXCLUDED.min_int,
+  max_int = EXCLUDED.max_int,
+  default_int = EXCLUDED.default_int,
+  description = EXCLUDED.description;
+
 -- ------------------------------------------------------------
 -- Models (LLM catalog) — curated defaults
 -- Notes:

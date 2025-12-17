@@ -10,7 +10,7 @@ use std::env;
 /// Notes:
 /// - Keeping this in orchestrator avoids VM disk-full failures during bootstrap/model pull.
 /// - Provider-specific volume perf (IOPS) stays configured via instance_types.allocation_params.<provider>.data_volume_perf_iops.
-pub fn recommended_data_volume_gb(model_id: &str) -> Option<i64> {
+pub fn recommended_data_volume_gb(model_id: &str, default_gb: i64) -> Option<i64> {
     if let Ok(v) = env::var("WORKER_DATA_VOLUME_GB") {
         if let Ok(gb) = v.trim().parse::<i64>() {
             if gb > 0 {
@@ -21,7 +21,7 @@ pub fn recommended_data_volume_gb(model_id: &str) -> Option<i64> {
 
     let model = model_id.trim().to_ascii_lowercase();
     if model.is_empty() {
-        return default_gb();
+        return Some(default_gb).filter(|gb| *gb > 0);
     }
 
     // Very small models (sub-1B) typically fit comfortably.
@@ -49,15 +49,9 @@ pub fn recommended_data_volume_gb(model_id: &str) -> Option<i64> {
     }
 
     // Fallback for unknown models.
-    default_gb()
+    Some(default_gb).filter(|gb| *gb > 0)
 }
 
-fn default_gb() -> Option<i64> {
-    env::var("WORKER_DATA_VOLUME_GB_DEFAULT")
-        .ok()
-        .and_then(|v| v.trim().parse::<i64>().ok())
-        .filter(|gb| *gb > 0)
-        .or(Some(200))
-}
+// Note: default_gb is provided by caller (provider settings / env / built-in).
 
 

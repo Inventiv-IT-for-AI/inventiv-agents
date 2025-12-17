@@ -208,6 +208,42 @@ async fn provider_setting_i64(db: &Pool<Postgres>, provider_id: uuid::Uuid, key:
     .flatten()
 }
 
+async fn provider_setting_bool(db: &Pool<Postgres>, provider_id: uuid::Uuid, key: &str) -> Option<bool> {
+    sqlx::query_scalar(
+        r#"
+        SELECT value_bool
+        FROM provider_settings
+        WHERE provider_id = $1 AND key = $2
+        "#,
+    )
+    .bind(provider_id)
+    .bind(key)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten()
+}
+
+async fn provider_setting_text(db: &Pool<Postgres>, provider_id: uuid::Uuid, key: &str) -> Option<String> {
+    sqlx::query_scalar(
+        r#"
+        SELECT value_text
+        FROM provider_settings
+        WHERE provider_id = $1 AND key = $2
+        "#,
+    )
+    .bind(provider_id)
+    .bind(key)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten()
+    .and_then(|s: String| {
+        let t = s.trim().to_string();
+        if t.is_empty() { None } else { Some(t) }
+    })
+}
+
 fn sh_escape_single(s: &str) -> String {
     // Safe single-quote escape for bash: wrap with '...' and escape internal quotes.
     format!("'{}'", s.replace('\'', "'\"'\"'"))
@@ -230,6 +266,13 @@ async fn maybe_trigger_worker_install_over_ssh(db: &Pool<Postgres>, instance_id:
     // Global token for early bringup (API also accepts it).
     let worker_auth_token = std::env::var("WORKER_AUTH_TOKEN").unwrap_or_default();
     let worker_hf_token = worker_hf_token();
+
+    let provider_id: Option<uuid::Uuid> = sqlx::query_scalar("SELECT provider_id FROM instances WHERE id = $1")
+        .bind(instance_id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten();
 
     let model_id_from_db: Option<String> = sqlx::query_scalar(
         r#"
@@ -256,19 +299,60 @@ async fn maybe_trigger_worker_install_over_ssh(db: &Pool<Postgres>, instance_id:
                 .filter(|s| !s.trim().is_empty())
         })
         .unwrap_or_else(|| "Qwen/Qwen2.5-0.5B-Instruct".to_string());
-    let vllm_image = std::env::var("WORKER_VLLM_IMAGE")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "vllm/vllm-openai:latest".to_string());
-    let vllm_mode = std::env::var("WORKER_VLLM_MODE")
-        .ok()
-        .map(|s| s.trim().to_ascii_lowercase())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "mono".to_string()); // mono | multi
+    let vllm_image = if let Some(pid) = provider_id {
+        provider_setting_text(db, pid, "WORKER_VLLM_IMAGE")
+            .await
+            .or_else(|| std::env::var("WORKER_VLLM_IMAGE").ok().filter(|s| !s.trim().is_empty()))
+            .unwrap_or_else(|| "vllm/vllm-openai:latest".to_string())
+    } else {
+        std::env::var("WORKER_VLLM_IMAGE")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "vllm/vllm-openai:latest".to_string())
+    };
+    let vllm_mode = if let Some(pid) = provider_id {
+        provider_setting_text(db, pid, "WORKER_VLLM_MODE")
+            .await
+            .or_else(|| std::env::var("WORKER_VLLM_MODE").ok().filter(|s| !s.trim().is_empty()))
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "mono".to_string())
+    } else {
+        std::env::var("WORKER_VLLM_MODE")
+            .ok()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "mono".to_string())
+    }; // mono | multi
     let agent_url = std::env::var("WORKER_AGENT_SOURCE_URL")
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "https://raw.githubusercontent.com/Inventiv-IT-for-AI/inventiv-agents/main/inventiv-worker/agent.py".to_string());
+
+    let worker_health_port: u16 = if let Some(pid) = provider_id {
+        provider_setting_i64(db, pid, "WORKER_HEALTH_PORT")
+            .await
+            .and_then(|v| u16::try_from(v).ok())
+            .or_else(|| std::env::var("WORKER_HEALTH_PORT").ok().and_then(|s| s.parse::<u16>().ok()))
+            .unwrap_or(8080)
+    } else {
+        std::env::var("WORKER_HEALTH_PORT")
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(8080)
+    };
+    let worker_vllm_port: u16 = if let Some(pid) = provider_id {
+        provider_setting_i64(db, pid, "WORKER_VLLM_PORT")
+            .await
+            .and_then(|v| u16::try_from(v).ok())
+            .or_else(|| std::env::var("WORKER_VLLM_PORT").ok().and_then(|s| s.parse::<u16>().ok()))
+            .unwrap_or(8000)
+    } else {
+        std::env::var("WORKER_VLLM_PORT")
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(8000)
+    };
 
     let ssh_user = std::env::var("WORKER_SSH_USER")
         .ok()
@@ -344,6 +428,8 @@ async fn maybe_trigger_worker_install_over_ssh(db: &Pool<Postgres>, instance_id:
         "vllm_image": vllm_image,
         "vllm_mode": vllm_mode,
         "agent_url": agent_url,
+        "worker_health_port": worker_health_port,
+        "worker_vllm_port": worker_vllm_port,
         "has_hf_token": !worker_hf_token.trim().is_empty()
     });
 
@@ -371,6 +457,8 @@ VLLM_MODE={vllm_mode}
 AGENT_URL={agent_url}
 WORKER_AUTH_TOKEN={worker_auth_token}
 WORKER_HF_TOKEN={worker_hf_token}
+WORKER_HEALTH_PORT={worker_health_port}
+WORKER_VLLM_PORT={worker_vllm_port}
 
 echo "::phase::start"
 echo "[inventiv-worker] ssh bootstrap starting"
@@ -591,8 +679,8 @@ docker run -d --restart unless-stopped \
   -e INSTANCE_ID="$INSTANCE_ID" \
   -e MODEL_ID="$MODEL_ID" \
   -e VLLM_BASE_URL="http://127.0.0.1:8000" \
-  -e WORKER_HEALTH_PORT=8080 \
-  -e WORKER_VLLM_PORT=8000 \
+  -e WORKER_HEALTH_PORT="$WORKER_HEALTH_PORT" \
+  -e WORKER_VLLM_PORT="$WORKER_VLLM_PORT" \
   -e WORKER_HEARTBEAT_INTERVAL_S=10 \
   -e WORKER_AUTH_TOKEN="$WORKER_AUTH_TOKEN" \
   -v /opt/inventiv-worker/agent.py:/app/agent.py:ro \
@@ -656,11 +744,25 @@ echo "[inventiv-worker] ssh bootstrap done"
         let _ = stdin.write_all(script.as_bytes()).await;
     }
 
-    let ssh_timeout_s: u64 = std::env::var("WORKER_SSH_BOOTSTRAP_TIMEOUT_S")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|v| *v > 0)
-        .unwrap_or(900);
+    let ssh_timeout_s: u64 = if let Some(pid) = provider_id {
+        provider_setting_i64(db, pid, "WORKER_SSH_BOOTSTRAP_TIMEOUT_S")
+            .await
+            .and_then(|v| u64::try_from(v).ok())
+            .filter(|v| *v > 0)
+            .or_else(|| {
+                std::env::var("WORKER_SSH_BOOTSTRAP_TIMEOUT_S")
+                    .ok()
+                    .and_then(|v| v.trim().parse::<u64>().ok())
+                    .filter(|v| *v > 0)
+            })
+            .unwrap_or(900)
+    } else {
+        std::env::var("WORKER_SSH_BOOTSTRAP_TIMEOUT_S")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(900)
+    };
 
     let out = tokio::time::timeout(std::time::Duration::from_secs(ssh_timeout_s), child.wait_with_output()).await;
     match out {
@@ -852,13 +954,16 @@ pub async fn check_and_transition_instance(
     }
 
     // Prefer worker readiness endpoint when available; fallback to SSH to keep backward-compat.
-    let worker_port: u16 = std::env::var("WORKER_HEALTH_PORT")
-        .ok()
-        .and_then(|s| s.parse::<u16>().ok())
+    // Ports are provider-scoped (DB) -> env -> defaults.
+    let worker_port: u16 = provider_setting_i64(&db, provider.provider_id, "WORKER_HEALTH_PORT")
+        .await
+        .and_then(|v| u16::try_from(v).ok())
+        .or_else(|| std::env::var("WORKER_HEALTH_PORT").ok().and_then(|s| s.parse::<u16>().ok()))
         .unwrap_or(8080);
-    let vllm_port: u16 = std::env::var("WORKER_VLLM_PORT")
-        .ok()
-        .and_then(|s| s.parse::<u16>().ok())
+    let vllm_port: u16 = provider_setting_i64(&db, provider.provider_id, "WORKER_VLLM_PORT")
+        .await
+        .and_then(|v| u16::try_from(v).ok())
+        .or_else(|| std::env::var("WORKER_VLLM_PORT").ok().and_then(|s| s.parse::<u16>().ok()))
         .unwrap_or(8000);
 
     let is_ready_http = check_instance_readyz_http(&ip, worker_port).await;
