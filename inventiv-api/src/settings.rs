@@ -14,6 +14,45 @@ use sqlx::FromRow;
 
 // --- DTOs ---
 
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct CreateProviderRequest {
+    pub name: String,
+    pub code: String,
+    pub description: Option<String>,
+    pub is_active: Option<bool>,
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct CreateRegionRequest {
+    pub provider_id: Uuid,
+    pub name: String,
+    pub code: String,
+    pub is_active: Option<bool>,
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct CreateZoneRequest {
+    pub region_id: Uuid,
+    pub name: String,
+    pub code: String,
+    pub is_active: Option<bool>,
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct CreateInstanceTypeRequest {
+    pub provider_id: Uuid,
+    pub name: String,
+    pub code: String,
+    pub gpu_count: i32,
+    pub vram_per_gpu_gb: i32,
+    pub cpu_count: Option<i32>,
+    pub ram_gb: Option<i32>,
+    pub bandwidth_bps: Option<i64>,
+    pub cost_per_hour: Option<f64>,
+    pub is_active: Option<bool>,
+    pub allocation_params: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Serialize, Deserialize, FromRow, utoipa::ToSchema)]
 pub struct RegionSearchRow {
     pub id: Uuid,
@@ -134,6 +173,45 @@ pub async fn list_regions(State(state): State<Arc<AppState>>) -> Json<Vec<Region
     .unwrap_or(vec![]);
 
     Json(regions)
+}
+
+#[utoipa::path(
+    post,
+    path = "/regions",
+    tag = "Settings",
+    request_body = CreateRegionRequest,
+    responses(
+        (status = 201, description = "Region created", body = inventiv_common::Region),
+        (status = 409, description = "Conflict")
+    )
+)]
+pub async fn create_region(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateRegionRequest>,
+) -> impl IntoResponse {
+    let id = Uuid::new_v4();
+    let is_active = req.is_active.unwrap_or(true);
+    let res = sqlx::query_as::<_, Region>(
+        r#"INSERT INTO regions (id, provider_id, name, code, is_active)
+           VALUES ($1,$2,$3,$4,$5)
+           RETURNING id, provider_id, name, code, is_active"#,
+    )
+    .bind(id)
+    .bind(req.provider_id)
+    .bind(req.name)
+    .bind(req.code)
+    .bind(is_active)
+    .fetch_one(&state.db)
+    .await;
+
+    match res {
+        Ok(row) => (StatusCode::CREATED, Json(row)).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            let code = if msg.contains("duplicate key") { StatusCode::CONFLICT } else { StatusCode::INTERNAL_SERVER_ERROR };
+            (code, Json(serde_json::json!({"error":"db_error","message": msg}))).into_response()
+        }
+    }
 }
 
 #[utoipa::path(
@@ -280,6 +358,45 @@ pub async fn list_zones(State(state): State<Arc<AppState>>) -> Json<Vec<Zone>> {
     .unwrap_or(vec![]);
 
     Json(zones)
+}
+
+#[utoipa::path(
+    post,
+    path = "/zones",
+    tag = "Settings",
+    request_body = CreateZoneRequest,
+    responses(
+        (status = 201, description = "Zone created", body = inventiv_common::Zone),
+        (status = 409, description = "Conflict")
+    )
+)]
+pub async fn create_zone(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateZoneRequest>,
+) -> impl IntoResponse {
+    let id = Uuid::new_v4();
+    let is_active = req.is_active.unwrap_or(true);
+    let res = sqlx::query_as::<_, Zone>(
+        r#"INSERT INTO zones (id, region_id, name, code, is_active)
+           VALUES ($1,$2,$3,$4,$5)
+           RETURNING id, region_id, name, code, is_active"#,
+    )
+    .bind(id)
+    .bind(req.region_id)
+    .bind(req.name)
+    .bind(req.code)
+    .bind(is_active)
+    .fetch_one(&state.db)
+    .await;
+
+    match res {
+        Ok(row) => (StatusCode::CREATED, Json(row)).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            let code = if msg.contains("duplicate key") { StatusCode::CONFLICT } else { StatusCode::INTERNAL_SERVER_ERROR };
+            (code, Json(serde_json::json!({"error":"db_error","message": msg}))).into_response()
+        }
+    }
 }
 
 #[utoipa::path(
@@ -440,6 +557,73 @@ pub async fn list_instance_types(State(state): State<Arc<AppState>>) -> Json<Vec
     .unwrap_or(vec![]);
 
     Json(types)
+}
+
+#[utoipa::path(
+    post,
+    path = "/instance_types",
+    tag = "Settings",
+    request_body = CreateInstanceTypeRequest,
+    responses(
+        (status = 201, description = "Instance type created", body = inventiv_common::InstanceType),
+        (status = 409, description = "Conflict")
+    )
+)]
+pub async fn create_instance_type(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateInstanceTypeRequest>,
+) -> impl IntoResponse {
+    let id = Uuid::new_v4();
+    let is_active = req.is_active.unwrap_or(true);
+    let cpu_count = req.cpu_count.unwrap_or(0);
+    let ram_gb = req.ram_gb.unwrap_or(0);
+    let bandwidth_bps = req.bandwidth_bps.unwrap_or(0);
+    let allocation_params = req
+        .allocation_params
+        .map(sqlx::types::Json)
+        .unwrap_or_else(|| sqlx::types::Json(serde_json::json!({})));
+
+    // Note: cost_per_hour is numeric in DB; SQLx maps it to numeric; in common it is Option<f64>.
+    // We'll cast to float8 on read paths; for insert we bind f64 and rely on sqlx to cast.
+    let _ = sqlx::query(
+        r#"INSERT INTO instance_types
+           (id, provider_id, name, code, gpu_count, vram_per_gpu_gb, cpu_count, ram_gb, bandwidth_bps, is_active, cost_per_hour, allocation_params)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)"#,
+    )
+    .bind(id)
+    .bind(req.provider_id)
+    .bind(req.name)
+    .bind(req.code)
+    .bind(req.gpu_count)
+    .bind(req.vram_per_gpu_gb)
+    .bind(cpu_count)
+    .bind(ram_gb)
+    .bind(bandwidth_bps)
+    .bind(is_active)
+    .bind(req.cost_per_hour)
+    .bind(allocation_params)
+    .execute(&state.db)
+    .await;
+
+    // Return the row using the existing struct shape
+    let row = sqlx::query_as::<_, InstanceType>(
+        r#"SELECT id, provider_id, name, code, gpu_count, vram_per_gpu_gb, is_active,
+                  CAST(cost_per_hour as float8) as cost_per_hour,
+                  cpu_count, ram_gb, bandwidth_bps
+           FROM instance_types WHERE id = $1"#,
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await;
+
+    match row {
+        Ok(it) => (StatusCode::CREATED, Json(it)).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            let code = if msg.contains("duplicate key") { StatusCode::CONFLICT } else { StatusCode::INTERNAL_SERVER_ERROR };
+            (code, Json(serde_json::json!({"error":"db_error","message": msg}))).into_response()
+        }
+    }
 }
 
 #[utoipa::path(
@@ -609,6 +793,44 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> Json<Vec<Prov
     Json(providers)
 }
 
+#[utoipa::path(
+    post,
+    path = "/providers",
+    tag = "Settings",
+    request_body = CreateProviderRequest,
+    responses(
+        (status = 201, description = "Provider created", body = inventiv_common::Provider),
+        (status = 409, description = "Conflict")
+    )
+)]
+pub async fn create_provider(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateProviderRequest>,
+) -> impl IntoResponse {
+    let id = Uuid::new_v4();
+    let is_active = req.is_active.unwrap_or(true);
+    let res = sqlx::query_as::<_, Provider>(
+        r#"INSERT INTO providers (id, name, code, description, is_active)
+           VALUES ($1,$2,$3,$4,$5)
+           RETURNING id, name, code, description, is_active"#,
+    )
+    .bind(id)
+    .bind(req.name)
+    .bind(req.code)
+    .bind(req.description)
+    .bind(is_active)
+    .fetch_one(&state.db)
+    .await;
+
+    match res {
+        Ok(row) => (StatusCode::CREATED, Json(row)).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            let code = if msg.contains("duplicate key") { StatusCode::CONFLICT } else { StatusCode::INTERNAL_SERVER_ERROR };
+            (code, Json(serde_json::json!({"error":"db_error","message": msg}))).into_response()
+        }
+    }
+}
 #[utoipa::path(
     get,
     path = "/providers/search",

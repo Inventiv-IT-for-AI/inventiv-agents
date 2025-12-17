@@ -12,7 +12,9 @@ import { InstanceTimelineModal } from "@/components/instances/InstanceTimelineMo
 import type { ActionLog, ActionType } from "@/lib/types";
 import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
 import { VirtualizedDataTable, type DataTableColumn } from "@/components/shared/VirtualizedDataTable";
+import { useRealtimeEvents } from "@/hooks/useRealtimeEvents";
 export default function MonitoringPage() {
+    useRealtimeEvents();
     const [actionTypes, setActionTypes] = useState<Record<string, ActionType>>({});
     const [filterComponent, setFilterComponent] = useState<string>("all");
     const [filterStatus, setFilterStatus] = useState<string>("all");
@@ -23,9 +25,16 @@ export default function MonitoringPage() {
     const [timelineModalOpen, setTimelineModalOpen] = useState(false);
     const [copiedLogId, setCopiedLogId] = useState<string | null>(null);
 
+    const [refreshSeq, setRefreshSeq] = useState(0);
+    useEffect(() => {
+        const handler = () => setRefreshSeq((v) => v + 1);
+        window.addEventListener("refresh-action-logs", handler);
+        return () => window.removeEventListener("refresh-action-logs", handler);
+    }, []);
+
     const queryKey = useMemo(
-        () => JSON.stringify({ filterComponent, filterStatus, filterActionType }),
-        [filterComponent, filterStatus, filterActionType]
+        () => JSON.stringify({ filterComponent, filterStatus, filterActionType, refreshSeq }),
+        [filterComponent, filterStatus, filterActionType, refreshSeq]
     );
 
     const fetchActionTypes = useCallback(async () => {

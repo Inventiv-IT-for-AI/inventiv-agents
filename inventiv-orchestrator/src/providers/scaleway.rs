@@ -4,6 +4,7 @@ use serde_json::json;
 use anyhow::Result;
 use crate::provider::{CloudProvider, inventory};
 use std::time::Duration;
+use tokio::time::sleep;
 
 pub struct ScalewayProvider {
     client: Client,
@@ -296,16 +297,49 @@ impl CloudProvider for ScalewayProvider {
     async fn start_instance(&self, zone: &str, server_id: &str) -> Result<bool> {
         let url = format!("https://api.scaleway.com/instance/v1/zones/{}/servers/{}/action", zone, server_id);
         let body = json!({"action": "poweron"});
-        
-        let resp = self.client.post(&url)
-            .headers(self.headers())
-            .json(&body)
-            .send()
-            .await?;
 
-        if !resp.status().is_success() {
+        // Scaleway can reject poweron right after volume attach with:
+        // 400 precondition_failed resource_not_usable: "All volumes attached to the server must be available."
+        // This is transient; retry for a short window.
+        let max_wait = Duration::from_secs(60);
+        let start = std::time::Instant::now();
+        let mut attempt: u32 = 0;
+
+        loop {
+            attempt += 1;
+            let resp = self
+                .client
+                .post(&url)
+                .headers(self.headers())
+                .json(&body)
+                .send()
+                .await?;
+
+            if resp.status().is_success() {
+                return Ok(true);
+            }
+
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
+            let transient_not_usable =
+                status.as_u16() == 400
+                    && (text.contains("resource_not_usable")
+                        || text.contains("All volumes attached")
+                        || text.contains("precondition_failed"));
+
+            if transient_not_usable && start.elapsed() < max_wait {
+                // Backoff: 500ms, 1s, 2s, 3s, 5s...
+                let delay = match attempt {
+                    1 => Duration::from_millis(500),
+                    2 => Duration::from_secs(1),
+                    3 => Duration::from_secs(2),
+                    4 => Duration::from_secs(3),
+                    _ => Duration::from_secs(5),
+                };
+                sleep(delay).await;
+                continue;
+            }
+
             return Err(anyhow::anyhow!(
                 "Failed to start instance {} in zone {}: {} - {}",
                 server_id,
@@ -314,8 +348,6 @@ impl CloudProvider for ScalewayProvider {
                 text
             ));
         }
-
-        Ok(true)
     }
 
     async fn get_instance_ip(&self, zone: &str, server_id: &str) -> Result<Option<String>> {

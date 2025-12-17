@@ -85,6 +85,8 @@ services:
     command: cargo watch -w inventiv-orchestrator -w inventiv-common -w sqlx-migrations -x "run --release -p inventiv-orchestrator"
     volumes:
       - .:/app # Source code mount for hot reload
+      # Secrets (dev/staging/prod): allow reading tokens from files without baking them into env.
+      - ${SECRETS_DIR:-./deploy/secrets}:/run/secrets:ro
     environment:
       - DATABASE_URL=postgresql://postgres:password@db:5432/llminfra
       - REDIS_URL=redis://redis:6379
@@ -98,10 +100,16 @@ services:
       - WORKER_HEALTH_PORT=${WORKER_HEALTH_PORT:-8080}
       - WORKER_AUTO_INSTALL=${WORKER_AUTO_INSTALL:-0}
       - WORKER_CONTROL_PLANE_URL=${WORKER_CONTROL_PLANE_URL:-}
+      - WORKER_CONTROL_PLANE_URL_FILE=${WORKER_CONTROL_PLANE_URL_FILE:-}
       - WORKER_AUTO_INSTALL_INSTANCE_PATTERNS=${WORKER_AUTO_INSTALL_INSTANCE_PATTERNS:-}
       - WORKER_MODEL_ID=${WORKER_MODEL_ID:-}
       - WORKER_VLLM_IMAGE=${WORKER_VLLM_IMAGE:-}
       - WORKER_AGENT_SOURCE_URL=${WORKER_AGENT_SOURCE_URL:-}
+      # Optional (for private HF models): token forwarded to worker bootstrap scripts
+      - WORKER_HF_TOKEN=${WORKER_HF_TOKEN:-}
+      # Backwards-compat alias: some env files use HUGGINGFACE_TOKEN
+      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN:-}
+      - WORKER_HF_TOKEN_FILE=${WORKER_HF_TOKEN_FILE:-}
       - WORKER_EXPOSE_PORTS=${WORKER_EXPOSE_PORTS:-1}
       - WORKER_SSH_PRIVATE_KEY_FILE=${WORKER_SSH_PRIVATE_KEY_FILE:-/app/.ssh/llm-studio-key}
       - WORKER_SSH_USER=${WORKER_SSH_USER:-root}

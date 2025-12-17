@@ -3,18 +3,28 @@ use axum::{
     http::{header, HeaderMap, HeaderValue, Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
+    extract::State,
     Json,
 };
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
+use sqlx::{Pool, Postgres};
 
 #[derive(Clone, Debug)]
 pub struct AuthUser {
     pub user_id: uuid::Uuid,
     pub email: String,
     pub role: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ApiKeyPrincipal {
+    pub api_key_id: uuid::Uuid,
+    pub user_id: uuid::Uuid,
+    pub key_prefix: String,
+    pub name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -113,6 +123,14 @@ fn extract_bearer(headers: &HeaderMap) -> Option<String> {
     Some(auth[prefix.len()..].trim().to_string())
 }
 
+fn extract_api_key_header(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     let Some(raw) = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()) else {
         return None;
@@ -183,6 +201,76 @@ pub async fn require_user(mut req: Request<Body>, next: Next) -> Response {
         )
             .into_response(),
     }
+}
+
+async fn verify_api_key_db(db: &Pool<Postgres>, token: &str) -> Option<ApiKeyPrincipal> {
+    let row: Option<(uuid::Uuid, uuid::Uuid, String, String)> = sqlx::query_as(
+        r#"
+        SELECT id, user_id, key_prefix, name
+        FROM api_keys
+        WHERE revoked_at IS NULL
+          AND key_hash = encode(digest($1::text, 'sha256'), 'hex')
+        LIMIT 1
+        "#,
+    )
+    .bind(token)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+
+    let Some((api_key_id, user_id, key_prefix, name)) = row else {
+        return None;
+    };
+
+    let _ = sqlx::query("UPDATE api_keys SET last_used_at = NOW() WHERE id = $1")
+        .bind(api_key_id)
+        .execute(db)
+        .await;
+
+    Some(ApiKeyPrincipal { api_key_id, user_id, key_prefix, name })
+}
+
+/// Middleware: allow either browser session (cookie/JWT) OR OpenAI API key (Bearer or X-API-Key).
+pub async fn require_user_or_api_key(
+    State(db): State<Pool<Postgres>>,
+    mut req: Request<Body>,
+    next: Next,
+) -> Response {
+    // 1) Cookie-based session (preferred for browsers)
+    let cookie_token = extract_cookie(req.headers(), &session_cookie_name());
+    if let Some(tok) = cookie_token {
+        if let Ok(user) = decode_session_jwt(&tok) {
+            req.extensions_mut().insert(user);
+            return next.run(req).await;
+        }
+    }
+
+    // 2) X-API-Key header (common in some clients)
+    if let Some(key) = extract_api_key_header(req.headers()) {
+        if let Some(p) = verify_api_key_db(&db, &key).await {
+            req.extensions_mut().insert(p);
+            return next.run(req).await;
+        }
+    }
+
+    // 3) Authorization: Bearer ... (could be JWT or API key)
+    if let Some(tok) = extract_bearer(req.headers()) {
+        if let Ok(user) = decode_session_jwt(&tok) {
+            req.extensions_mut().insert(user);
+            return next.run(req).await;
+        }
+        if let Some(p) = verify_api_key_db(&db, &tok).await {
+            req.extensions_mut().insert(p);
+            return next.run(req).await;
+        }
+    }
+
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(json!({"error":"unauthorized","message":"api_key_or_login_required"})),
+    )
+        .into_response()
 }
 
 pub fn require_admin(user: &AuthUser) -> Result<(), (StatusCode, Json<serde_json::Value>)> {

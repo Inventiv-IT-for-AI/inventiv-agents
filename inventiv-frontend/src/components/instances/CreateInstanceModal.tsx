@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CheckCircle, Search, Microchip } from "lucide-react";
 import { apiUrl } from "@/lib/api";
-import { Provider, Region, Zone, InstanceType } from "@/lib/types";
+import { Provider, Region, Zone, InstanceType, LlmModel } from "@/lib/types";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatEur } from "@/lib/utils";
@@ -47,6 +47,13 @@ export function CreateInstanceModal({
     const [typeQuery, setTypeQuery] = useState("");
     const [filterGpuCount, setFilterGpuCount] = useState<string>("all"); // "all" | number as string
     const [filterVramPerGpu, setFilterVramPerGpu] = useState<string>("all"); // "all" | number as string
+
+    const [models, setModels] = useState<LlmModel[]>([]);
+    const [selectedModelId, setSelectedModelId] = useState<string>("");
+    const selectedModel = useMemo(() => {
+        if (!selectedModelId) return null;
+        return models.find((m) => m.id === selectedModelId) ?? null;
+    }, [models, selectedModelId]);
 
     const selectedProviderId = useMemo(() => {
         if (selectedProviderCode === "all") return "";
@@ -150,6 +157,16 @@ export function CreateInstanceModal({
         const qs = selectedProviderCode !== "all" ? `?provider_code=${encodeURIComponent(selectedProviderCode)}` : "";
 
         const run = async () => {
+            // Fetch models (active only) once per open.
+            if (models.length === 0) {
+                const mres = await fetch(apiUrl("models?active=true"));
+                const mdata = mres.ok ? ((await mres.json()) as LlmModel[]) : [];
+                if (!cancelled) {
+                    setModels(mdata);
+                    if (!selectedModelId && mdata.length > 0) setSelectedModelId(mdata[0].id);
+                }
+            }
+
             const combos: Combo[] = [];
             for (const z of candidateZones) {
                 const cached = typesByZoneRef.get(z.id);
@@ -189,11 +206,15 @@ export function CreateInstanceModal({
             cancelled = true;
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open, selectedProviderCode, selectedProviderId, selectedRegionId, selectedZoneId, zones, providers, regions]);
+    }, [open, selectedProviderCode, selectedProviderId, selectedRegionId, selectedZoneId, zones, providers, regions, models.length, selectedModelId, typesByZoneRef]);
 
     const handleDeploy = async () => {
         if (!selectedCombo) {
             alert("Please select all required fields");
+            return;
+        }
+        if (!selectedModelId) {
+            alert("Please select a model");
             return;
         }
 
@@ -210,6 +231,7 @@ export function CreateInstanceModal({
                     provider_code: providerCodeForDeploy,
                     zone: zoneForDeploy?.code || "",
                     instance_type: typeForDeploy?.code || "",
+                    model_id: selectedModelId,
                 }),
             });
 
@@ -239,6 +261,7 @@ export function CreateInstanceModal({
         setSelectedRegionId("all");
         setSelectedZoneId("all");
         setSelectedComboKey("");
+        setSelectedModelId("");
         onClose();
     };
 
@@ -452,6 +475,41 @@ export function CreateInstanceModal({
                                     )}
                                 </div>
                             </ScrollArea>
+                        </div>
+
+                        {/* Model selector (bottom) */}
+                        <div className="grid gap-2">
+                            <Label>Model</Label>
+                            <Select
+                                value={selectedModelId}
+                                onValueChange={setSelectedModelId}
+                                disabled={deployStep === "submitting" || models.length === 0}
+                            >
+                                <SelectTrigger className="w-full">
+                                    <SelectValue
+                                        placeholder={models.length === 0 ? "No models available (create one in Models)" : "Select a model"}
+                                    />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {models.map((m) => (
+                                        <SelectItem key={m.id} value={m.id}>
+                                            {m.name} — {m.model_id}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                            {selectedModel ? (
+                                <div className="text-xs text-muted-foreground">
+                                    VRAM req: <span className="font-mono text-foreground">{selectedModel.required_vram_gb}GB</span>
+                                    {" • "}ctx: <span className="font-mono text-foreground">{selectedModel.context_length}</span>
+                                    {selectedModel.data_volume_gb ? (
+                                        <>
+                                            {" • "}disk:{" "}
+                                            <span className="font-mono text-foreground">{selectedModel.data_volume_gb}GB</span>
+                                        </>
+                                    ) : null}
+                                </div>
+                            ) : null}
                         </div>
                     </div>
                 )}

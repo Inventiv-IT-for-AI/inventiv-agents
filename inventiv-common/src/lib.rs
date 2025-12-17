@@ -80,13 +80,19 @@ pub struct InstanceType {
     pub bandwidth_bps: i64, // Bigint
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow, utoipa::ToSchema)]
 pub struct LlmModel {
     pub id: Uuid,
     pub name: String,
     pub model_id: String,
     pub required_vram_gb: i32,
     pub context_length: i32,
+    #[sqlx(default)]
+    pub is_active: bool,
+    #[sqlx(default)]
+    pub data_volume_gb: Option<i64>,
+    #[sqlx(default)]
+    pub metadata: sqlx::types::Json<serde_json::Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

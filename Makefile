@@ -109,7 +109,8 @@ help:
 	@echo "  make images-publish-prod # build+push v$(VERSION) then retag to :prod"
 	@echo ""
 	@echo "## DEV local (docker-compose.yml — hot reload)"
-	@echo "  make up | down | ps | logs"
+	@echo "  make up | down | ps | logs     # down keeps DB/Redis volumes"
+	@echo "  make nuke                       # down -v (wipe DB/Redis volumes)"
 	@echo "  make ui            # start Next.js UI on http://localhost:3000"
 	@echo "  make dev-create | dev-start | dev-stop | dev-delete"
 	@echo "  make dev-restart-orchestrator"
@@ -221,9 +222,13 @@ images-promote-prod:
 
 # README-friendly aliases
 up: dev-create
-down: dev-delete
+down: dev-stop
 ps: dev-ps
 logs: dev-logs
+
+# Destructive reset (removes named volumes like db_data/redis_data)
+.PHONY: nuke
+nuke: dev-delete
 
 ui:
 	@$(MAKE) check-dev-env

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LayoutDashboard, Box, Settings, Activity, Archive, BarChart3, Server, Users } from "lucide-react";
+import { LayoutDashboard, Settings, Activity, Archive, BarChart3, Server, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -212,7 +212,6 @@ export function Sidebar() {
                         <SidebarLink href="/" icon={LayoutDashboard} label="Dashboard" />
                         <SidebarLink href="/instances" icon={Server} label="Instances" />
                         <SidebarLink href="/monitoring" icon={BarChart3} label="Monitoring" />
-                        <SidebarLink href="/models" icon={Box} label="Models" />
                         <SidebarLink href="/settings" icon={Settings} label="Settings" />
                         <SidebarLink href="/users" icon={Users} label="Users" />
                     </div>

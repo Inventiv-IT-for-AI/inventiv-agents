@@ -97,6 +97,9 @@ mkdir -p deploy/secrets
 echo "<your-admin-password>" > deploy/secrets/default_admin_password
 ```
 
+> Note: si tu utilises un modèle Hugging Face **privé**, configure `WORKER_HF_TOKEN` dans `env/dev.env` (ou utilise un modèle public).  
+> Attention: en mode auto-install (cloud-init / SSH bootstrap), ce token est injecté dans le script de bootstrap de la VM (donc présent côté VM).
+
 ### 2. Lancement de la stack
 
 ```bash
@@ -105,11 +108,26 @@ make up
 ```
 
 **URLs locales** :
-- **Frontend** : `http://localhost:3000` (voir étape 3)
-- **API** : `http://localhost:8003` (Swagger UI : `http://localhost:8003/swagger-ui`)
-- **Orchestrator** : `http://localhost:8001` (admin: `GET /admin/status`)
-- **DB** : `postgresql://postgres:password@localhost:5432/llminfra`
-- **Redis** : `redis://localhost:6379`
+- **Frontend (UI)** : `http://localhost:3000` (ou `3000 + PORT_OFFSET`, voir étape 3)
+- **API / Orchestrator / DB / Redis** : **non exposés sur le host par défaut** (communication via réseau Docker uniquement)
+
+Si tu as besoin d’accéder à l’API depuis le host (ex: tunnel Cloudflare), utilise :
+
+```bash
+make api-expose   # expose l’API en loopback 127.0.0.1:(8003 + PORT_OFFSET)
+```
+
+Pour arrêter la stack **sans perdre l’état DB/Redis** :
+
+```bash
+make down
+```
+
+Pour repartir de zéro (**wipe les volumes db/redis**) :
+
+```bash
+make nuke
+```
 
 ### 3. Lancer le Frontend (UI)
 
@@ -119,9 +137,8 @@ make up
 make ui
 ```
 
-Cela :
-- crée `inventiv-frontend/.env.local` si absent (avec `NEXT_PUBLIC_API_URL=http://localhost:8003`)
-- démarre Next.js sur `http://localhost:3000`
+Cela démarre Next.js dans Docker, exposé sur `http://localhost:3000` (ou `3000 + PORT_OFFSET`).
+Les appels backend passent via des routes same-origin `/api/backend/*` côté frontend (proxy server-side vers `API_INTERNAL_URL=http://api:8003` dans le réseau Docker).
 
 **Option manuelle** :
 

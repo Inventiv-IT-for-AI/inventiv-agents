@@ -89,6 +89,44 @@ ON CONFLICT (code) DO NOTHING;
 -- To be implemented
 
 -- ------------------------------------------------------------
+-- Models (LLM catalog) — curated defaults
+-- Notes:
+-- - `model_id` is the Hugging Face repository id (or local path) used by vLLM.
+-- - Values like required_vram_gb / context_length / data_volume_gb are reasonable defaults
+--   and can be adjusted from the UI at any time.
+-- - Idempotent: upserts by UNIQUE(models.model_id).
+-- ------------------------------------------------------------
+INSERT INTO models (
+  id, name, model_id, required_vram_gb, context_length,
+  is_active, data_volume_gb, metadata, created_at, updated_at
+) VALUES
+  -- Meta Llama 3 / 3.1
+  (gen_random_uuid(), 'Meta Llama 3 8B Instruct',  'meta-llama/Meta-Llama-3-8B-Instruct',   16,  8192,  true,  200, '{}'::jsonb, NOW(), NOW()),
+  (gen_random_uuid(), 'Meta Llama 3 70B Instruct', 'meta-llama/Meta-Llama-3-70B-Instruct', 160,  8192,  true, 1000, '{}'::jsonb, NOW(), NOW()),
+  (gen_random_uuid(), 'Llama 3.1 8B Instruct',     'meta-llama/Llama-3.1-8B-Instruct',      16, 131072, true,  200, '{}'::jsonb, NOW(), NOW()),
+  (gen_random_uuid(), 'Llama 3.1 70B Instruct',    'meta-llama/Llama-3.1-70B-Instruct',    160, 131072, true, 1200, '{}'::jsonb, NOW(), NOW()),
+
+  -- Mistral / Mixtral
+  (gen_random_uuid(), 'Mistral 7B Instruct v0.2',  'mistralai/Mistral-7B-Instruct-v0.2',    16,  32768, true,  200, '{}'::jsonb, NOW(), NOW()),
+  (gen_random_uuid(), 'Mixtral 8x7B Instruct',     'mistralai/Mixtral-8x7B-Instruct-v0.1', 48,  32768, true,  400, '{}'::jsonb, NOW(), NOW()),
+  (gen_random_uuid(), 'Mixtral 8x22B Instruct',    'mistralai/Mixtral-8x22B-Instruct-v0.1',96,  65536, true,  800, '{}'::jsonb, NOW(), NOW()),
+
+  -- Qwen 2.5
+  (gen_random_uuid(), 'Qwen 2.5 7B Instruct',      'Qwen/Qwen2.5-7B-Instruct',              16,  32768, true,  200, '{}'::jsonb, NOW(), NOW()),
+  (gen_random_uuid(), 'Qwen 2.5 14B Instruct',     'Qwen/Qwen2.5-14B-Instruct',             28,  32768, true,  300, '{}'::jsonb, NOW(), NOW()),
+  (gen_random_uuid(), 'Qwen 2.5 32B Instruct',     'Qwen/Qwen2.5-32B-Instruct',             64,  32768, true,  500, '{}'::jsonb, NOW(), NOW()),
+  (gen_random_uuid(), 'Qwen 2.5 72B Instruct',     'Qwen/Qwen2.5-72B-Instruct',            160,  32768, true, 1200, '{}'::jsonb, NOW(), NOW()),
+
+  -- Gemma 2
+  (gen_random_uuid(), 'Gemma 2 9B IT',             'google/gemma-2-9b-it',                  20,   8192, true,  200, '{}'::jsonb, NOW(), NOW()),
+  (gen_random_uuid(), 'Gemma 2 27B IT',            'google/gemma-2-27b-it',                 48,   8192, true,  500, '{}'::jsonb, NOW(), NOW()),
+
+  -- Phi-3
+  (gen_random_uuid(), 'Phi-3 Mini 4K Instruct',    'microsoft/Phi-3-mini-4k-instruct',       8,   4096, true,   80, '{}'::jsonb, NOW(), NOW()),
+  (gen_random_uuid(), 'Phi-3 Medium 4K Instruct',  'microsoft/Phi-3-medium-4k-instruct',    28,   4096, true,  200, '{}'::jsonb, NOW(), NOW())
+ON CONFLICT (model_id) DO NOTHING;
+
+-- ------------------------------------------------------------
 -- Action Types (code -> label/icon/color) for Monitoring badges
 -- Keep in sync with frontend Tailwind safelist.
 -- ------------------------------------------------------------
@@ -102,6 +140,7 @@ INSERT INTO action_types (code, label, icon, color_class, category, is_active) V
   ('PROVIDER_GET_IP', 'Provider Get IP', 'Cloud', 'bg-orange-500 hover:bg-orange-600 text-white', 'create', TRUE),
   ('INSTANCE_CREATED', 'Instance Created', 'Database', 'bg-green-500 hover:bg-green-600 text-white', 'create', TRUE),
   ('HEALTH_CHECK', 'Health Check', 'Clock', 'bg-teal-600 hover:bg-teal-700 text-white', 'health', TRUE),
+  ('WORKER_MODEL_READY_CHECK', 'Worker Model Ready Check', 'Activity', 'bg-sky-600 hover:bg-sky-700 text-white', 'health', TRUE),
   ('INSTANCE_READY', 'Instance Ready', 'CheckCircle', 'bg-green-600 hover:bg-green-700 text-white', 'health', TRUE),
   ('INSTANCE_STARTUP_FAILED', 'Instance Startup Failed', 'AlertTriangle', 'bg-gray-600 hover:bg-gray-700 text-white', 'health', TRUE),
 
@@ -122,10 +161,4 @@ INSERT INTO action_types (code, label, icon, color_class, category, is_active) V
   ('TERMINATE_INSTANCE', 'Terminate Instance', 'Server', 'bg-purple-600 hover:bg-purple-700 text-white', 'legacy', TRUE),
   ('SCALEWAY_CREATE', 'Provider Create', 'Cloud', 'bg-orange-500 hover:bg-orange-600 text-white', 'legacy', TRUE),
   ('SCALEWAY_DELETE', 'Provider Delete', 'Cloud', 'bg-orange-600 hover:bg-orange-700 text-white', 'legacy', TRUE)
-ON CONFLICT (code) DO UPDATE SET
-  label = EXCLUDED.label,
-  icon = EXCLUDED.icon,
-  color_class = EXCLUDED.color_class,
-  category = EXCLUDED.category,
-  is_active = EXCLUDED.is_active,
-  updated_at = NOW();
+ON CONFLICT (code) DO NOTHING;

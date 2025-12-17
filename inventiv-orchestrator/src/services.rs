@@ -9,10 +9,82 @@ use crate::logger;
 use bigdecimal::FromPrimitive;
 use crate::finops_events;
 use std::fs;
+use crate::worker_storage;
 
 fn gb_to_bytes(gb: i64) -> i64 {
     // Scaleway APIs use bytes; use decimal GB.
     gb.saturating_mul(1_000_000_000)
+}
+
+fn worker_control_plane_url() -> String {
+    // Priority:
+    // 1) WORKER_CONTROL_PLANE_URL (direct)
+    // 2) WORKER_CONTROL_PLANE_URL_FILE (read file contents)
+    // 3) empty
+    let direct = std::env::var("WORKER_CONTROL_PLANE_URL").unwrap_or_default();
+    if !direct.trim().is_empty() {
+        return direct.trim().to_string();
+    }
+    if let Ok(path) = std::env::var("WORKER_CONTROL_PLANE_URL_FILE") {
+        let p = path.trim();
+        if !p.is_empty() {
+            if let Ok(contents) = std::fs::read_to_string(p) {
+                let v = contents.trim();
+                if !v.is_empty() {
+                    return v.to_string();
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+fn worker_hf_token() -> String {
+    // Priority:
+    // 1) WORKER_HF_TOKEN (direct; or common HF token env variants)
+    // 2) WORKER_HF_TOKEN_FILE (read file contents)
+    // 3) empty
+    let direct = std::env::var("WORKER_HF_TOKEN")
+        .or_else(|_| std::env::var("HUGGINGFACE_TOKEN"))
+        .or_else(|_| std::env::var("HUGGING_FACE_HUB_TOKEN"))
+        .or_else(|_| std::env::var("HUGGINGFACE_HUB_TOKEN"))
+        .or_else(|_| std::env::var("HF_TOKEN"))
+        .unwrap_or_default();
+    let direct = direct.trim().to_string();
+    if !direct.is_empty() {
+        return direct;
+    }
+    if let Ok(path) = std::env::var("WORKER_HF_TOKEN_FILE") {
+        let p = path.trim();
+        if !p.is_empty() {
+            if let Ok(contents) = std::fs::read_to_string(p) {
+                let v = contents.trim();
+                if !v.is_empty() {
+                    return v.to_string();
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+async fn resolve_instance_model_and_volume(
+    db: &Pool<Postgres>,
+    instance_id: Uuid,
+) -> (Option<String>, Option<i64>) {
+    let row: Option<(Option<String>, Option<i64>)> = sqlx::query_as(
+        r#"
+        SELECT m.model_id, m.data_volume_gb
+        FROM instances i
+        LEFT JOIN models m ON m.id = i.model_id
+        WHERE i.id = $1
+        "#,
+    )
+    .bind(instance_id)
+    .fetch_optional(db)
+    .await
+    .unwrap_or(None);
+    row.unwrap_or((None, None))
 }
 
 pub async fn process_termination(
@@ -726,7 +798,7 @@ pub async fn process_provisioning(
     let is_worker_target =
         inventiv_common::worker_target::instance_type_matches_patterns(&instance_type, &patterns);
 
-    let cp_url = std::env::var("WORKER_CONTROL_PLANE_URL").unwrap_or_default();
+    let cp_url = worker_control_plane_url();
     let cp_url = cp_url.trim().trim_end_matches('/').to_string();
 
     // Include SSH key for debugging (same one used by provisioning).
@@ -747,9 +819,14 @@ pub async fn process_provisioning(
                     Some(build_ssh_key_cloud_init(&ssh_pub))
                 }
             } else {
-                let worker_model = std::env::var("WORKER_MODEL_ID")
-                    .ok()
-                    .filter(|s| !s.trim().is_empty())
+                let (model_from_db, _vol_from_db) =
+                    resolve_instance_model_and_volume(&pool, instance_uuid).await;
+                let worker_model = model_from_db
+                    .or_else(|| {
+                        std::env::var("WORKER_MODEL_ID")
+                            .ok()
+                            .filter(|s| !s.trim().is_empty())
+                    })
                     .unwrap_or_else(|| "Qwen/Qwen2.5-0.5B-Instruct".to_string());
 
                 let vllm_image = std::env::var("WORKER_VLLM_IMAGE")
@@ -763,6 +840,7 @@ pub async fn process_provisioning(
                     .unwrap_or_else(|| "https://raw.githubusercontent.com/Inventiv-IT-for-AI/inventiv-agents/main/inventiv-worker/agent.py".to_string());
 
                 let worker_auth_token = std::env::var("WORKER_AUTH_TOKEN").unwrap_or_default();
+                let worker_hf_token = worker_hf_token();
 
                 Some(build_worker_cloud_init(
                     &ssh_pub,
@@ -772,6 +850,7 @@ pub async fn process_provisioning(
                     &vllm_image,
                     &agent_url,
                     &worker_auth_token,
+                    &worker_hf_token,
                 ))
             }
         } else if !ssh_pub.trim().is_empty() {
@@ -881,8 +960,30 @@ pub async fn process_provisioning(
             .unwrap_or(None)
             ;
 
-            let data_conf: Option<(i64, Option<i32>, bool)> = data_conf_row
+            let mut data_conf: Option<(i64, Option<i32>, bool)> = data_conf_row
                 .and_then(|(gb_opt, perf_opt, del)| gb_opt.map(|gb| (gb, perf_opt, del)));
+
+            // Fallback: if instance type doesn't specify a data volume, infer a safe size from the model.
+            // This helps prevent "no space left on device" during docker + image + model pulls on diskless GPUs.
+            if data_conf.is_none() && auto_install && is_scaleway && is_worker_target {
+                let (model_from_db, vol_from_db) =
+                    resolve_instance_model_and_volume(&pool, instance_uuid).await;
+
+                if let Some(gb) = vol_from_db.filter(|gb| *gb > 0) {
+                    data_conf = Some((gb, None, true));
+                } else {
+                    let worker_model = model_from_db
+                        .or_else(|| {
+                            std::env::var("WORKER_MODEL_ID")
+                                .ok()
+                                .filter(|s| !s.trim().is_empty())
+                        })
+                        .unwrap_or_else(|| "Qwen/Qwen2.5-0.5B-Instruct".to_string());
+                    if let Some(gb) = worker_storage::recommended_data_volume_gb(&worker_model) {
+                        data_conf = Some((gb, None, true));
+                    }
+                }
+            }
 
             if let Some((gb, perf_iops, delete_on_terminate)) = data_conf {
                 if gb > 0 {
@@ -1236,6 +1337,7 @@ fn build_worker_cloud_init(
     vllm_image: &str,
     agent_source_url: &str,
     worker_auth_token: &str,
+    worker_hf_token: &str,
 ) -> String {
     // Keep it simple for initial DEV->Scaleway validation:
     // - Run vLLM from upstream image
@@ -1260,6 +1362,7 @@ fn build_worker_cloud_init(
     cloud.push_str(&format!("      VLLM_IMAGE=\"{}\"\n", vllm_image));
     cloud.push_str(&format!("      AGENT_URL=\"{}\"\n", agent_source_url));
     cloud.push_str(&format!("      WORKER_AUTH_TOKEN=\"{}\"\n", worker_auth_token));
+    cloud.push_str(&format!("      WORKER_HF_TOKEN=\"{}\"\n", worker_hf_token));
     cloud.push_str("      export DEBIAN_FRONTEND=noninteractive\n");
     cloud.push_str("\n");
     cloud.push_str("      if ! command -v docker >/dev/null 2>&1; then\n");
@@ -1301,6 +1404,9 @@ fn build_worker_cloud_init(
     cloud.push_str("        --name vllm \\\n");
     cloud.push_str("        --gpus all \\\n");
     cloud.push_str("        -p 8000:8000 \\\n");
+    cloud.push_str("        -e HUGGING_FACE_HUB_TOKEN=\"$WORKER_HF_TOKEN\" \\\n");
+    cloud.push_str("        -e HUGGINGFACE_HUB_TOKEN=\"$WORKER_HF_TOKEN\" \\\n");
+    cloud.push_str("        -e HF_TOKEN=\"$WORKER_HF_TOKEN\" \\\n");
     cloud.push_str("        -e HF_HOME=/opt/inventiv-worker/hf \\\n");
     cloud.push_str("        -e TRANSFORMERS_CACHE=/opt/inventiv-worker/hf \\\n");
     cloud.push_str("        -v /opt/inventiv-worker:/opt/inventiv-worker \\\n");

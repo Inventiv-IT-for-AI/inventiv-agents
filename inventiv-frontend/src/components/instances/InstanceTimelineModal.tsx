@@ -10,6 +10,7 @@ import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList"
 import { CopyButton } from "@/components/shared/CopyButton";
 import { displayOrDash } from "@/lib/utils";
 import { VirtualizedDataTable, type DataTableColumn } from "@/components/shared/VirtualizedDataTable";
+import { useRealtimeEvents } from "@/hooks/useRealtimeEvents";
 
 interface InstanceTimelineModalProps {
   open: boolean;
@@ -22,11 +23,13 @@ export function InstanceTimelineModal({
   onClose,
   instanceId,
 }: InstanceTimelineModalProps) {
+  useRealtimeEvents();
   const [instance, setInstance] = useState<Instance | null>(null);
   const [actionTypes, setActionTypes] = useState<Record<string, ActionType>>({});
   const [selectedLog, setSelectedLog] = useState<ActionLog | null>(null);
   const [counts, setCounts] = useState({ total: 0, filtered: 0 });
   const [refreshToken, setRefreshToken] = useState(0);
+  const [actionsRefreshSeq, setActionsRefreshSeq] = useState(0);
   const [copyingActions, setCopyingActions] = useState(false);
   const [copiedActions, setCopiedActions] = useState(false);
 
@@ -38,6 +41,12 @@ export function InstanceTimelineModal({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, instanceId, refreshToken]);
+
+  useEffect(() => {
+    const handler = () => setActionsRefreshSeq((v) => v + 1);
+    window.addEventListener("refresh-action-logs", handler);
+    return () => window.removeEventListener("refresh-action-logs", handler);
+  }, []);
 
   const fetchActionTypes = useCallback(async () => {
     try {
@@ -129,7 +138,10 @@ export function InstanceTimelineModal({
     rows: ActionLog[];
   };
 
-  const queryKey = useMemo(() => JSON.stringify({ instanceId, refreshToken }), [instanceId, refreshToken]);
+  const queryKey = useMemo(
+    () => JSON.stringify({ instanceId, refreshToken, actionsRefreshSeq }),
+    [instanceId, refreshToken, actionsRefreshSeq],
+  );
 
   const handleCountsChange = useCallback(
     ({ total, filtered }: { total: number; filtered: number }) => {
@@ -390,7 +402,8 @@ export function InstanceTimelineModal({
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] flex-1 min-h-0">
             <div className="min-w-0">
               <VirtualizedDataTable<ActionLog>
-                listId={`instance_timeline:${instanceId}`}
+                // Use a stable listId so column prefs persist across instances (localStorage key is derived from listId).
+                listId="monitoring:instance_actions"
                 dataKey={queryKey}
                 title="Actions"
                 height={520}

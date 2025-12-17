@@ -7,6 +7,7 @@ import { Plus, RefreshCcw } from "lucide-react";
 import { Instance } from "@/lib/types";
 import { apiUrl } from "@/lib/api";
 import { useInstances } from "@/hooks/useInstances";
+import { useRealtimeEvents } from "@/hooks/useRealtimeEvents";
 import { useCatalog } from "@/hooks/useCatalog";
 import { StatsCard } from "@/components/shared/StatsCard";
 import { CreateInstanceModal } from "@/components/instances/CreateInstanceModal";
@@ -16,6 +17,7 @@ import { InstanceTable } from "@/components/instances/InstanceTable";
 import { InstanceDetailsModal } from "@/components/instances/InstanceDetailsModal";
 
 export default function InstancesPage() {
+    useRealtimeEvents();
     const { instances, refreshInstances } = useInstances();
     const catalog = useCatalog();
 
