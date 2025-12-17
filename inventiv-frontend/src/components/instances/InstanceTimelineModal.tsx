@@ -32,12 +32,14 @@ export function InstanceTimelineModal({
   const [actionsRefreshSeq, setActionsRefreshSeq] = useState(0);
   const [copyingActions, setCopyingActions] = useState(false);
   const [copiedActions, setCopiedActions] = useState(false);
+  const [recentLogs, setRecentLogs] = useState<ActionLog[]>([]);
 
   useEffect(() => {
     if (open && instanceId) {
       setSelectedLog(null);
       void fetchActionTypes();
       void fetchInstance();
+      void fetchRecentLogs();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, instanceId, refreshToken]);
@@ -72,6 +74,24 @@ export function InstanceTimelineModal({
     } catch (error) {
       console.error("Failed to fetch instance details:", error);
       setInstance(null);
+    }
+  }, [instanceId]);
+
+  const fetchRecentLogs = useCallback(async () => {
+    try {
+      const params = new URLSearchParams();
+      params.set("offset", "0");
+      params.set("limit", "200");
+      params.set("instance_id", instanceId);
+      const res = await fetch(apiUrl(`action_logs/search?${params.toString()}`));
+      if (!res.ok) {
+        setRecentLogs([]);
+        return;
+      }
+      const data = (await res.json()) as { rows: ActionLog[] };
+      setRecentLogs(Array.isArray(data?.rows) ? data.rows : []);
+    } catch {
+      setRecentLogs([]);
     }
   }, [instanceId]);
 
@@ -129,6 +149,29 @@ export function InstanceTimelineModal({
     const t = Math.max(a, b);
     return t ? new Date(t).toISOString() : null;
   }, [instance?.last_health_check, instance?.last_reconciliation]);
+
+  const vllmMode = useMemo(() => {
+    // Prefer metadata.vllm_mode from the latest WORKER_SSH_INSTALL action.
+    for (const log of recentLogs) {
+      if (log.action_type === "WORKER_SSH_INSTALL") {
+        const m = (log.metadata as any)?.vllm_mode;
+        if (typeof m === "string" && m.trim()) return m.trim();
+      }
+    }
+    return "mono";
+  }, [recentLogs]);
+
+  const readiness = useMemo(() => {
+    const getStatus = (actionType: string) => {
+      const l = recentLogs.find((x) => x.action_type === actionType);
+      return l?.status ?? null;
+    };
+    return {
+      vllmHttp: getStatus("WORKER_VLLM_HTTP_OK"),
+      modelLoaded: getStatus("WORKER_MODEL_LOADED"),
+      warmup: getStatus("WORKER_VLLM_WARMUP"),
+    };
+  }, [recentLogs]);
 
   type ActionLogsSearchResponse = {
     offset: number;
@@ -346,6 +389,22 @@ export function InstanceTimelineModal({
             </div>
 
             <div className="mt-3 grid grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-2 text-xs">
+              <div className="flex items-baseline gap-2 min-w-0 col-span-2 lg:col-span-2">
+                <span className="text-muted-foreground">Model</span>
+                <span className="text-muted-foreground">:</span>
+                <span className="font-medium min-w-0 truncate">
+                  {instance?.model_name && instance?.model_code
+                    ? `${instance.model_name} (${instance.model_code})`
+                    : instance?.model_code
+                      ? instance.model_code
+                      : "-"}
+                </span>
+              </div>
+              <div className="flex items-baseline gap-2 min-w-0">
+                <span className="text-muted-foreground">Mode</span>
+                <span className="text-muted-foreground">:</span>
+                <span className="font-medium">{vllmMode}</span>
+              </div>
               <div className="flex items-baseline gap-2 min-w-0">
                 <span className="text-muted-foreground">Créée</span>
                 <span className="text-muted-foreground">:</span>
@@ -390,11 +449,29 @@ export function InstanceTimelineModal({
                 </span>
               </div>
               <div className="flex items-baseline gap-2 min-w-0 col-span-2 lg:col-span-2">
-                <span className="text-muted-foreground">Provider ID</span>
+                <span className="text-muted-foreground">Provider</span>
+                <span className="text-muted-foreground">:</span>
+                <span className="font-medium min-w-0 truncate">{displayOrDash(instance?.provider_name)}</span>
+              </div>
+              <div className="flex items-baseline gap-2 min-w-0 col-span-2 lg:col-span-2">
+                <span className="text-muted-foreground">Provider instance</span>
                 <span className="text-muted-foreground">:</span>
                 <span className="font-medium font-mono min-w-0 truncate">
                   {displayOrDash(instance?.provider_instance_id)}
                 </span>
+              </div>
+              <div className="flex items-center gap-2 min-w-0 col-span-2 lg:col-span-4">
+                <span className="text-muted-foreground">Readiness</span>
+                <span className="text-muted-foreground">:</span>
+                <Badge variant="outline" className="text-[11px]">
+                  vLLM HTTP {readiness.vllmHttp ?? "—"}
+                </Badge>
+                <Badge variant="outline" className="text-[11px]">
+                  Model {readiness.modelLoaded ?? "—"}
+                </Badge>
+                <Badge variant="outline" className="text-[11px]">
+                  Warmup {readiness.warmup ?? "—"}
+                </Badge>
               </div>
             </div>
           </DialogHeader>

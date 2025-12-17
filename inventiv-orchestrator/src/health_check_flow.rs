@@ -102,7 +102,7 @@ async fn check_instance_readyz_http(ip: &str, port: u16) -> bool {
     }
 }
 
-async fn check_vllm_models_http(ip: &str, port: u16, expected_model_id: &str) -> (bool, i32, Option<String>) {
+pub(crate) async fn check_vllm_http_models(ip: &str, port: u16) -> (bool, Vec<String>, i32, Option<String>) {
     let clean_ip = ip.split('/').next().unwrap_or(ip);
     let url = format!("http://{}:{}/v1/models", clean_ip, port);
     let start = std::time::Instant::now();
@@ -111,9 +111,53 @@ async fn check_vllm_models_http(ip: &str, port: u16, expected_model_id: &str) ->
         .timeout(StdDuration::from_secs(4))
         .build();
     let Ok(client) = client else {
-        return (false, 0, Some("client_build_failed".to_string()));
+        return (false, Vec::new(), 0, Some("client_build_failed".to_string()));
     };
     let resp = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            let ms = start.elapsed().as_millis().min(i32::MAX as u128) as i32;
+            return (false, Vec::new(), ms, Some(format!("request_error: {}", e)));
+        }
+    };
+    let ms = start.elapsed().as_millis().min(i32::MAX as u128) as i32;
+    if !resp.status().is_success() {
+        return (false, Vec::new(), ms, Some(format!("status={}", resp.status())));
+    }
+    let v: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => return (false, Vec::new(), ms, Some(format!("json_error: {}", e))),
+    };
+    let mut ids = Vec::new();
+    if let Some(arr) = v.get("data").and_then(|x| x.as_array()) {
+        for item in arr {
+            if let Some(id) = item.get("id").and_then(|x| x.as_str()) {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    (true, ids, ms, None)
+}
+
+async fn check_vllm_warmup_http(ip: &str, port: u16, model_id: &str) -> (bool, i32, Option<String>) {
+    let clean_ip = ip.split('/').next().unwrap_or(ip);
+    let url = format!("http://{}:{}/v1/chat/completions", clean_ip, port);
+    let start = std::time::Instant::now();
+    let client = reqwest::Client::builder()
+        .connect_timeout(StdDuration::from_secs(2))
+        .timeout(StdDuration::from_secs(8))
+        .build();
+    let Ok(client) = client else {
+        return (false, 0, Some("client_build_failed".to_string()));
+    };
+    let payload = serde_json::json!({
+        "model": model_id,
+        "messages": [{"role":"user","content":"ping"}],
+        "max_tokens": 1,
+        "temperature": 0,
+        "stream": false
+    });
+    let resp = match client.post(&url).json(&payload).send().await {
         Ok(r) => r,
         Err(e) => {
             let ms = start.elapsed().as_millis().min(i32::MAX as u128) as i32;
@@ -124,27 +168,12 @@ async fn check_vllm_models_http(ip: &str, port: u16, expected_model_id: &str) ->
     if !resp.status().is_success() {
         return (false, ms, Some(format!("status={}", resp.status())));
     }
-    let v: serde_json::Value = match resp.json().await {
+    // Best-effort parse to ensure it's valid JSON.
+    let _v: serde_json::Value = match resp.json().await {
         Ok(v) => v,
         Err(e) => return (false, ms, Some(format!("json_error: {}", e))),
     };
-    let mut ids = Vec::new();
-    if let Some(arr) = v.get("data").and_then(|x| x.as_array()) {
-        for item in arr {
-            if let Some(id) = item.get("id").and_then(|x| x.as_str()) {
-                ids.push(id.to_string());
-            }
-        }
-    }
-    let expected = expected_model_id.trim();
-    if expected.is_empty() {
-        return (true, ms, None);
-    }
-    if ids.iter().any(|x| x == expected) {
-        (true, ms, None)
-    } else {
-        (false, ms, Some(format!("model_not_listed (expected={}, got_count={})", expected, ids.len())))
-    }
+    (true, ms, None)
 }
 
 /// Check instance health by testing SSH port connectivity.
@@ -782,37 +811,89 @@ pub async fn check_and_transition_instance(
             .or_else(|| std::env::var("WORKER_MODEL_ID").ok().filter(|s| !s.trim().is_empty()))
             .unwrap_or_default();
 
-        let (ok, latency_ms, err) = check_vllm_models_http(&ip, vllm_port, &expected_model_id).await;
-        model_check_ok = ok;
+        let warmup_enabled = std::env::var("WORKER_VLLM_WARMUP")
+            .ok()
+            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(true);
+
+        let (http_ok, ids, latency_ms, http_err) = check_vllm_http_models(&ip, vllm_port).await;
+        let expected = expected_model_id.trim();
+        let model_loaded = expected.is_empty() || ids.iter().any(|x| x == expected);
+        let model_err = if http_ok && !model_loaded && !expected.is_empty() {
+            Some(format!("model_not_listed (expected={}, got_count={})", expected, ids.len()))
+        } else {
+            None
+        };
+
+        // Best-effort warmup (doesn't gate readiness unless you want it to).
+        let (warmup_ok, warmup_ms, warmup_err) = if warmup_enabled && http_ok && model_loaded && !expected.is_empty() {
+            check_vllm_warmup_http(&ip, vllm_port, expected).await
+        } else {
+            (true, 0, None)
+        };
+
+        model_check_ok = http_ok && model_loaded;
 
         // Log:
-        // - always on success (it should happen only once right before BOOTING->READY)
-        // - on failure, but rate-limited (otherwise we'd spam action_logs every poll)
-        let recent_fail: bool = if ok {
-            false
-        } else {
+        // - log each readiness step (rate-limited on failure)
+        async fn should_log_step(db: &Pool<Postgres>, instance_id: uuid::Uuid, action_type: &str, ok: bool) -> bool {
+            if ok {
+                // success: log only if we never logged a success before
+                let already_ok: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM action_logs WHERE instance_id = $1 AND action_type = $2 AND status = 'success')"
+                )
+                .bind(instance_id)
+                .bind(action_type)
+                .fetch_one(db)
+                .await
+                .unwrap_or(false);
+                return !already_ok;
+            }
+            // failure: log at most once per minute
             sqlx::query_scalar(
                 r#"
-                SELECT EXISTS(
+                SELECT NOT EXISTS(
                   SELECT 1
                   FROM action_logs
                   WHERE instance_id = $1
-                    AND action_type = 'WORKER_MODEL_READY_CHECK'
+                    AND action_type = $2
                     AND created_at > NOW() - INTERVAL '60 seconds'
                 )
                 "#,
             )
             .bind(instance_id)
-            .fetch_one(&db)
+            .bind(action_type)
+            .fetch_one(db)
             .await
             .unwrap_or(false)
-        };
-        let should_log = ok || !recent_fail;
-        if should_log {
-            let log_start = std::time::Instant::now();
+        }
+
+        // 1) vLLM HTTP up (/v1/models 200)
+        if should_log_step(&db, instance_id, "WORKER_VLLM_HTTP_OK", http_ok).await {
             let log_id = logger::log_event_with_metadata(
                 &db,
-                "WORKER_MODEL_READY_CHECK",
+                "WORKER_VLLM_HTTP_OK",
+                "in_progress",
+                instance_id,
+                None,
+                Some(serde_json::json!({
+                    "ip": ip,
+                    "vllm_port": vllm_port,
+                    "latency_ms": latency_ms,
+                    "result": if http_ok { "success" } else { "failed" },
+                    "error": http_err
+                })),
+            ).await.ok();
+            if let Some(lid) = log_id {
+                let _ = logger::log_event_complete(&db, lid, if http_ok { "success" } else { "failed" }, 0, http_err.as_deref()).await;
+            }
+        }
+
+        // 2) Model listed/loaded
+        if should_log_step(&db, instance_id, "WORKER_MODEL_LOADED", model_loaded).await {
+            let log_id = logger::log_event_with_metadata(
+                &db,
+                "WORKER_MODEL_LOADED",
                 "in_progress",
                 instance_id,
                 None,
@@ -820,21 +901,68 @@ pub async fn check_and_transition_instance(
                     "ip": ip,
                     "vllm_port": vllm_port,
                     "expected_model_id": expected_model_id,
-                    "latency_ms": latency_ms,
-                    "result": if ok { "success" } else { "failed" },
-                    "error": err
+                    "result": if model_loaded { "success" } else { "failed" },
+                    "error": model_err
                 })),
-            )
-            .await
-            .ok();
+            ).await.ok();
             if let Some(lid) = log_id {
-                let dur = log_start.elapsed().as_millis() as i32;
-                if ok {
-                    let _ = logger::log_event_complete(&db, lid, "success", dur, None).await;
-                } else {
-                    let _ = logger::log_event_complete(&db, lid, "failed", dur, err.as_deref()).await;
+                let _ = logger::log_event_complete(&db, lid, if model_loaded { "success" } else { "failed" }, 0, model_err.as_deref()).await;
+            }
+        }
+
+        // 3) Warmup request
+        if warmup_enabled && http_ok && model_loaded && !expected.is_empty() {
+            if should_log_step(&db, instance_id, "WORKER_VLLM_WARMUP", warmup_ok).await {
+                let log_id = logger::log_event_with_metadata(
+                    &db,
+                    "WORKER_VLLM_WARMUP",
+                    "in_progress",
+                    instance_id,
+                    None,
+                    Some(serde_json::json!({
+                        "ip": ip,
+                        "vllm_port": vllm_port,
+                        "expected_model_id": expected_model_id,
+                        "latency_ms": warmup_ms,
+                        "result": if warmup_ok { "success" } else { "failed" },
+                        "error": warmup_err
+                    })),
+                ).await.ok();
+                if let Some(lid) = log_id {
+                    let _ = logger::log_event_complete(&db, lid, if warmup_ok { "success" } else { "failed" }, 0, warmup_err.as_deref()).await;
                 }
             }
+        }
+
+        // Persist "worker runtime" fields so /v1/models + runtime_models can reflect serving capacity
+        // even if the python worker heartbeat is not implemented yet.
+        //
+        // If the instance doesn't have an expected model configured, infer it from /v1/models.
+        let inferred_model_id: Option<String> = if !expected.is_empty() {
+            Some(expected.to_string())
+        } else {
+            ids.get(0).cloned()
+        };
+        if model_check_ok {
+            let Some(mid) = inferred_model_id else { return; };
+            let _ = sqlx::query(
+                r#"
+                UPDATE instances
+                SET
+                  worker_model_id = $2,
+                  worker_status = 'ready',
+                  worker_last_heartbeat = NOW(),
+                  worker_health_port = $3,
+                  worker_vllm_port = $4
+                WHERE id = $1
+                "#,
+            )
+            .bind(instance_id)
+            .bind(mid)
+            .bind(worker_port as i32)
+            .bind(vllm_port as i32)
+            .execute(&db)
+            .await;
         }
     }
 

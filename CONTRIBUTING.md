@@ -1,15 +1,15 @@
 # Contributing to Inventiv-Agents LLM Infra
 
-Thank you for your interest in contributing to our project! 🚀
+Thank you for your interest in contributing to our project!
 
-## getting Started
+## Getting Started
 
 1.  **Fork** the repository.
 2.  **Clone** your fork locally.
 3.  **Install dependencies**:
     *   Docker & Docker Compose
     *   Rust (Cargo)
-4.  **Run the checks**: `make check` and `make test`.
+4.  **Run tests**: `make test`.
 
 ## Development Flow
 

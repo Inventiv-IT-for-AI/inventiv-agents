@@ -60,6 +60,8 @@ export const __tailwindSafelistActionTypeBadges = [
   "hover:bg-green-700",
   "bg-teal-600",
   "hover:bg-teal-700",
+  "bg-sky-600",
+  "hover:bg-sky-700",
   "bg-gray-600",
   "hover:bg-gray-700",
   "bg-yellow-500",

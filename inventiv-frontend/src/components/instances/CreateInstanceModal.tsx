@@ -531,7 +531,7 @@ export function CreateInstanceModal({
                             <Button
                                 type="submit"
                                 onClick={handleDeploy}
-                                disabled={deployStep === "submitting" || !selectedComboKey}
+                                disabled={deployStep === "submitting" || !selectedComboKey || !selectedModelId || models.length === 0}
                             >
                                 {deployStep === "submitting" ? "Créer..." : "Créer"}
                             </Button>
