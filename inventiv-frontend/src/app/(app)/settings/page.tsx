@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useSearchParams } from "next/navigation";
 import { apiUrl } from "@/lib/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -12,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Pencil, Settings2, Plus, Info } from "lucide-react";
 import { ManageZonesModal } from "@/components/settings/ManageZonesModal";
-import type { Provider, ProviderParams, GlobalSetting, Region, Zone, InstanceType, LlmModel, ApiKey } from "@/lib/types";
+import type { Provider, ProviderParams, GlobalSetting, Region, Zone, InstanceType, LlmModel } from "@/lib/types";
 import { VirtualizedDataTable, type DataTableColumn } from "@/components/shared/VirtualizedDataTable";
 import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
 import { formatEur } from "@/lib/utils";
@@ -61,11 +62,14 @@ function InfoHint({ text }: { text: string }) {
     );
 }
 export default function SettingsPage() {
-    const [activeTab, setActiveTab] = useState<"providers" | "regions" | "zones" | "types" | "models" | "global_params" | "api_keys">("providers");
-    const [refreshTick, setRefreshTick] = useState({ providers: 0, regions: 0, zones: 0, types: 0, models: 0, global_params: 0, api_keys: 0 });
+    const router = useRouter();
+    const [me, setMe] = useState<{ role: string } | null>(null);
+    const isAdmin = me?.role === "admin";
+    const [activeTab, setActiveTab] = useState<"providers" | "regions" | "zones" | "types" | "models" | "global_params">("providers");
+    const [refreshTick, setRefreshTick] = useState({ providers: 0, regions: 0, zones: 0, types: 0, models: 0, global_params: 0 });
 
     type EntityType = "provider" | "region" | "zone" | "type" | "model";
-    type RefreshKey = "providers" | "regions" | "zones" | "types" | "models" | "global_params" | "api_keys";
+    type RefreshKey = "providers" | "regions" | "zones" | "types" | "models" | "global_params";
     const refreshKeyFor = (t: EntityType): RefreshKey => {
         switch (t) {
             case "provider":
@@ -99,12 +103,32 @@ export default function SettingsPage() {
 
     const searchParams = useSearchParams();
     useEffect(() => {
+        // Settings is admin-only
+        fetch(apiUrl("/auth/me"))
+            .then((r) => (r.ok ? r.json() : Promise.reject()))
+            .then((u) => setMe(u))
+            .catch(() => {
+                setMe(null);
+                router.replace("/login");
+            });
+
         const tab = (searchParams.get("tab") || "").toLowerCase();
-        if (tab === "providers" || tab === "regions" || tab === "zones" || tab === "types" || tab === "models" || tab === "global_params" || tab === "api_keys") {
+        if (tab === "providers" || tab === "regions" || tab === "zones" || tab === "types" || tab === "models" || tab === "global_params") {
             setActiveTab(tab as any);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    if (me && !isAdmin) {
+        return (
+            <div className="p-6">
+                <div className="text-2xl font-semibold">Settings</div>
+                <div className="mt-2 text-sm text-muted-foreground">
+                    Access denied. Settings are available to admin users only.
+                </div>
+            </div>
+        );
+    }
 
     useEffect(() => {
         // Load settings definitions once (used for placeholders + min/max + defaults).
@@ -801,124 +825,7 @@ export default function SettingsPage() {
         return { offset: data.offset, items: data.rows, totalCount: data.total_count, filteredCount: data.filtered_count };
     };
 
-    // -----------------------------
-    // API Keys (per-user, small list)
-    // -----------------------------
-    const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
-    const [apiKeysLoading, setApiKeysLoading] = useState(false);
-    const [apiKeyCreateOpen, setApiKeyCreateOpen] = useState(false);
-    const [apiKeyName, setApiKeyName] = useState("");
-    const [createdApiKey, setCreatedApiKey] = useState<string | null>(null);
-    const [apiKeyEditOpen, setApiKeyEditOpen] = useState(false);
-    const [editingApiKey, setEditingApiKey] = useState<ApiKey | null>(null);
-    const [apiKeyEditName, setApiKeyEditName] = useState("");
-
-    useEffect(() => {
-        if (activeTab !== "api_keys") return;
-        setApiKeysLoading(true);
-        fetch(apiUrl("api_keys"))
-            .then((r) => (r.ok ? r.json() : Promise.reject()))
-            .then((rows: ApiKey[]) => setApiKeys(rows))
-            .catch(() => null)
-            .finally(() => setApiKeysLoading(false));
-    }, [activeTab, refreshTick.api_keys]);
-
-    const createApiKey = async () => {
-        const name = apiKeyName.trim();
-        if (!name) return;
-        const res = await fetch(apiUrl("api_keys"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name }),
-        });
-        if (!res.ok) {
-            alert("Failed to create API key");
-            return;
-        }
-        const data = (await res.json()) as { key: ApiKey; api_key: string };
-        setCreatedApiKey(data.api_key);
-        setApiKeyName("");
-        setRefreshTick((s) => ({ ...s, api_keys: s.api_keys + 1 }));
-    };
-
-    const revokeApiKey = async (id: string) => {
-        if (!confirm("Revoke this API key? It will stop working immediately.")) return;
-        await fetch(apiUrl(`api_keys/${id}`), { method: "DELETE" });
-        setRefreshTick((s) => ({ ...s, api_keys: s.api_keys + 1 }));
-    };
-
-    const openRenameApiKey = (k: ApiKey) => {
-        setEditingApiKey(k);
-        setApiKeyEditName(k.name);
-        setApiKeyEditOpen(true);
-    };
-
-    const saveRenameApiKey = async () => {
-        if (!editingApiKey) return;
-        const name = apiKeyEditName.trim();
-        if (!name) return;
-        const res = await fetch(apiUrl(`api_keys/${editingApiKey.id}`), {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name }),
-        });
-        if (!res.ok) {
-            alert("Failed to rename API key");
-            return;
-        }
-        setApiKeyEditOpen(false);
-        setEditingApiKey(null);
-        setRefreshTick((s) => ({ ...s, api_keys: s.api_keys + 1 }));
-    };
-
-    const apiKeyColumns: DataTableColumn<ApiKey>[] = [
-        { id: "name", label: "Name", width: 240, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
-        { id: "prefix", label: "Prefix", width: 160, cell: ({ row }) => <span className="font-mono text-xs">{row.key_prefix}</span> },
-        {
-            id: "created_at",
-            label: "Created",
-            width: 180,
-            cell: ({ row }) => <span className="text-sm text-muted-foreground">{new Date(row.created_at).toLocaleString()}</span>,
-        },
-        {
-            id: "last_used_at",
-            label: "Last used",
-            width: 180,
-            cell: ({ row }) =>
-                row.last_used_at ? (
-                    <span className="text-sm text-muted-foreground">{new Date(row.last_used_at).toLocaleString()}</span>
-                ) : (
-                    <span className="text-sm text-muted-foreground">—</span>
-                ),
-        },
-        {
-            id: "status",
-            label: "Status",
-            width: 120,
-            cell: ({ row }) =>
-                row.revoked_at ? (
-                    <span className="text-xs px-2 py-1 rounded bg-gray-200 text-gray-700">revoked</span>
-                ) : (
-                    <span className="text-xs px-2 py-1 rounded bg-green-200 text-green-800">active</span>
-                ),
-        },
-        {
-            id: "actions",
-            label: "Actions",
-            width: 170,
-            cell: ({ row }) => (
-                <div className="flex items-center gap-2 justify-end">
-                    <Button variant="ghost" size="sm" onClick={() => openRenameApiKey(row)}>
-                        <Pencil className="h-4 w-4 mr-2" />
-                        Modifier
-                    </Button>
-                    <Button variant="destructive" size="sm" onClick={() => revokeApiKey(row.id)} disabled={!!row.revoked_at}>
-                        Revoke
-                    </Button>
-                </div>
-            ),
-        },
-    ];
+    // API Keys moved to /api-keys
 
     return (
         <div className="p-8 space-y-8">
@@ -935,7 +842,6 @@ export default function SettingsPage() {
                     <TabsTrigger value="types">Instance Types</TabsTrigger>
                     <TabsTrigger value="models">Models</TabsTrigger>
                     <TabsTrigger value="global_params">Global Params</TabsTrigger>
-                    <TabsTrigger value="api_keys">API Keys</TabsTrigger>
                 </TabsList>
 
                 {/* PROVIDERS */}
@@ -1115,100 +1021,12 @@ export default function SettingsPage() {
                     </Card>
                 </TabsContent>
 
-                {/* API KEYS */}
-                <TabsContent value="api_keys">
-                    <Card>
-                        <CardContent>
-                            <VirtualizedDataTable<ApiKey>
-                                listId="settings:api_keys"
-                                title="API Keys"
-                                dataKey={String(refreshTick.api_keys)}
-                                rightHeader={
-                                    <div className="flex gap-2">
-                                        <Button size="sm" onClick={() => { setApiKeyCreateOpen(true); setCreatedApiKey(null); }}>
-                                            <Plus className="h-4 w-4 mr-2" />
-                                            Ajouter
-                                        </Button>
-                                    </div>
-                                }
-                                autoHeight={true}
-                                height={300}
-                                rowHeight={52}
-                                columns={apiKeyColumns}
-                                rows={apiKeys}
-                            />
-                        </CardContent>
-                    </Card>
-                </TabsContent>
+                {/* API Keys moved to /api-keys */}
             </Tabs>
 
             {/* (removed) standalone Provider Params dialog (params are edited in Provider CRUD) */}
 
-            {/* Create API Key dialog (shows secret once) */}
-            <Dialog open={apiKeyCreateOpen} onOpenChange={(open) => { setApiKeyCreateOpen(open); if (!open) { setCreatedApiKey(null); setApiKeyName(''); } }}>
-                <DialogContent showCloseButton={false}>
-                    <DialogHeader>
-                        <DialogTitle>Ajouter une API Key</DialogTitle>
-                    </DialogHeader>
-                    <div className="grid gap-4 py-4">
-                        {!createdApiKey ? (
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label htmlFor="api_key_name" className="text-right">Nom</Label>
-                                <Input
-                                    id="api_key_name"
-                                    value={apiKeyName}
-                                    onChange={(e) => setApiKeyName(e.target.value)}
-                                    className="col-span-3"
-                                    placeholder="ex: prod-backend, n8n, langchain..."
-                                />
-                            </div>
-                        ) : (
-                            <div className="space-y-2">
-                                <p className="text-sm text-muted-foreground">
-                                    Copie ta clé maintenant. Elle ne sera affichée qu’une seule fois.
-                                </p>
-                                <div className="flex items-center gap-2">
-                                    <Input value={createdApiKey} readOnly className="font-mono text-xs" />
-                                    <CopyButton text={createdApiKey} />
-                                </div>
-                            </div>
-                        )}
-                    </div>
-                    <DialogFooter>
-                        <Button variant="secondary" onClick={() => setApiKeyCreateOpen(false)}>
-                            Fermer
-                        </Button>
-                        {!createdApiKey && (
-                            <Button onClick={createApiKey} disabled={!apiKeyName.trim()}>
-                                Créer
-                            </Button>
-                        )}
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
-
-            {/* Rename API Key dialog */}
-            <Dialog open={apiKeyEditOpen} onOpenChange={(open) => { setApiKeyEditOpen(open); if (!open) { setEditingApiKey(null); setApiKeyEditName(''); } }}>
-                <DialogContent showCloseButton={false}>
-                    <DialogHeader>
-                        <DialogTitle>Modifier l’API Key</DialogTitle>
-                    </DialogHeader>
-                    <div className="grid gap-4 py-4">
-                        <div className="grid grid-cols-4 items-center gap-4">
-                            <Label htmlFor="api_key_edit_name" className="text-right">Nom</Label>
-                            <Input id="api_key_edit_name" value={apiKeyEditName} onChange={(e) => setApiKeyEditName(e.target.value)} className="col-span-3" />
-                        </div>
-                    </div>
-                    <DialogFooter>
-                        <Button variant="secondary" onClick={() => setApiKeyEditOpen(false)}>
-                            Annuler
-                        </Button>
-                        <Button onClick={saveRenameApiKey} disabled={!apiKeyEditName.trim()}>
-                            Enregistrer
-                        </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
+            {/* API Keys moved to /api-keys */}
 
             <Dialog
                 open={isEditOpen}

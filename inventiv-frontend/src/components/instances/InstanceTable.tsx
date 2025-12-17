@@ -7,7 +7,7 @@ import { Eye, Archive } from "lucide-react";
 import { CopyButton } from "@/components/shared/CopyButton";
 import type { Instance } from "@/lib/types";
 import { displayOrDash, formatEur } from "@/lib/utils";
-import { VirtualizedDataTable, type DataTableColumn } from "@/components/shared/VirtualizedDataTable";
+import { InventivDataTable, type InventivDataTableColumn } from "@/components/shared/InventivDataTable";
 import { useMemo } from "react";
 type InstanceTableProps = {
   instances: Instance[];
@@ -23,12 +23,14 @@ export function InstanceTable({
   onArchive,
 }: InstanceTableProps) {
   
-  const columns = useMemo<DataTableColumn<Instance>[]>(() => {
+  const columns = useMemo<InventivDataTableColumn<Instance>[]>(() => {
     return [
       {
         id: "id",
         label: "ID",
         width: 140,
+        sortable: true,
+        getSortValue: (r) => r.id,
         cell: ({ row }) => (
           <span className="font-mono text-xs">{row.id.split("-")[0]}...</span>
         ),
@@ -37,24 +39,32 @@ export function InstanceTable({
         id: "provider",
         label: "Provider",
         width: 140,
+        sortable: true,
+        getSortValue: (r) => r.provider_name ?? "",
         cell: ({ row }) => displayOrDash(row.provider_name),
       },
       {
         id: "region",
         label: "Region",
         width: 160,
+        sortable: true,
+        getSortValue: (r) => r.region ?? "",
         cell: ({ row }) => displayOrDash(row.region),
       },
       {
         id: "zone",
         label: "Zone",
         width: 140,
+        sortable: true,
+        getSortValue: (r) => r.zone ?? "",
         cell: ({ row }) => displayOrDash(row.zone),
       },
       {
         id: "type",
         label: "Type",
         width: 220,
+        sortable: true,
+        getSortValue: (r) => r.instance_type ?? "",
         cell: ({ row }) => displayOrDash(row.instance_type),
       },
       {
@@ -62,6 +72,8 @@ export function InstanceTable({
         label: "Cost",
         width: 120,
         align: "right",
+        sortable: true,
+        getSortValue: (r) => (typeof r.total_cost === "number" ? r.total_cost : null),
         cell: ({ row }) => (
           <span className="font-mono">
             {typeof row.total_cost === "number" ? formatEur(row.total_cost, { minFrac: 4, maxFrac: 4 }) : "-"}
@@ -72,6 +84,8 @@ export function InstanceTable({
         id: "status",
         label: "Status",
         width: 140,
+        sortable: true,
+        getSortValue: (r) => r.status ?? "",
         cell: ({ row }) => (
           <Badge
             variant={
@@ -90,6 +104,8 @@ export function InstanceTable({
         id: "created",
         label: "Created",
         width: 170,
+        sortable: true,
+        getSortValue: (r) => new Date(r.created_at),
         cell: ({ row }) => (
           <span className="whitespace-nowrap text-muted-foreground">
             {formatDistanceToNow(parseISO(row.created_at), { addSuffix: true })}
@@ -100,6 +116,8 @@ export function InstanceTable({
         id: "ip",
         label: "IP Address",
         width: 200,
+        sortable: true,
+        getSortValue: (r) => r.ip_address ?? "",
         cell: ({ row }) =>
           row.ip_address ? (
             <div className="flex items-center gap-1 font-mono text-sm">
@@ -116,6 +134,7 @@ export function InstanceTable({
         width: 220,
         align: "right",
         disableReorder: true,
+        sortable: false,
         cell: ({ row }) => (
           <div className="flex justify-end items-center gap-2">
             <Button
@@ -160,7 +179,7 @@ export function InstanceTable({
   }, [onArchive, onTerminate, onViewDetails]);
 
   return (
-    <VirtualizedDataTable<Instance>
+    <InventivDataTable<Instance>
       listId="instances:table"
       title="Instances"
       autoHeight={true}
