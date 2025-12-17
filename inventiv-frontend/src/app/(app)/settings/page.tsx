@@ -19,11 +19,11 @@ import { formatEur } from "@/lib/utils";
 import { ActiveToggle } from "@/components/shared/ActiveToggle";
 import { CopyButton } from "@/components/shared/CopyButton";
 export default function SettingsPage() {
-    const [activeTab, setActiveTab] = useState<"providers" | "regions" | "zones" | "types" | "models" | "provider_params" | "global_params" | "api_keys">("providers");
-    const [refreshTick, setRefreshTick] = useState({ providers: 0, regions: 0, zones: 0, types: 0, models: 0, provider_params: 0, global_params: 0, api_keys: 0 });
+    const [activeTab, setActiveTab] = useState<"providers" | "regions" | "zones" | "types" | "models" | "global_params" | "api_keys">("providers");
+    const [refreshTick, setRefreshTick] = useState({ providers: 0, regions: 0, zones: 0, types: 0, models: 0, global_params: 0, api_keys: 0 });
 
     type EntityType = "provider" | "region" | "zone" | "type" | "model";
-    type RefreshKey = "providers" | "regions" | "zones" | "types" | "models" | "provider_params" | "global_params" | "api_keys";
+    type RefreshKey = "providers" | "regions" | "zones" | "types" | "models" | "global_params" | "api_keys";
     const refreshKeyFor = (t: EntityType): RefreshKey => {
         switch (t) {
             case "provider":
@@ -44,19 +44,7 @@ export default function SettingsPage() {
     const [isEditOpen, setIsEditOpen] = useState(false);
     const [providersList, setProvidersList] = useState<Provider[]>([]);
     const [regionsList, setRegionsList] = useState<Region[]>([]);
-    const [providerParams, setProviderParams] = useState<ProviderParams[]>([]);
-    const [providerParamsLoading, setProviderParamsLoading] = useState(false);
-    const [providerParamsEditOpen, setProviderParamsEditOpen] = useState(false);
-    const [editingProviderParams, setEditingProviderParams] = useState<ProviderParams | null>(null);
-    const [workerStartupTimeoutS, setWorkerStartupTimeoutS] = useState<string>("");
-    const [instanceStartupTimeoutS, setInstanceStartupTimeoutS] = useState<string>("");
-    const [sshBootstrapTimeoutS, setSshBootstrapTimeoutS] = useState<string>("");
-    const [workerHealthPort, setWorkerHealthPort] = useState<string>("");
-    const [workerVllmPort, setWorkerVllmPort] = useState<string>("");
-    const [dataVolumeDefaultGb, setDataVolumeDefaultGb] = useState<string>("");
-    const [exposePorts, setExposePorts] = useState<boolean>(true);
-    const [vllmMode, setVllmMode] = useState<string>("mono");
-    const [vllmImage, setVllmImage] = useState<string>("");
+    const [providerParamsById, setProviderParamsById] = useState<Record<string, ProviderParams>>({});
     const [settingsDefs, setSettingsDefs] = useState<Record<string, { min?: number; max?: number; defInt?: number; defBool?: boolean; defText?: string; desc?: string }>>({});
 
     const [globalSettings, setGlobalSettings] = useState<GlobalSetting[]>([]);
@@ -66,11 +54,49 @@ export default function SettingsPage() {
     const searchParams = useSearchParams();
     useEffect(() => {
         const tab = (searchParams.get("tab") || "").toLowerCase();
-        if (tab === "providers" || tab === "regions" || tab === "zones" || tab === "types" || tab === "models" || tab === "provider_params" || tab === "global_params" || tab === "api_keys") {
+        if (tab === "providers" || tab === "regions" || tab === "zones" || tab === "types" || tab === "models" || tab === "global_params" || tab === "api_keys") {
             setActiveTab(tab as any);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    useEffect(() => {
+        // Load settings definitions once (used for placeholders + min/max + defaults).
+        fetch(apiUrl("settings/definitions"))
+            .then((r) => (r.ok ? r.json() : []))
+            .then((rows) => {
+                const map: Record<string, { min?: number; max?: number; defInt?: number; defBool?: boolean; defText?: string; desc?: string }> = {};
+                for (const row of rows as any[]) {
+                    if (!row?.key) continue;
+                    map[String(row.key)] = {
+                        min: row.min_int ?? undefined,
+                        max: row.max_int ?? undefined,
+                        defInt: row.default_int ?? undefined,
+                        defBool: row.default_bool ?? undefined,
+                        defText: row.default_text ?? undefined,
+                        desc: row.description ?? undefined,
+                    };
+                }
+                setSettingsDefs(map);
+            })
+            .catch(() => null);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    useEffect(() => {
+        if (activeTab !== "providers") return;
+        fetch(apiUrl("providers/params"))
+            .then((r) => (r.ok ? r.json() : []))
+            .then((rows) => {
+                const map: Record<string, ProviderParams> = {};
+                for (const row of rows as ProviderParams[]) {
+                    map[row.provider_id] = row;
+                }
+                setProviderParamsById(map);
+            })
+            .catch(() => null);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeTab, refreshTick.providers]);
 
     useEffect(() => {
         // Preload providers/regions lists for create forms (small catalogs).
@@ -92,6 +118,16 @@ export default function SettingsPage() {
         name: "",
         description: "",
         is_active: true,
+        // Provider params (stored as strings; empty => default)
+        worker_instance_startup_timeout_s: "",
+        instance_startup_timeout_s: "",
+        worker_ssh_bootstrap_timeout_s: "",
+        worker_health_port: "",
+        worker_vllm_port: "",
+        worker_data_volume_gb_default: "",
+        worker_expose_ports: "default" as "default" | "true" | "false",
+        worker_vllm_mode: "default" as "default" | "mono" | "multi",
+        worker_vllm_image: "",
         cost_per_hour: "",
         model_id: "",
         required_vram_gb: "",
@@ -117,11 +153,21 @@ export default function SettingsPage() {
     const handleEdit = (entity: Provider | Region | Zone | InstanceType | LlmModel, type: EntityType) => {
         setEditingEntity(entity);
         setEntityType(type);
+        const pParams = type === "provider" ? providerParamsById[(entity as Provider).id] : undefined;
         setFormData({
             code: (type === "model" ? "" : (entity as Provider | Region | Zone | InstanceType).code) ?? "",
             name: entity.name || "",
             description: type === 'provider' ? (((entity as Provider).description ?? "") || "") : "",
             is_active: (entity as any).is_active ?? false,
+            worker_instance_startup_timeout_s: pParams?.worker_instance_startup_timeout_s != null ? String(pParams.worker_instance_startup_timeout_s) : "",
+            instance_startup_timeout_s: pParams?.instance_startup_timeout_s != null ? String(pParams.instance_startup_timeout_s) : "",
+            worker_ssh_bootstrap_timeout_s: pParams?.worker_ssh_bootstrap_timeout_s != null ? String(pParams.worker_ssh_bootstrap_timeout_s) : "",
+            worker_health_port: pParams?.worker_health_port != null ? String(pParams.worker_health_port) : "",
+            worker_vllm_port: pParams?.worker_vllm_port != null ? String(pParams.worker_vllm_port) : "",
+            worker_data_volume_gb_default: pParams?.worker_data_volume_gb_default != null ? String(pParams.worker_data_volume_gb_default) : "",
+            worker_expose_ports: pParams?.worker_expose_ports == null ? "default" : (pParams.worker_expose_ports ? "true" : "false"),
+            worker_vllm_mode: (pParams?.worker_vllm_mode == null ? "default" : (pParams.worker_vllm_mode as any)),
+            worker_vllm_image: pParams?.worker_vllm_image != null ? String(pParams.worker_vllm_image) : "",
             cost_per_hour:
                 type === 'type' && (entity as InstanceType).cost_per_hour != null
                     ? String((entity as InstanceType).cost_per_hour)
@@ -150,6 +196,15 @@ export default function SettingsPage() {
             name: "",
             description: "",
             is_active: true,
+            worker_instance_startup_timeout_s: "",
+            instance_startup_timeout_s: "",
+            worker_ssh_bootstrap_timeout_s: "",
+            worker_health_port: "",
+            worker_vllm_port: "",
+            worker_data_volume_gb_default: "",
+            worker_expose_ports: "default",
+            worker_vllm_mode: "default",
+            worker_vllm_image: "",
             cost_per_hour: "",
             model_id: "",
             required_vram_gb: "0",
@@ -224,6 +279,33 @@ export default function SettingsPage() {
             });
 
             if (res.ok) {
+                // Enrich provider CRUD: persist provider-scoped params in the same flow.
+                if (entityType === "provider") {
+                    const providerId: string | null = isCreate ? ((await res.json()) as Provider).id : (editingEntity as any)?.id;
+                    if (providerId) {
+                        const toNum = (s: string) => (s.trim() === "" ? null : Number(s.trim()));
+                        const pPayload: Record<string, unknown> = {
+                            worker_instance_startup_timeout_s: toNum(formData.worker_instance_startup_timeout_s),
+                            instance_startup_timeout_s: toNum(formData.instance_startup_timeout_s),
+                            worker_ssh_bootstrap_timeout_s: toNum(formData.worker_ssh_bootstrap_timeout_s),
+                            worker_health_port: toNum(formData.worker_health_port),
+                            worker_vllm_port: toNum(formData.worker_vllm_port),
+                            worker_data_volume_gb_default: toNum(formData.worker_data_volume_gb_default),
+                            worker_expose_ports:
+                                formData.worker_expose_ports === "default" ? null : formData.worker_expose_ports === "true",
+                            worker_vllm_mode: formData.worker_vllm_mode === "default" ? null : formData.worker_vllm_mode,
+                            worker_vllm_image: formData.worker_vllm_image.trim() === "" ? null : formData.worker_vllm_image.trim(),
+                        };
+                        const pRes = await fetch(apiUrl(`providers/${providerId}/params`), {
+                            method: "PUT",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(pPayload),
+                        });
+                        if (!pRes.ok) {
+                            alert("Provider saved, but provider params update failed.");
+                        }
+                    }
+                }
                 setIsEditOpen(false);
                 const k = refreshKeyFor(entityType);
                 setRefreshTick((s) => ({ ...s, [k]: s[k] + 1 }));
@@ -268,86 +350,85 @@ export default function SettingsPage() {
         openCreate("model");
     };
 
-    const openEditProviderParams = (row: ProviderParams) => {
-        setEditingProviderParams(row);
-        setWorkerStartupTimeoutS(row.worker_instance_startup_timeout_s != null ? String(row.worker_instance_startup_timeout_s) : "");
-        setInstanceStartupTimeoutS(row.instance_startup_timeout_s != null ? String(row.instance_startup_timeout_s) : "");
-        setSshBootstrapTimeoutS(row.worker_ssh_bootstrap_timeout_s != null ? String(row.worker_ssh_bootstrap_timeout_s) : "");
-        setWorkerHealthPort(row.worker_health_port != null ? String(row.worker_health_port) : "");
-        setWorkerVllmPort(row.worker_vllm_port != null ? String(row.worker_vllm_port) : "");
-        setDataVolumeDefaultGb(row.worker_data_volume_gb_default != null ? String(row.worker_data_volume_gb_default) : "");
-        setExposePorts(row.worker_expose_ports != null ? Boolean(row.worker_expose_ports) : (settingsDefs["WORKER_EXPOSE_PORTS"]?.defBool ?? true));
-        setVllmMode(row.worker_vllm_mode != null ? String(row.worker_vllm_mode) : (settingsDefs["WORKER_VLLM_MODE"]?.defText ?? "mono"));
-        setVllmImage(row.worker_vllm_image != null ? String(row.worker_vllm_image) : (settingsDefs["WORKER_VLLM_IMAGE"]?.defText ?? ""));
-        setProviderParamsEditOpen(true);
-    };
-
-    const saveProviderParams = async () => {
-        if (!editingProviderParams) return;
-        const workerV = workerStartupTimeoutS.trim() === "" ? null : Number(workerStartupTimeoutS.trim());
-        const instV = instanceStartupTimeoutS.trim() === "" ? null : Number(instanceStartupTimeoutS.trim());
-        const sshV = sshBootstrapTimeoutS.trim() === "" ? null : Number(sshBootstrapTimeoutS.trim());
-        const healthPortV = workerHealthPort.trim() === "" ? null : Number(workerHealthPort.trim());
-        const vllmPortV = workerVllmPort.trim() === "" ? null : Number(workerVllmPort.trim());
-        const volGbV = dataVolumeDefaultGb.trim() === "" ? null : Number(dataVolumeDefaultGb.trim());
-
-        const wDef = settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"];
-        const iDef = settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"];
-        const wMin = wDef?.min ?? 30;
-        const wMax = wDef?.max ?? 86400;
-        const iMin = iDef?.min ?? 30;
-        const iMax = iDef?.max ?? 86400;
-
-        if (workerV != null && (!Number.isFinite(workerV) || workerV < wMin || workerV > wMax)) return;
-        if (instV != null && (!Number.isFinite(instV) || instV < iMin || instV > iMax)) return;
-
-        const sshDef = settingsDefs["WORKER_SSH_BOOTSTRAP_TIMEOUT_S"];
-        if (sshV != null && (!Number.isFinite(sshV) || sshV < (sshDef?.min ?? 60) || sshV > (sshDef?.max ?? 86400))) return;
-        const hpDef = settingsDefs["WORKER_HEALTH_PORT"];
-        if (healthPortV != null && (!Number.isFinite(healthPortV) || healthPortV < (hpDef?.min ?? 1) || healthPortV > (hpDef?.max ?? 65535))) return;
-        const vpDef = settingsDefs["WORKER_VLLM_PORT"];
-        if (vllmPortV != null && (!Number.isFinite(vllmPortV) || vllmPortV < (vpDef?.min ?? 1) || vllmPortV > (vpDef?.max ?? 65535))) return;
-        const vgDef = settingsDefs["WORKER_DATA_VOLUME_GB_DEFAULT"];
-        if (volGbV != null && (!Number.isFinite(volGbV) || volGbV < (vgDef?.min ?? 50) || volGbV > (vgDef?.max ?? 5000))) return;
-
-        const mode = vllmMode.trim().toLowerCase();
-        if (mode !== "mono" && mode !== "multi") return;
-        const img = vllmImage.trim();
-        if (img.length === 0) return;
-
-        const res = await fetch(apiUrl(`providers/${editingProviderParams.provider_id}/params`), {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                worker_instance_startup_timeout_s: workerV,
-                instance_startup_timeout_s: instV,
-                worker_ssh_bootstrap_timeout_s: sshV,
-                worker_health_port: healthPortV,
-                worker_vllm_port: vllmPortV,
-                worker_data_volume_gb_default: volGbV,
-                worker_expose_ports: exposePorts,
-                worker_vllm_mode: mode,
-                worker_vllm_image: img,
-            }),
-        });
-        if (!res.ok) return;
-        setProviderParamsEditOpen(false);
-        setEditingProviderParams(null);
-        setWorkerStartupTimeoutS("");
-        setInstanceStartupTimeoutS("");
-        setSshBootstrapTimeoutS("");
-        setWorkerHealthPort("");
-        setWorkerVllmPort("");
-        setDataVolumeDefaultGb("");
-        setExposePorts(true);
-        setVllmMode("mono");
-        setVllmImage("");
-        setRefreshTick((t) => ({ ...t, provider_params: t.provider_params + 1 }));
-    };
+    // Provider params are edited within Provider CRUD (create/edit modal + provider list columns).
 
     const providerColumns: DataTableColumn<Provider>[] = [
         { id: "name", label: "Name", width: 220, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
         { id: "code", label: "Code", width: 160, cell: ({ row }) => <span className="font-mono text-xs">{row.code}</span> },
+        {
+            id: "p_worker_startup_timeout",
+            label: "WORKER_INSTANCE_STARTUP_TIMEOUT_S",
+            width: 260,
+            defaultHidden: true,
+            cell: ({ row }) => {
+                const v = providerParamsById[row.id]?.worker_instance_startup_timeout_s;
+                return v == null ? <span className="text-muted-foreground text-sm">default</span> : <span className="font-mono text-xs">{v}s</span>;
+            },
+        },
+        {
+            id: "p_instance_startup_timeout",
+            label: "INSTANCE_STARTUP_TIMEOUT_S",
+            width: 220,
+            defaultHidden: true,
+            cell: ({ row }) => {
+                const v = providerParamsById[row.id]?.instance_startup_timeout_s;
+                return v == null ? <span className="text-muted-foreground text-sm">default</span> : <span className="font-mono text-xs">{v}s</span>;
+            },
+        },
+        {
+            id: "p_ssh_bootstrap_timeout",
+            label: "WORKER_SSH_BOOTSTRAP_TIMEOUT_S",
+            width: 240,
+            defaultHidden: true,
+            cell: ({ row }) => {
+                const v = providerParamsById[row.id]?.worker_ssh_bootstrap_timeout_s;
+                return v == null ? <span className="text-muted-foreground text-sm">default</span> : <span className="font-mono text-xs">{v}s</span>;
+            },
+        },
+        {
+            id: "p_ports",
+            label: "Ports",
+            width: 150,
+            defaultHidden: true,
+            cell: ({ row }) => {
+                const p = providerParamsById[row.id];
+                const hp = p?.worker_health_port ?? null;
+                const vp = p?.worker_vllm_port ?? null;
+                if (hp == null && vp == null) return <span className="text-muted-foreground text-sm">default</span>;
+                return <span className="font-mono text-xs">{vp ?? "?"}/{hp ?? "?"}</span>;
+            },
+        },
+        {
+            id: "p_expose_ports",
+            label: "WORKER_EXPOSE_PORTS",
+            width: 190,
+            defaultHidden: true,
+            cell: ({ row }) => {
+                const v = providerParamsById[row.id]?.worker_expose_ports;
+                return v == null ? <span className="text-muted-foreground text-sm">default</span> : <span className="text-sm">{v ? "true" : "false"}</span>;
+            },
+        },
+        {
+            id: "p_vllm_mode",
+            label: "WORKER_VLLM_MODE",
+            width: 170,
+            defaultHidden: true,
+            cell: ({ row }) => {
+                const v = providerParamsById[row.id]?.worker_vllm_mode;
+                return v == null ? <span className="text-muted-foreground text-sm">default</span> : <span className="font-mono text-xs">{v}</span>;
+            },
+        },
+        {
+            id: "p_vllm_image",
+            label: "WORKER_VLLM_IMAGE",
+            width: 260,
+            defaultHidden: true,
+            cellClassName: "truncate",
+            cell: ({ row }) => {
+                const v = providerParamsById[row.id]?.worker_vllm_image;
+                return v == null ? <span className="text-muted-foreground text-sm">default</span> : <span className="font-mono text-xs">{v}</span>;
+            },
+        },
         {
             id: "description",
             label: "Description",
@@ -386,125 +467,7 @@ export default function SettingsPage() {
         },
     ];
 
-    const providerParamsColumns: DataTableColumn<ProviderParams>[] = [
-        { id: "provider_name", label: "Provider", width: 220, cell: ({ row }) => <span className="font-medium">{row.provider_name}</span> },
-        { id: "provider_code", label: "Code", width: 160, cell: ({ row }) => <span className="font-mono text-xs">{row.provider_code}</span> },
-        {
-            id: "worker_instance_startup_timeout_s",
-            label: "WORKER_INSTANCE_STARTUP_TIMEOUT_S",
-            width: 320,
-            cell: ({ row }) =>
-                row.worker_instance_startup_timeout_s == null ? (
-                    <span className="text-muted-foreground text-sm">default</span>
-                ) : (
-                    <span className="font-mono text-xs">{row.worker_instance_startup_timeout_s}s</span>
-                ),
-        },
-        {
-            id: "instance_startup_timeout_s",
-            label: "INSTANCE_STARTUP_TIMEOUT_S",
-            width: 240,
-            cell: ({ row }) =>
-                row.instance_startup_timeout_s == null ? (
-                    <span className="text-muted-foreground text-sm">default</span>
-                ) : (
-                    <span className="font-mono text-xs">{row.instance_startup_timeout_s}s</span>
-                ),
-        },
-        {
-            id: "worker_ssh_bootstrap_timeout_s",
-            label: "WORKER_SSH_BOOTSTRAP_TIMEOUT_S",
-            width: 270,
-            cell: ({ row }) =>
-                row.worker_ssh_bootstrap_timeout_s == null ? (
-                    <span className="text-muted-foreground text-sm">default</span>
-                ) : (
-                    <span className="font-mono text-xs">{row.worker_ssh_bootstrap_timeout_s}s</span>
-                ),
-        },
-        {
-            id: "worker_health_port",
-            label: "WORKER_HEALTH_PORT",
-            width: 190,
-            cell: ({ row }) =>
-                row.worker_health_port == null ? (
-                    <span className="text-muted-foreground text-sm">default</span>
-                ) : (
-                    <span className="font-mono text-xs">{row.worker_health_port}</span>
-                ),
-        },
-        {
-            id: "worker_vllm_port",
-            label: "WORKER_VLLM_PORT",
-            width: 180,
-            cell: ({ row }) =>
-                row.worker_vllm_port == null ? (
-                    <span className="text-muted-foreground text-sm">default</span>
-                ) : (
-                    <span className="font-mono text-xs">{row.worker_vllm_port}</span>
-                ),
-        },
-        {
-            id: "worker_data_volume_gb_default",
-            label: "WORKER_DATA_VOLUME_GB_DEFAULT",
-            width: 280,
-            cell: ({ row }) =>
-                row.worker_data_volume_gb_default == null ? (
-                    <span className="text-muted-foreground text-sm">default</span>
-                ) : (
-                    <span className="font-mono text-xs">{row.worker_data_volume_gb_default}GB</span>
-                ),
-        },
-        {
-            id: "worker_expose_ports",
-            label: "WORKER_EXPOSE_PORTS",
-            width: 200,
-            cell: ({ row }) =>
-                row.worker_expose_ports == null ? (
-                    <span className="text-muted-foreground text-sm">default</span>
-                ) : (
-                    <span className="text-sm">{row.worker_expose_ports ? "true" : "false"}</span>
-                ),
-        },
-        {
-            id: "worker_vllm_mode",
-            label: "WORKER_VLLM_MODE",
-            width: 190,
-            cell: ({ row }) =>
-                row.worker_vllm_mode == null ? (
-                    <span className="text-muted-foreground text-sm">default</span>
-                ) : (
-                    <span className="font-mono text-xs">{row.worker_vllm_mode}</span>
-                ),
-        },
-        {
-            id: "worker_vllm_image",
-            label: "WORKER_VLLM_IMAGE",
-            width: 360,
-            cellClassName: "truncate",
-            cell: ({ row }) =>
-                row.worker_vllm_image == null ? (
-                    <span className="text-muted-foreground text-sm">default</span>
-                ) : (
-                    <span className="font-mono text-xs">{row.worker_vllm_image}</span>
-                ),
-        },
-        {
-            id: "actions",
-            label: "Actions",
-            width: 140,
-            align: "right",
-            disableReorder: true,
-            cell: ({ row }) => (
-                <div className="flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
-                    <Button variant="outline" size="sm" onClick={() => openEditProviderParams(row)}>
-                        <Pencil className="h-4 w-4 mr-2" />
-                        Modifier
-                    </Button>
-                </div>
-            ),
-        },
-    ];
+    // (removed) providerParamsColumns (standalone tab removed)
 
     type RegionRow = Region & { provider_name?: string; provider_code?: string | null };
     type ZoneRow = Zone & {
@@ -713,34 +676,7 @@ export default function SettingsPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeTab, refreshTick.models]);
 
-    useEffect(() => {
-        if (activeTab !== "provider_params") return;
-        setProviderParamsLoading(true);
-        fetch(apiUrl("settings/definitions"))
-            .then((r) => (r.ok ? r.json() : []))
-            .then((rows) => {
-                const map: Record<string, { min?: number; max?: number; defInt?: number; defBool?: boolean; defText?: string; desc?: string }> = {};
-                for (const row of rows as any[]) {
-                    if (!row?.key) continue;
-                    map[String(row.key)] = {
-                        min: row.min_int ?? undefined,
-                        max: row.max_int ?? undefined,
-                        defInt: row.default_int ?? undefined,
-                        defBool: row.default_bool ?? undefined,
-                        defText: row.default_text ?? undefined,
-                        desc: row.description ?? undefined,
-                    };
-                }
-                setSettingsDefs(map);
-            })
-            .catch(() => null);
-        fetch(apiUrl("providers/params"))
-            .then((r) => (r.ok ? r.json() : []))
-            .then((rows) => setProviderParams(rows as ProviderParams[]))
-            .catch(() => null)
-            .finally(() => setProviderParamsLoading(false));
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [activeTab, refreshTick.provider_params]);
+    // provider params are loaded in the "providers" tab effect (providerParamsById)
 
     useEffect(() => {
         if (activeTab !== "global_params") return;
@@ -952,7 +888,6 @@ export default function SettingsPage() {
                     <TabsTrigger value="zones">Zones</TabsTrigger>
                     <TabsTrigger value="types">Instance Types</TabsTrigger>
                     <TabsTrigger value="models">Models</TabsTrigger>
-                    <TabsTrigger value="provider_params">Provider Params</TabsTrigger>
                     <TabsTrigger value="global_params">Global Params</TabsTrigger>
                     <TabsTrigger value="api_keys">API Keys</TabsTrigger>
                 </TabsList>
@@ -1087,26 +1022,6 @@ export default function SettingsPage() {
                     </Card>
                 </TabsContent>
 
-                {/* PROVIDER PARAMS */}
-                <TabsContent value="provider_params">
-                    <Card>
-                        <CardContent>
-                            <VirtualizedDataTable<ProviderParams>
-                                listId="settings:provider_params"
-                                title="Provider Params"
-                                dataKey={String(refreshTick.provider_params)}
-                                leftMeta={providerParamsLoading ? <span className="text-sm text-muted-foreground">Loading…</span> : undefined}
-                                rightHeader={<div className="text-sm text-muted-foreground">Empty = default (env → built-in). Bounds are defined in DB.</div>}
-                                autoHeight={true}
-                                height={300}
-                                rowHeight={52}
-                                columns={providerParamsColumns}
-                                rows={providerParams}
-                            />
-                        </CardContent>
-                    </Card>
-                </TabsContent>
-
                 {/* GLOBAL PARAMS */}
                 <TabsContent value="global_params">
                     <Card>
@@ -1181,165 +1096,7 @@ export default function SettingsPage() {
                 </TabsContent>
             </Tabs>
 
-            {/* Edit Provider Params dialog */}
-            <Dialog
-                open={providerParamsEditOpen}
-                onOpenChange={(open) => {
-                    setProviderParamsEditOpen(open);
-                    if (!open) {
-                        setEditingProviderParams(null);
-                        setWorkerStartupTimeoutS("");
-                        setInstanceStartupTimeoutS("");
-                        setSshBootstrapTimeoutS("");
-                        setWorkerHealthPort("");
-                        setWorkerVllmPort("");
-                        setDataVolumeDefaultGb("");
-                        setExposePorts(true);
-                        setVllmMode("mono");
-                        setVllmImage("");
-                    }
-                }}
-            >
-                <DialogContent showCloseButton={false}>
-                    <DialogHeader>
-                        <DialogTitle>Provider Params</DialogTitle>
-                    </DialogHeader>
-                    <div className="grid gap-4 py-4">
-                        <div className="text-sm text-muted-foreground">
-                            Provider: <span className="font-medium text-foreground">{editingProviderParams?.provider_name}</span>{" "}
-                            (<span className="font-mono text-xs">{editingProviderParams?.provider_code}</span>)
-                        </div>
-
-                        <div className="grid grid-cols-4 items-center gap-4">
-                            <Label htmlFor="worker_startup_timeout" className="text-right">
-                                WORKER_INSTANCE_STARTUP_TIMEOUT_S
-                            </Label>
-                            <Input
-                                id="worker_startup_timeout"
-                                value={workerStartupTimeoutS}
-                                onChange={(e) => setWorkerStartupTimeoutS(e.target.value)}
-                                placeholder={settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"]?.defInt != null ? `default (${settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"]?.defInt}s)` : "default"}
-                                className="col-span-3"
-                            />
-                        </div>
-
-                        <div className="grid grid-cols-4 items-center gap-4">
-                            <Label htmlFor="instance_startup_timeout" className="text-right">
-                                INSTANCE_STARTUP_TIMEOUT_S
-                            </Label>
-                            <Input
-                                id="instance_startup_timeout"
-                                value={instanceStartupTimeoutS}
-                                onChange={(e) => setInstanceStartupTimeoutS(e.target.value)}
-                                placeholder={settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"]?.defInt != null ? `default (${settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"]?.defInt}s)` : "default"}
-                                className="col-span-3"
-                            />
-                        </div>
-
-                        <div className="grid grid-cols-4 items-center gap-4">
-                            <Label htmlFor="ssh_bootstrap_timeout" className="text-right">
-                                WORKER_SSH_BOOTSTRAP_TIMEOUT_S
-                            </Label>
-                            <Input
-                                id="ssh_bootstrap_timeout"
-                                value={sshBootstrapTimeoutS}
-                                onChange={(e) => setSshBootstrapTimeoutS(e.target.value)}
-                                placeholder={settingsDefs["WORKER_SSH_BOOTSTRAP_TIMEOUT_S"]?.defInt != null ? `default (${settingsDefs["WORKER_SSH_BOOTSTRAP_TIMEOUT_S"]?.defInt}s)` : "default"}
-                                className="col-span-3"
-                            />
-                        </div>
-
-                        <div className="grid grid-cols-4 items-center gap-4">
-                            <Label htmlFor="worker_health_port" className="text-right">
-                                WORKER_HEALTH_PORT
-                            </Label>
-                            <Input
-                                id="worker_health_port"
-                                value={workerHealthPort}
-                                onChange={(e) => setWorkerHealthPort(e.target.value)}
-                                placeholder={settingsDefs["WORKER_HEALTH_PORT"]?.defInt != null ? `default (${settingsDefs["WORKER_HEALTH_PORT"]?.defInt})` : "default"}
-                                className="col-span-3"
-                            />
-                        </div>
-
-                        <div className="grid grid-cols-4 items-center gap-4">
-                            <Label htmlFor="worker_vllm_port" className="text-right">
-                                WORKER_VLLM_PORT
-                            </Label>
-                            <Input
-                                id="worker_vllm_port"
-                                value={workerVllmPort}
-                                onChange={(e) => setWorkerVllmPort(e.target.value)}
-                                placeholder={settingsDefs["WORKER_VLLM_PORT"]?.defInt != null ? `default (${settingsDefs["WORKER_VLLM_PORT"]?.defInt})` : "default"}
-                                className="col-span-3"
-                            />
-                        </div>
-
-                        <div className="grid grid-cols-4 items-center gap-4">
-                            <Label htmlFor="data_vol_default" className="text-right">
-                                WORKER_DATA_VOLUME_GB_DEFAULT
-                            </Label>
-                            <Input
-                                id="data_vol_default"
-                                value={dataVolumeDefaultGb}
-                                onChange={(e) => setDataVolumeDefaultGb(e.target.value)}
-                                placeholder={settingsDefs["WORKER_DATA_VOLUME_GB_DEFAULT"]?.defInt != null ? `default (${settingsDefs["WORKER_DATA_VOLUME_GB_DEFAULT"]?.defInt}GB)` : "default"}
-                                className="col-span-3"
-                            />
-                        </div>
-
-                        <div className="grid grid-cols-4 items-center gap-4">
-                            <Label htmlFor="expose_ports" className="text-right">
-                                WORKER_EXPOSE_PORTS
-                            </Label>
-                            <div className="col-span-3 flex items-center gap-3">
-                                <ActiveToggle checked={exposePorts} onCheckedChange={(v) => setExposePorts(v)} aria-label="Toggle expose ports" />
-                                <span className="text-xs text-muted-foreground">
-                                    default={String(settingsDefs["WORKER_EXPOSE_PORTS"]?.defBool ?? true)}
-                                </span>
-                            </div>
-                        </div>
-
-                        <div className="grid grid-cols-4 items-center gap-4">
-                            <Label className="text-right">WORKER_VLLM_MODE</Label>
-                            <div className="col-span-3">
-                                <Select value={vllmMode} onValueChange={(v) => setVllmMode(v)}>
-                                    <SelectTrigger>
-                                        <SelectValue placeholder="Select mode" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="mono">mono</SelectItem>
-                                        <SelectItem value="multi">multi</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                        </div>
-
-                        <div className="grid grid-cols-4 items-center gap-4">
-                            <Label htmlFor="vllm_image" className="text-right">
-                                WORKER_VLLM_IMAGE
-                            </Label>
-                            <Input
-                                id="vllm_image"
-                                value={vllmImage}
-                                onChange={(e) => setVllmImage(e.target.value)}
-                                placeholder={settingsDefs["WORKER_VLLM_IMAGE"]?.defText != null ? `default (${settingsDefs["WORKER_VLLM_IMAGE"]?.defText})` : "default"}
-                                className="col-span-3 font-mono text-xs"
-                            />
-                        </div>
-
-                        <div className="text-xs text-muted-foreground">
-                            Values are validated against DB min/max where defined (and enforced server-side).
-                        </div>
-                    </div>
-                    <DialogFooter>
-                        <Button variant="outline" onClick={() => setProviderParamsEditOpen(false)}>
-                            Annuler
-                        </Button>
-                        <Button onClick={saveProviderParams}>Enregistrer</Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
+            {/* (removed) standalone Provider Params dialog (params are edited in Provider CRUD) */}
 
             {/* Create API Key dialog (shows secret once) */}
             <Dialog open={apiKeyCreateOpen} onOpenChange={(open) => { setApiKeyCreateOpen(open); if (!open) { setCreatedApiKey(null); setApiKeyName(''); } }}>
@@ -1482,15 +1239,130 @@ export default function SettingsPage() {
                             </div>
                         )}
                         {entityType === 'provider' && (
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label htmlFor="description" className="text-right">Description</Label>
-                                <Input
-                                    id="description"
-                                    value={formData.description}
-                                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                                    className="col-span-3"
-                                />
-                            </div>
+                            <>
+                                <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label htmlFor="description" className="text-right">Description</Label>
+                                    <Input
+                                        id="description"
+                                        value={formData.description}
+                                        onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                                        className="col-span-3"
+                                    />
+                                </div>
+
+                                <div className="pt-2 text-sm font-medium">Provider Params (optional)</div>
+                                <div className="text-xs text-muted-foreground pb-2">
+                                    Leave empty / “default” to use env → built-in defaults. Values are validated in DB.
+                                </div>
+
+                                <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label className="text-right">WORKER_INSTANCE_STARTUP_TIMEOUT_S</Label>
+                                    <Input
+                                        value={formData.worker_instance_startup_timeout_s}
+                                        onChange={(e) => setFormData({ ...formData, worker_instance_startup_timeout_s: e.target.value })}
+                                        placeholder={settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"]?.defInt != null ? `default (${settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"]?.defInt}s)` : "default"}
+                                        className="col-span-3"
+                                    />
+                                </div>
+
+                                <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label className="text-right">INSTANCE_STARTUP_TIMEOUT_S</Label>
+                                    <Input
+                                        value={formData.instance_startup_timeout_s}
+                                        onChange={(e) => setFormData({ ...formData, instance_startup_timeout_s: e.target.value })}
+                                        placeholder={settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"]?.defInt != null ? `default (${settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"]?.defInt}s)` : "default"}
+                                        className="col-span-3"
+                                    />
+                                </div>
+
+                                <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label className="text-right">WORKER_SSH_BOOTSTRAP_TIMEOUT_S</Label>
+                                    <Input
+                                        value={formData.worker_ssh_bootstrap_timeout_s}
+                                        onChange={(e) => setFormData({ ...formData, worker_ssh_bootstrap_timeout_s: e.target.value })}
+                                        placeholder={settingsDefs["WORKER_SSH_BOOTSTRAP_TIMEOUT_S"]?.defInt != null ? `default (${settingsDefs["WORKER_SSH_BOOTSTRAP_TIMEOUT_S"]?.defInt}s)` : "default"}
+                                        className="col-span-3"
+                                    />
+                                </div>
+
+                                <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label className="text-right">WORKER_HEALTH_PORT</Label>
+                                    <Input
+                                        value={formData.worker_health_port}
+                                        onChange={(e) => setFormData({ ...formData, worker_health_port: e.target.value })}
+                                        placeholder={settingsDefs["WORKER_HEALTH_PORT"]?.defInt != null ? `default (${settingsDefs["WORKER_HEALTH_PORT"]?.defInt})` : "default"}
+                                        className="col-span-3"
+                                    />
+                                </div>
+
+                                <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label className="text-right">WORKER_VLLM_PORT</Label>
+                                    <Input
+                                        value={formData.worker_vllm_port}
+                                        onChange={(e) => setFormData({ ...formData, worker_vllm_port: e.target.value })}
+                                        placeholder={settingsDefs["WORKER_VLLM_PORT"]?.defInt != null ? `default (${settingsDefs["WORKER_VLLM_PORT"]?.defInt})` : "default"}
+                                        className="col-span-3"
+                                    />
+                                </div>
+
+                                <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label className="text-right">WORKER_DATA_VOLUME_GB_DEFAULT</Label>
+                                    <Input
+                                        value={formData.worker_data_volume_gb_default}
+                                        onChange={(e) => setFormData({ ...formData, worker_data_volume_gb_default: e.target.value })}
+                                        placeholder={settingsDefs["WORKER_DATA_VOLUME_GB_DEFAULT"]?.defInt != null ? `default (${settingsDefs["WORKER_DATA_VOLUME_GB_DEFAULT"]?.defInt}GB)` : "default"}
+                                        className="col-span-3"
+                                    />
+                                </div>
+
+                                <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label className="text-right">WORKER_EXPOSE_PORTS</Label>
+                                    <div className="col-span-3">
+                                        <Select
+                                            value={formData.worker_expose_ports}
+                                            onValueChange={(v) => setFormData({ ...formData, worker_expose_ports: v as any })}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="default" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="default">default</SelectItem>
+                                                <SelectItem value="true">true</SelectItem>
+                                                <SelectItem value="false">false</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label className="text-right">WORKER_VLLM_MODE</Label>
+                                    <div className="col-span-3">
+                                        <Select
+                                            value={formData.worker_vllm_mode}
+                                            onValueChange={(v) => setFormData({ ...formData, worker_vllm_mode: v as any })}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="default" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="default">default</SelectItem>
+                                                <SelectItem value="mono">mono</SelectItem>
+                                                <SelectItem value="multi">multi</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label className="text-right">WORKER_VLLM_IMAGE</Label>
+                                    <Input
+                                        value={formData.worker_vllm_image}
+                                        onChange={(e) => setFormData({ ...formData, worker_vllm_image: e.target.value })}
+                                        placeholder={settingsDefs["WORKER_VLLM_IMAGE"]?.defText != null ? `default (${settingsDefs["WORKER_VLLM_IMAGE"]?.defText})` : "default"}
+                                        className="col-span-3 font-mono text-xs"
+                                    />
+                                </div>
+                            </>
                         )}
                         {entityType === 'type' && (
                             <>
