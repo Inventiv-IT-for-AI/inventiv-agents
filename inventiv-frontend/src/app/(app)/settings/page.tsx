@@ -1038,7 +1038,10 @@ export default function SettingsPage() {
                     }
                 }}
             >
-                <DialogContent showCloseButton={false} className="sm:max-w-[980px]">
+                <DialogContent
+                    showCloseButton={false}
+                    className="sm:max-w-[900px] max-h-[85vh] overflow-y-auto"
+                >
                     <DialogHeader>
                         <DialogTitle>
                             {editingEntity ? "Modifier" : "Ajouter"}{" "}
