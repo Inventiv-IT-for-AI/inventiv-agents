@@ -685,7 +685,7 @@ impl CloudProvider for ScalewayProvider {
         zone: &str,
         server_id: &str,
         volume_id: &str,
-        delete_on_termination: bool,
+        _delete_on_termination: bool,
     ) -> Result<bool> {
         // Need to PATCH server volumes with full set (include existing volumes).
         let get_url = format!(
@@ -734,16 +734,21 @@ impl CloudProvider for ScalewayProvider {
                 continue;
             }
             let boot = v.get("boot").and_then(|x| x.as_bool()).unwrap_or(false);
-            // Preserve delete_on_termination when present; otherwise default to true (avoid volume leaks).
-            let dot = v
-                .get("delete_on_termination")
-                .and_then(|x| x.as_bool())
-                .unwrap_or(true);
-            // IMPORTANT (Scaleway quirk): for existing attached volumes, sending `volume_type`
-            // can be rejected (e.g. l_ssd -> "not a valid value"). Provide only id + boot.
+            // Scaleway API requires volume_type per entry; reuse the existing value from the GET payload.
+            // (Do NOT inject extra keys like delete_on_termination: API rejects them as "extra keys not allowed".)
+            let volume_type = v
+                .get("volume_type")
+                .or_else(|| v.get("type"))
+                .and_then(|x| x.as_str())
+                .unwrap_or_default();
+            if volume_type.is_empty() {
+                // If the provider response doesn't include volume_type, we can't safely PATCH.
+                // Skip this volume entry (PATCH will likely fail) rather than sending invalid args.
+                continue;
+            }
             new_volumes.insert(
                 k,
-                json!({ "id": id, "boot": boot, "delete_on_termination": dot }),
+                json!({ "id": id, "boot": boot, "volume_type": volume_type }),
             );
         }
         new_volumes.insert(
@@ -751,8 +756,7 @@ impl CloudProvider for ScalewayProvider {
             json!({
                 "id": volume_id,
                 "boot": false,
-                "volume_type": "sbs_volume",
-                "delete_on_termination": delete_on_termination
+                "volume_type": "sbs_volume"
             }),
         );
 
