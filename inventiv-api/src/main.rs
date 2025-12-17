@@ -1,44 +1,44 @@
-use axum::{
-    extract::{State, Path},
-    routing::{get, post},
-    Router, Json,
-    http::{StatusCode, HeaderMap},
-    response::IntoResponse,
-};
 use axum::body::Body;
-use axum::response::Response;
-use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::body::Bytes;
 use axum::middleware;
-use tower_http::cors::{CorsLayer, Any};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::Response;
+use axum::{
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
+use inventiv_common::LlmModel;
+use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
+use std::convert::Infallible;
+use std::fs;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use redis::AsyncCommands;
-use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
-use std::fs;
-use axum::body::Bytes;
-use inventiv_common::LlmModel;
-use std::convert::Infallible;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+use tower_http::cors::{Any, CorsLayer};
 
 // Swagger
-use utoipa::{OpenApi, IntoParams};
+use utoipa::{IntoParams, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
-mod settings; // Module
-mod provider_settings;
 mod action_logs_search;
 mod api_docs;
-mod simple_logger;
-mod instance_type_zones; // Module for zone associations
-mod finops;
+mod api_keys;
 mod auth;
 mod auth_endpoints;
-mod users_endpoint;
 mod bootstrap_admin;
-mod api_keys;
- // Simple logger without sqlx macros
+mod finops;
+mod instance_type_zones; // Module for zone associations
+mod provider_settings;
+mod settings; // Module
+mod simple_logger;
+mod users_endpoint;
+// Simple logger without sqlx macros
 
 // use audit_log::AuditLogger; // Commented out due to DATABASE_URL build issues
 
@@ -89,7 +89,10 @@ async fn main() {
 
     // Public routes (no user auth)
     let public = Router::new()
-        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", api_docs::ApiDoc::openapi()))
+        .merge(
+            SwaggerUi::new("/swagger-ui")
+                .url("/api-docs/openapi.json", api_docs::ApiDoc::openapi()),
+        )
         .route("/", get(root))
         .route("/auth/login", post(auth_endpoints::login))
         .route("/auth/logout", post(auth_endpoints::logout));
@@ -105,15 +108,30 @@ async fn main() {
         .route("/v1/chat/completions", post(openai_proxy_chat_completions))
         .route("/v1/completions", post(openai_proxy_completions))
         .route("/v1/embeddings", post(openai_proxy_embeddings))
-        .route_layer(middleware::from_fn_with_state(state.db.clone(), auth::require_user_or_api_key));
+        .route_layer(middleware::from_fn_with_state(
+            state.db.clone(),
+            auth::require_user_or_api_key,
+        ));
 
     // Protected routes (require user session)
     let protected = Router::new()
-        .route("/auth/me", get(auth_endpoints::me).put(auth_endpoints::update_me))
-        .route("/auth/me/password", axum::routing::put(auth_endpoints::change_password))
+        .route(
+            "/auth/me",
+            get(auth_endpoints::me).put(auth_endpoints::update_me),
+        )
+        .route(
+            "/auth/me/password",
+            axum::routing::put(auth_endpoints::change_password),
+        )
         // API Keys (dashboard-managed)
-        .route("/api_keys", get(api_keys::list_api_keys).post(api_keys::create_api_key))
-        .route("/api_keys/:id", axum::routing::put(api_keys::update_api_key).delete(api_keys::revoke_api_key))
+        .route(
+            "/api_keys",
+            get(api_keys::list_api_keys).post(api_keys::create_api_key),
+        )
+        .route(
+            "/api_keys/:id",
+            axum::routing::put(api_keys::update_api_key).delete(api_keys::revoke_api_key),
+        )
         // Runtime models (models in service + historical + counters)
         .route("/runtime/models", get(list_runtime_models))
         .route("/deployments", post(create_deployment))
@@ -121,51 +139,132 @@ async fn main() {
         .route("/events/stream", get(events_stream))
         // Models (catalog)
         .route("/models", get(list_models).post(create_model))
-        .route("/models/:id", get(get_model).put(update_model).delete(delete_model))
+        .route(
+            "/models/:id",
+            get(get_model).put(update_model).delete(delete_model),
+        )
         // Instances
         .route("/instances", get(list_instances))
-        .route("/instances/:id/archive", axum::routing::put(archive_instance))
-        .route("/instances/:id", get(get_instance).delete(terminate_instance))
+        .route(
+            "/instances/:id/archive",
+            axum::routing::put(archive_instance),
+        )
+        .route(
+            "/instances/:id",
+            get(get_instance).delete(terminate_instance),
+        )
         // Action logs
         .route("/action_logs", get(list_action_logs))
-        .route("/action_logs/search", get(action_logs_search::search_action_logs))
+        .route(
+            "/action_logs/search",
+            get(action_logs_search::search_action_logs),
+        )
         .route("/action_types", get(list_action_types))
         // Commands
         .route("/reconcile", post(manual_reconcile_trigger))
         .route("/catalog/sync", post(manual_catalog_sync_trigger))
         // Settings
-        .route("/providers", get(settings::list_providers).post(settings::create_provider))
+        .route(
+            "/providers",
+            get(settings::list_providers).post(settings::create_provider),
+        )
         .route("/providers/search", get(settings::search_providers))
-        .route("/providers/:id", axum::routing::put(settings::update_provider))
-        .route("/settings/definitions", get(provider_settings::list_settings_definitions))
-        .route("/settings/global", get(provider_settings::list_global_settings).put(provider_settings::upsert_global_setting))
+        .route(
+            "/providers/:id",
+            axum::routing::put(settings::update_provider),
+        )
+        .route(
+            "/settings/definitions",
+            get(provider_settings::list_settings_definitions),
+        )
+        .route(
+            "/settings/global",
+            get(provider_settings::list_global_settings)
+                .put(provider_settings::upsert_global_setting),
+        )
         // Provider-scoped params
-        .route("/providers/params", get(provider_settings::list_provider_params))
-        .route("/providers/:id/params", axum::routing::put(provider_settings::update_provider_params))
-        .route("/regions", get(settings::list_regions).post(settings::create_region))
+        .route(
+            "/providers/params",
+            get(provider_settings::list_provider_params),
+        )
+        .route(
+            "/providers/:id/params",
+            axum::routing::put(provider_settings::update_provider_params),
+        )
+        .route(
+            "/regions",
+            get(settings::list_regions).post(settings::create_region),
+        )
         .route("/regions/search", get(settings::search_regions))
         .route("/regions/:id", axum::routing::put(settings::update_region))
-        .route("/zones", get(settings::list_zones).post(settings::create_zone))
+        .route(
+            "/zones",
+            get(settings::list_zones).post(settings::create_zone),
+        )
         .route("/zones/search", get(settings::search_zones))
         .route("/zones/:id", axum::routing::put(settings::update_zone))
-        .route("/instance_types", get(settings::list_instance_types).post(settings::create_instance_type))
-        .route("/instance_types/search", get(settings::search_instance_types))
-        .route("/instance_types/:id", axum::routing::put(settings::update_instance_type))
+        .route(
+            "/instance_types",
+            get(settings::list_instance_types).post(settings::create_instance_type),
+        )
+        .route(
+            "/instance_types/search",
+            get(settings::search_instance_types),
+        )
+        .route(
+            "/instance_types/:id",
+            axum::routing::put(settings::update_instance_type),
+        )
         // Instance Type <-> Zones
-        .route("/instance_types/:id/zones", get(instance_type_zones::list_instance_type_zones))
-        .route("/instance_types/:id/zones", axum::routing::put(instance_type_zones::associate_zones_to_instance_type))
-        .route("/zones/:zone_id/instance_types", get(instance_type_zones::list_instance_types_for_zone))
+        .route(
+            "/instance_types/:id/zones",
+            get(instance_type_zones::list_instance_type_zones),
+        )
+        .route(
+            "/instance_types/:id/zones",
+            axum::routing::put(instance_type_zones::associate_zones_to_instance_type),
+        )
+        .route(
+            "/zones/:zone_id/instance_types",
+            get(instance_type_zones::list_instance_types_for_zone),
+        )
         // Finops
         .route("/finops/cost/current", get(finops::get_cost_current))
-        .route("/finops/dashboard/costs/current", get(finops::get_costs_dashboard_current))
-        .route("/finops/dashboard/costs/summary", get(finops::get_costs_dashboard_summary))
-        .route("/finops/dashboard/costs/window", get(finops::get_costs_dashboard_window))
-        .route("/finops/cost/forecast/minute", get(finops::get_cost_forecast_series))
-        .route("/finops/cost/actual/minute", get(finops::get_cost_actual_series))
-        .route("/finops/cost/cumulative/minute", get(finops::get_cost_cumulative_series))
+        .route(
+            "/finops/dashboard/costs/current",
+            get(finops::get_costs_dashboard_current),
+        )
+        .route(
+            "/finops/dashboard/costs/summary",
+            get(finops::get_costs_dashboard_summary),
+        )
+        .route(
+            "/finops/dashboard/costs/window",
+            get(finops::get_costs_dashboard_window),
+        )
+        .route(
+            "/finops/cost/forecast/minute",
+            get(finops::get_cost_forecast_series),
+        )
+        .route(
+            "/finops/cost/actual/minute",
+            get(finops::get_cost_actual_series),
+        )
+        .route(
+            "/finops/cost/cumulative/minute",
+            get(finops::get_cost_cumulative_series),
+        )
         // Users management
-        .route("/users", get(users_endpoint::list_users).post(users_endpoint::create_user))
-        .route("/users/:id", get(users_endpoint::get_user).put(users_endpoint::update_user).delete(users_endpoint::delete_user))
+        .route(
+            "/users",
+            get(users_endpoint::list_users).post(users_endpoint::create_user),
+        )
+        .route(
+            "/users/:id",
+            get(users_endpoint::get_user)
+                .put(users_endpoint::update_user)
+                .delete(users_endpoint::delete_user),
+        )
         .route_layer(middleware::from_fn(auth::require_user));
 
     let app = Router::new()
@@ -225,11 +324,13 @@ fn openai_worker_stale_seconds_env() -> i64 {
 
 async fn openai_worker_stale_seconds_db(db: &Pool<Postgres>) -> i64 {
     // Global settings override (DB) -> env -> settings_definitions default -> hard default.
-    let from_db: Option<i64> = sqlx::query_scalar("SELECT value_int FROM global_settings WHERE key = 'OPENAI_WORKER_STALE_SECONDS'")
-        .fetch_optional(db)
-        .await
-        .ok()
-        .flatten();
+    let from_db: Option<i64> = sqlx::query_scalar(
+        "SELECT value_int FROM global_settings WHERE key = 'OPENAI_WORKER_STALE_SECONDS'",
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
     if let Some(v) = from_db {
         return v.clamp(10, 24 * 60 * 60);
     }
@@ -394,7 +495,12 @@ async fn select_ready_worker_for_model(
         rows[0].clone()
     };
 
-    let ip = chosen.ip_address.split('/').next().unwrap_or(&chosen.ip_address).to_string();
+    let ip = chosen
+        .ip_address
+        .split('/')
+        .next()
+        .unwrap_or(&chosen.ip_address)
+        .to_string();
     let port = chosen.worker_vllm_port.unwrap_or(8000).max(1) as i32;
     Some((chosen.id, format!("http://{}:{}", ip, port)))
 }
@@ -408,29 +514,40 @@ async fn resolve_openai_model_id(db: &Pool<Postgres>, requested: Option<&str>) -
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
-        .or_else(|| std::env::var("WORKER_MODEL_ID").ok().filter(|s| !s.trim().is_empty()))
+        .or_else(|| {
+            std::env::var("WORKER_MODEL_ID")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
     else {
         return None;
     };
 
     // If it looks like a UUID, try resolve -> HF repo id.
     if let Ok(uid) = uuid::Uuid::parse_str(&raw) {
-        let hf: Option<String> = sqlx::query_scalar("SELECT model_id FROM models WHERE id = $1 AND is_active = true")
-            .bind(uid)
-            .fetch_optional(db)
-            .await
-            .ok()
-            .flatten();
+        let hf: Option<String> =
+            sqlx::query_scalar("SELECT model_id FROM models WHERE id = $1 AND is_active = true")
+                .bind(uid)
+                .fetch_optional(db)
+                .await
+                .ok()
+                .flatten();
         return hf.or(Some(raw));
     }
 
     // If it matches an active catalog entry by HF repo id, return it; else keep as-is.
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM models WHERE model_id = $1 AND is_active = true)")
-        .bind(&raw)
-        .fetch_one(db)
-        .await
-        .unwrap_or(false);
-    if exists { Some(raw) } else { Some(raw) }
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM models WHERE model_id = $1 AND is_active = true)",
+    )
+    .bind(&raw)
+    .fetch_one(db)
+    .await
+    .unwrap_or(false);
+    if exists {
+        Some(raw)
+    } else {
+        Some(raw)
+    }
 }
 
 async fn openai_list_models(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -438,11 +555,22 @@ async fn openai_list_models(State(state): State<Arc<AppState>>) -> impl IntoResp
     // - if at least 1 READY worker serves model_id and heartbeat is recent -> exposed in /v1/models
     // - if no workers for a model for a while -> disappears (staleness window)
     #[derive(Serialize, sqlx::FromRow)]
-    struct Row { model_id: String, last_seen: chrono::DateTime<chrono::Utc> }
+    struct Row {
+        model_id: String,
+        last_seen: chrono::DateTime<chrono::Utc>,
+    }
     #[derive(Serialize)]
-    struct ModelObj { id: String, object: &'static str, created: i64, owned_by: &'static str }
+    struct ModelObj {
+        id: String,
+        object: &'static str,
+        created: i64,
+        owned_by: &'static str,
+    }
     #[derive(Serialize)]
-    struct Resp { object: &'static str, data: Vec<ModelObj> }
+    struct Resp {
+        object: &'static str,
+        data: Vec<ModelObj>,
+    }
 
     let stale = openai_worker_stale_seconds_db(&state.db).await;
     let rows = sqlx::query_as::<Postgres, Row>(
@@ -468,21 +596,27 @@ async fn openai_list_models(State(state): State<Arc<AppState>>) -> impl IntoResp
             ) > NOW() - ($1::bigint * INTERVAL '1 second')
         GROUP BY worker_model_id
         ORDER BY worker_model_id
-        "#
+        "#,
     )
     .bind(stale)
     .fetch_all(&state.db)
     .await
     .unwrap_or_default();
 
-    let data = rows.into_iter().map(|r| ModelObj{
-        id: r.model_id,
-        object: "model",
-        created: r.last_seen.timestamp(),
-        owned_by: "inventiv",
-    }).collect();
+    let data = rows
+        .into_iter()
+        .map(|r| ModelObj {
+            id: r.model_id,
+            object: "model",
+            created: r.last_seen.timestamp(),
+            owned_by: "inventiv",
+        })
+        .collect();
 
-    Json(Resp{ object: "list", data })
+    Json(Resp {
+        object: "list",
+        data,
+    })
 }
 
 async fn openai_proxy_chat_completions(
@@ -518,14 +652,22 @@ async fn openai_proxy_to_worker(
     let v: serde_json::Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(_) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_json"}))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"invalid_json"})),
+            )
+                .into_response();
         }
     };
     let requested_model = v.get("model").and_then(|m| m.as_str());
     let model_id = match resolve_openai_model_id(&state.db, requested_model).await {
         Some(m) => m,
         None => {
-            return (StatusCode::BAD_REQUEST, Json(json!({"error":"missing_model"}))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"missing_model"})),
+            )
+                .into_response();
         }
     };
     let stream = v.get("stream").and_then(|b| b.as_bool()).unwrap_or(false);
@@ -534,19 +676,25 @@ async fn openai_proxy_to_worker(
     // Also used best-effort for instance selection (stable hashing).
     let sticky = header_value(&headers, "X-Inventiv-Session");
 
-    let Some((instance_id, base_url)) = select_ready_worker_for_model(&state.db, &model_id, sticky.as_deref()).await else {
+    let Some((instance_id, base_url)) =
+        select_ready_worker_for_model(&state.db, &model_id, sticky.as_deref()).await
+    else {
         bump_runtime_model_counters(&state.db, &model_id, false).await;
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({
-            "error":"no_ready_worker",
-            "message":"No READY worker found for requested model",
-            "model": model_id
-        }))).into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error":"no_ready_worker",
+                "message":"No READY worker found for requested model",
+                "model": model_id
+            })),
+        )
+            .into_response();
     };
 
     let target = format!("{}{}", base_url.trim_end_matches('/'), path);
 
-    let mut client_builder = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(3));
+    let mut client_builder =
+        reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(3));
     // Non-stream responses should be bounded; stream can be long-lived.
     if stream {
         client_builder = client_builder.timeout(std::time::Duration::from_secs(0));
@@ -555,7 +703,11 @@ async fn openai_proxy_to_worker(
     }
     let client = client_builder.build();
     let Ok(client) = client else {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"http_client_build_failed"}))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"http_client_build_failed"})),
+        )
+            .into_response();
     };
 
     // Forward headers (allowlist).
@@ -567,17 +719,26 @@ async fn openai_proxy_to_worker(
     if let Some(ct) = headers.get(axum::http::header::CONTENT_TYPE) {
         out_headers.insert(reqwest::header::CONTENT_TYPE, ct.clone());
     } else {
-        out_headers.insert(reqwest::header::CONTENT_TYPE, reqwest::header::HeaderValue::from_static("application/json"));
+        out_headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
     }
     if let Some(acc) = headers.get(axum::http::header::ACCEPT) {
         out_headers.insert(reqwest::header::ACCEPT, acc.clone());
     } else {
-        out_headers.insert(reqwest::header::ACCEPT, reqwest::header::HeaderValue::from_static("application/json"));
+        out_headers.insert(
+            reqwest::header::ACCEPT,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
     }
     // Ensure sticky header is forwarded (HAProxy config uses it).
     if let Some(sid) = sticky.as_deref() {
         if let Ok(val) = reqwest::header::HeaderValue::from_str(sid) {
-            out_headers.insert(reqwest::header::HeaderName::from_static("x-inventiv-session"), val);
+            out_headers.insert(
+                reqwest::header::HeaderName::from_static("x-inventiv-session"),
+                val,
+            );
         }
     }
 
@@ -599,8 +760,13 @@ async fn openai_proxy_to_worker(
                 Some(instance_id),
                 Some("upstream_request_failed"),
                 Some(json!({"target": target, "error": e.to_string()})),
-            ).await;
-            return (StatusCode::BAD_GATEWAY, Json(json!({"error":"upstream_unreachable","message":e.to_string()}))).into_response();
+            )
+            .await;
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error":"upstream_unreachable","message":e.to_string()})),
+            )
+                .into_response();
         }
     };
 
@@ -619,7 +785,9 @@ async fn openai_proxy_to_worker(
         // Count as success if upstream accepted (2xx). We'll treat other codes as failed.
         bump_runtime_model_counters(&state.db, &model_id, status.is_success()).await;
         let byte_stream = upstream.bytes_stream().map(|chunk| {
-            chunk.map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "upstream_stream_error"))
+            chunk.map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::Other, "upstream_stream_error")
+            })
         });
         return (status, resp_headers, Body::from_stream(byte_stream)).into_response();
     }
@@ -628,7 +796,11 @@ async fn openai_proxy_to_worker(
         Ok(b) => b,
         Err(e) => {
             bump_runtime_model_counters(&state.db, &model_id, false).await;
-            return (StatusCode::BAD_GATEWAY, Json(json!({"error":"upstream_read_failed","message":e.to_string()}))).into_response();
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error":"upstream_read_failed","message":e.to_string()})),
+            )
+                .into_response();
         }
     };
     bump_runtime_model_counters(&state.db, &model_id, status.is_success()).await;
@@ -670,10 +842,12 @@ async fn verify_worker_token_db(db: &Pool<Postgres>, instance_id: uuid::Uuid, to
     .unwrap_or(false);
 
     if ok {
-        let _ = sqlx::query("UPDATE worker_auth_tokens SET last_seen_at = NOW() WHERE instance_id = $1")
-            .bind(instance_id)
-            .execute(db)
-            .await;
+        let _ = sqlx::query(
+            "UPDATE worker_auth_tokens SET last_seen_at = NOW() WHERE instance_id = $1",
+        )
+        .bind(instance_id)
+        .execute(db)
+        .await;
     }
 
     ok
@@ -736,8 +910,8 @@ async fn proxy_post_to_orchestrator(
 
     match req.send().await {
         Ok(resp) => {
-            let status = StatusCode::from_u16(resp.status().as_u16())
-                .unwrap_or(StatusCode::BAD_GATEWAY);
+            let status =
+                StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
             let bytes = resp.bytes().await.unwrap_or_default();
             (status, bytes).into_response()
         }
@@ -762,16 +936,17 @@ async fn proxy_worker_register(
     // Bootstrap flow: allow missing token on register (orchestrator will check IP + token existence).
     // If a token IS present, we verify it here too (defense-in-depth).
     if extract_bearer(&headers).is_some() {
-        let parsed: WorkerInstanceIdPayload = match serde_json::from_slice(&body) {
-            Ok(p) => p,
-            Err(_) => {
-                return (
+        let parsed: WorkerInstanceIdPayload =
+            match serde_json::from_slice(&body) {
+                Ok(p) => p,
+                Err(_) => return (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({"error":"invalid_body","message":"missing_or_invalid_instance_id"})),
+                    Json(
+                        json!({"error":"invalid_body","message":"missing_or_invalid_instance_id"}),
+                    ),
                 )
-                    .into_response()
-            }
-        };
+                    .into_response(),
+            };
         if !verify_worker_auth_api(&state.db, &headers, parsed.instance_id).await {
             return (
                 StatusCode::UNAUTHORIZED,
@@ -815,7 +990,12 @@ async fn proxy_worker_heartbeat(
 async fn maybe_seed_catalog(pool: &Pool<Postgres>) {
     let enabled = std::env::var("AUTO_SEED_CATALOG")
         .ok()
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false);
 
     if !enabled {
@@ -858,14 +1038,25 @@ async fn maybe_seed_catalog(pool: &Pool<Postgres>) {
         .collect();
 
     if statements.is_empty() {
-        eprintln!("⚠️  AUTO_SEED_CATALOG: no statements found in {}", seed_path);
+        eprintln!(
+            "⚠️  AUTO_SEED_CATALOG: no statements found in {}",
+            seed_path
+        );
         return;
     }
 
-    println!("🌱 AUTO_SEED_CATALOG: seeding {} statements from {}", statements.len(), seed_path);
+    println!(
+        "🌱 AUTO_SEED_CATALOG: seeding {} statements from {}",
+        statements.len(),
+        seed_path
+    );
     for (idx, stmt) in statements.iter().enumerate() {
         if let Err(e) = sqlx::query(stmt).execute(pool).await {
-            eprintln!("❌ AUTO_SEED_CATALOG failed at statement {}: {}", idx + 1, e);
+            eprintln!(
+                "❌ AUTO_SEED_CATALOG failed at statement {}: {}",
+                idx + 1,
+                e
+            );
             return;
         }
     }
@@ -894,14 +1085,14 @@ pub struct InstanceResponse {
     pub deletion_reason: Option<String>,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
-    
+
     // Joined Fields
     pub provider_name: String,
     pub region: String,
     pub zone: String,
     pub instance_type: String,
     pub gpu_vram: Option<i32>,
-    pub gpu_count: Option<i32>,     // NEW: Distinct GPU count
+    pub gpu_count: Option<i32>, // NEW: Distinct GPU count
     pub cost_per_hour: Option<f64>,
     pub total_cost: Option<f64>,
     pub is_archived: bool,
@@ -934,7 +1125,7 @@ struct DeploymentRequest {
 #[derive(Serialize, utoipa::ToSchema)]
 struct DeploymentResponse {
     status: String,
-    instance_id: String,  // Renamed from deployment_id for clarity
+    instance_id: String, // Renamed from deployment_id for clarity
     message: Option<String>,
 }
 
@@ -1056,7 +1247,11 @@ async fn create_model(
     .await;
     match res {
         Ok(m) => (StatusCode::CREATED, Json(m)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"db_error","message": e.to_string()}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"db_error","message": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -1100,8 +1295,14 @@ async fn update_model(
     .await;
     match row {
         Ok(m) => (StatusCode::OK, Json(m)).into_response(),
-        Err(sqlx::Error::RowNotFound) => (StatusCode::NOT_FOUND, Json(json!({"error":"not_found"}))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"db_error","message": e.to_string()}))).into_response(),
+        Err(sqlx::Error::RowNotFound) => {
+            (StatusCode::NOT_FOUND, Json(json!({"error":"not_found"}))).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"db_error","message": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -1122,12 +1323,18 @@ async fn delete_model(
         .execute(&state.db)
         .await;
     match res {
-        Ok(r) if r.rows_affected() > 0 => (StatusCode::OK, Json(json!({"status":"ok"}))).into_response(),
+        Ok(r) if r.rows_affected() > 0 => {
+            (StatusCode::OK, Json(json!({"status":"ok"}))).into_response()
+        }
         Ok(_) => (StatusCode::NOT_FOUND, Json(json!({"error":"not_found"}))).into_response(),
         Err(e) => {
             // Most likely FK violation if instances still reference this model.
             let msg = e.to_string();
-            let code = if msg.contains("foreign key") { StatusCode::CONFLICT } else { StatusCode::INTERNAL_SERVER_ERROR };
+            let code = if msg.contains("foreign key") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
             (code, Json(json!({"error":"db_error","message": msg}))).into_response()
         }
     }
@@ -1147,7 +1354,7 @@ async fn create_deployment(
     Json(payload): Json<DeploymentRequest>,
 ) -> impl IntoResponse {
     let start = std::time::Instant::now();
-    let instance_id_uuid = uuid::Uuid::new_v4();  // Create UUID first
+    let instance_id_uuid = uuid::Uuid::new_v4(); // Create UUID first
     let instance_id = instance_id_uuid.to_string();
 
     let requested_provider_code: Option<String> = payload
@@ -1186,7 +1393,9 @@ async fn create_deployment(
                 Json(DeploymentResponse {
                     status: "failed".to_string(),
                     instance_id,
-                    message: Some("Unknown provider (provider_code/provider_id not found)".to_string()),
+                    message: Some(
+                        "Unknown provider (provider_code/provider_id not found)".to_string(),
+                    ),
                 }),
             )
                 .into_response();
@@ -1212,7 +1421,11 @@ async fn create_deployment(
         let is_unique_violation = matches!(e, sqlx::Error::Database(ref db_err) if db_err.code().as_deref() == Some("23505"));
 
         return (
-            if is_unique_violation { StatusCode::CONFLICT } else { StatusCode::INTERNAL_SERVER_ERROR },
+            if is_unique_violation {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            },
             Json(DeploymentResponse {
                 status: "failed".to_string(),
                 instance_id,
@@ -1322,7 +1535,10 @@ async fn create_deployment(
 
     // Provider must exist and be active.
     // If a provider_code was provided but did not resolve, treat as invalid.
-    let provider_active: bool = if requested_provider_code.is_some() && payload.provider_id.is_none() && provider_id_resolved.is_none() {
+    let provider_active: bool = if requested_provider_code.is_some()
+        && payload.provider_id.is_none()
+        && provider_id_resolved.is_none()
+    {
         false
     } else {
         sqlx::query_scalar("SELECT COALESCE(is_active, false) FROM providers WHERE id = $1")
@@ -1378,7 +1594,7 @@ async fn create_deployment(
            FROM zones z
            JOIN regions r ON r.id = z.region_id
            WHERE z.code = $1
-             AND r.provider_id = $2"#
+             AND r.provider_id = $2"#,
     )
     .bind(&payload.zone)
     .bind(provider_id)
@@ -1392,7 +1608,7 @@ async fn create_deployment(
                 , it.is_active
            FROM instance_types it
            WHERE it.code = $1
-             AND it.provider_id = $2"#
+             AND it.provider_id = $2"#,
     )
     .bind(&payload.instance_type)
     .bind(provider_id)
@@ -1403,13 +1619,15 @@ async fn create_deployment(
     // Persist resolved ids (even if inactive) to keep request traceable in instances table
     let resolved_zone_id: Option<uuid::Uuid> = zone_row.map(|(id, _z_active, _r_active)| id);
     let resolved_type_id: Option<uuid::Uuid> = type_row.map(|(id, _active)| id);
-    let _ = sqlx::query("UPDATE instances SET zone_id=$2, instance_type_id=$3, model_id=$4 WHERE id=$1")
-        .bind(instance_id_uuid)
-        .bind(resolved_zone_id)
-        .bind(resolved_type_id)
-        .bind(payload.model_id)
-        .execute(&state.db)
-        .await;
+    let _ = sqlx::query(
+        "UPDATE instances SET zone_id=$2, instance_type_id=$3, model_id=$4 WHERE id=$1",
+    )
+    .bind(instance_id_uuid)
+    .bind(resolved_zone_id)
+    .bind(resolved_type_id)
+    .bind(payload.model_id)
+    .execute(&state.db)
+    .await;
 
     // Validation
     let mut validation_error: Option<(&'static str, &'static str)> = None;
@@ -1421,8 +1639,15 @@ async fn create_deployment(
         _ => {}
     }
     match type_row {
-        None => validation_error = Some(("INVALID_INSTANCE_TYPE", "Invalid instance type (not found for provider)")),
-        Some((_id, active)) if !active => validation_error = Some(("INACTIVE_INSTANCE_TYPE", "Instance type is inactive")),
+        None => {
+            validation_error = Some((
+                "INVALID_INSTANCE_TYPE",
+                "Invalid instance type (not found for provider)",
+            ))
+        }
+        Some((_id, active)) if !active => {
+            validation_error = Some(("INACTIVE_INSTANCE_TYPE", "Instance type is inactive"))
+        }
         _ => {}
     }
 
@@ -1480,15 +1705,21 @@ async fn create_deployment(
     // Guardrails for Scaleway worker auto-install:
     // - instance type must be available in the zone (instance_type_zones.is_available)
     // - instance type must match the allowlist patterns when WORKER_AUTO_INSTALL=1
-    let provider_code: String = sqlx::query_scalar("SELECT COALESCE(code, '') FROM providers WHERE id = $1")
-        .bind(provider_id)
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or_default();
+    let provider_code: String =
+        sqlx::query_scalar("SELECT COALESCE(code, '') FROM providers WHERE id = $1")
+            .bind(provider_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or_default();
 
     let auto_install = std::env::var("WORKER_AUTO_INSTALL")
         .ok()
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false);
 
     if auto_install && provider_code.to_ascii_lowercase() == "scaleway" {
@@ -1506,7 +1737,11 @@ async fn create_deployment(
             .await;
             return (
                 StatusCode::BAD_REQUEST,
-                Json(DeploymentResponse { status: "failed".to_string(), instance_id, message: Some(msg.to_string()) }),
+                Json(DeploymentResponse {
+                    status: "failed".to_string(),
+                    instance_id,
+                    message: Some(msg.to_string()),
+                }),
             )
                 .into_response();
         };
@@ -1555,15 +1790,24 @@ async fn create_deployment(
 
             return (
                 StatusCode::BAD_REQUEST,
-                Json(DeploymentResponse { status: "failed".to_string(), instance_id, message: Some(msg.to_string()) }),
+                Json(DeploymentResponse {
+                    status: "failed".to_string(),
+                    instance_id,
+                    message: Some(msg.to_string()),
+                }),
             )
                 .into_response();
         }
 
         let patterns = inventiv_common::worker_target::parse_instance_type_patterns(
-            std::env::var("WORKER_AUTO_INSTALL_INSTANCE_PATTERNS").ok().as_deref(),
+            std::env::var("WORKER_AUTO_INSTALL_INSTANCE_PATTERNS")
+                .ok()
+                .as_deref(),
         );
-        let is_supported = inventiv_common::worker_target::instance_type_matches_patterns(&payload.instance_type, &patterns);
+        let is_supported = inventiv_common::worker_target::instance_type_matches_patterns(
+            &payload.instance_type,
+            &patterns,
+        );
         if !is_supported {
             let code = "INSTANCE_TYPE_NOT_SUPPORTED";
             let msg = format!(
@@ -1596,12 +1840,16 @@ async fn create_deployment(
 
             return (
                 StatusCode::BAD_REQUEST,
-                Json(DeploymentResponse { status: "failed".to_string(), instance_id, message: Some(msg) }),
+                Json(DeploymentResponse {
+                    status: "failed".to_string(),
+                    instance_id,
+                    message: Some(msg),
+                }),
             )
                 .into_response();
         }
     }
-    
+
     println!("🚀 New Instance Creation Request: {}", instance_id);
 
     // Publish Event to Redis
@@ -1612,13 +1860,20 @@ async fn create_deployment(
         "zone": payload.zone,
         "instance_type": payload.instance_type,
         "correlation_id": log_id.map(|id| id.to_string()),
-    }).to_string();
+    })
+    .to_string();
 
-    println!("📤 Publishing provisioning event to Redis: {}", event_payload);
+    println!(
+        "📤 Publishing provisioning event to Redis: {}",
+        event_payload
+    );
 
     match state.redis_client.get_multiplexed_async_connection().await {
         Ok(mut conn) => {
-            match conn.publish::<_, _, ()>("orchestrator_events", &event_payload).await {
+            match conn
+                .publish::<_, _, ()>("orchestrator_events", &event_payload)
+                .await
+            {
                 Ok(_) => {
                     println!("✅ Provisioning event published successfully");
                     // Log completion
@@ -1637,9 +1892,9 @@ async fn create_deployment(
                     (
                         StatusCode::ACCEPTED,
                         Json(DeploymentResponse {
-                        status: "accepted".to_string(),
-                        instance_id,
-                        message: None,
+                            status: "accepted".to_string(),
+                            instance_id,
+                            message: None,
                         }),
                     )
                         .into_response()
@@ -1724,25 +1979,29 @@ async fn create_deployment(
         (status = 500, description = "Failed to trigger reconciliation", body = serde_json::Value)
     )
 )]
-async fn manual_reconcile_trigger(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+async fn manual_reconcile_trigger(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     println!("🔍 Manual reconciliation triggered via API");
 
     // Publish Redis event for orchestrator
     let event_payload = serde_json::json!({
         "type": "CMD:RECONCILE"
-    }).to_string();
+    })
+    .to_string();
 
-    let mut conn = state.redis_client.get_multiplexed_async_connection().await.unwrap();
+    let mut conn = state
+        .redis_client
+        .get_multiplexed_async_connection()
+        .await
+        .unwrap();
     // Use turbofish to specify return type as unit ()
-    match conn.publish::<_, _, ()>("orchestrator_events", &event_payload).await {
-        Ok(_) => {
-            Json(json!({
-                "status": "triggered",
-                "message": "Reconciliation task has been triggered"
-            }))
-        }
+    match conn
+        .publish::<_, _, ()>("orchestrator_events", &event_payload)
+        .await
+    {
+        Ok(_) => Json(json!({
+            "status": "triggered",
+            "message": "Reconciliation task has been triggered"
+        })),
         Err(e) => {
             eprintln!("Failed to publish reconciliation event: {:?}", e);
             Json(json!({
@@ -1770,17 +2029,23 @@ async fn manual_catalog_sync_trigger(
     // Publish Redis event for orchestrator
     let event_payload = serde_json::json!({
         "type": "CMD:SYNC_CATALOG"
-    }).to_string();
+    })
+    .to_string();
 
-    let mut conn = state.redis_client.get_multiplexed_async_connection().await.unwrap();
+    let mut conn = state
+        .redis_client
+        .get_multiplexed_async_connection()
+        .await
+        .unwrap();
     // Use turbofish to specify return type as unit ()
-    match conn.publish::<_, _, ()>("orchestrator_events", &event_payload).await {
-        Ok(_) => {
-            Json(json!({
-                "status": "triggered",
-                "message": "Catalog Sync task has been triggered"
-            }))
-        }
+    match conn
+        .publish::<_, _, ()>("orchestrator_events", &event_payload)
+        .await
+    {
+        Ok(_) => Json(json!({
+            "status": "triggered",
+            "message": "Catalog Sync task has been triggered"
+        })),
         Err(e) => {
             eprintln!("Failed to publish sync event: {:?}", e);
             Json(json!({
@@ -1936,22 +2201,17 @@ async fn archive_instance(
 ) -> impl IntoResponse {
     // Log start of archive action
     let start = std::time::Instant::now();
-    let log_id = simple_logger::log_action(
-        &state.db,
-        "ARCHIVE_INSTANCE",
-        "in_progress",
-        Some(id),
-        None,
-    )
-    .await
-    .ok();
+    let log_id =
+        simple_logger::log_action(&state.db, "ARCHIVE_INSTANCE", "in_progress", Some(id), None)
+            .await
+            .ok();
 
     let result = sqlx::query(
         "UPDATE instances
          SET is_archived = true,
              status = 'archived'
          WHERE id = $1
-           AND status IN ('terminated', 'archived')"
+           AND status IN ('terminated', 'archived')",
     )
     .bind(id)
     .execute(&state.db)
@@ -1959,7 +2219,10 @@ async fn archive_instance(
 
     let response = match result {
         Ok(r) if r.rows_affected() > 0 => (StatusCode::OK, "Instance Archived"),
-        Ok(_) => (StatusCode::BAD_REQUEST, "Instance not found or not terminated"),
+        Ok(_) => (
+            StatusCode::BAD_REQUEST,
+            "Instance not found or not terminated",
+        ),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Database Error"),
     };
 
@@ -1970,8 +2233,14 @@ async fn archive_instance(
             StatusCode::OK => "success",
             _ => "failed",
         };
-        let err_msg = if response.0 == StatusCode::OK { None } else { Some(response.1) };
-        simple_logger::log_action_complete(&state.db, lid, status_str, duration, err_msg).await.ok();
+        let err_msg = if response.0 == StatusCode::OK {
+            None
+        } else {
+            Some(response.1)
+        };
+        simple_logger::log_action_complete(&state.db, lid, status_str, duration, err_msg)
+            .await
+            .ok();
     }
 
     response.into_response()
@@ -2003,13 +2272,15 @@ async fn terminate_instance(
         Some(serde_json::json!({
             "instance_id": id.to_string(),
         })),
-    ).await.ok();
-    
+    )
+    .await
+    .ok();
+
     println!("🗑️ Termination Request: {}", id);
 
     // 1. Fetch instance so we can handle edge-cases safely (no provider resource, missing zone, etc.)
     let instance_row: Option<(Option<String>, Option<uuid::Uuid>, String)> = sqlx::query_as(
-        "SELECT provider_instance_id::text, zone_id, status::text FROM instances WHERE id = $1"
+        "SELECT provider_instance_id::text, zone_id, status::text FROM instances WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(&state.db)
@@ -2021,9 +2292,15 @@ async fn terminate_instance(
         println!("⚠️  Instance {} not found for termination", id);
         if let Some(log_id) = log_id {
             let duration = start.elapsed().as_millis() as i32;
-            simple_logger::log_action_complete(&state.db, log_id, "failed", duration, Some("Instance not found"))
-                .await
-                .ok();
+            simple_logger::log_action_complete(
+                &state.db,
+                log_id,
+                "failed",
+                duration,
+                Some("Instance not found"),
+            )
+            .await
+            .ok();
         }
         return (StatusCode::NOT_FOUND, "Instance not found").into_response();
     };
@@ -2047,13 +2324,17 @@ async fn terminate_instance(
 
     // If there is no provider resource to delete (provider_instance_id missing), we terminate immediately.
     // This prevents "terminating forever" for failed/invalid provisioning requests.
-    if provider_instance_id_opt.as_deref().unwrap_or("").is_empty() || zone_id_opt.is_none() {
+    //
+    // IMPORTANT: if provider_instance_id exists but zone_id is missing, we must NOT mark terminated:
+    // we can't safely call the provider API and risk leaking resources. We keep 'terminating' and let
+    // admin/operator handle the missing catalog linkage.
+    if provider_instance_id_opt.as_deref().unwrap_or("").is_empty() {
         let _ = sqlx::query(
             "UPDATE instances
              SET status='terminated',
                  terminated_at = COALESCE(terminated_at, NOW()),
                  deletion_reason = COALESCE(deletion_reason, 'no_provider_resource')
-             WHERE id=$1 AND status != 'terminated'"
+             WHERE id=$1 AND status != 'terminated'",
         )
         .bind(id)
         .execute(&state.db)
@@ -2081,22 +2362,71 @@ async fn terminate_instance(
         return (StatusCode::OK, "Terminated (no provider resource)").into_response();
     }
 
+    if zone_id_opt.is_none() {
+        // Can't safely terminate on provider without a zone -> keep terminating and surface an error.
+        let _ = sqlx::query(
+            "UPDATE instances
+             SET status='terminating',
+                 error_code = COALESCE(error_code, 'MISSING_ZONE'),
+                 error_message = COALESCE(error_message, 'Missing zone for termination'),
+                 last_reconciliation = NULL
+             WHERE id=$1 AND status != 'terminated'",
+        )
+        .bind(id)
+        .execute(&state.db)
+        .await;
+
+        if let Some(log_id) = log_id {
+            let duration = start.elapsed().as_millis() as i32;
+            simple_logger::log_action_complete_with_metadata(
+                &state.db,
+                log_id,
+                "success",
+                duration,
+                Some("Missing zone: kept terminating for manual recovery"),
+                Some(serde_json::json!({
+                    "immediate": false,
+                    "reason": "missing_zone",
+                    "provider_instance_id_present": provider_instance_id_opt.is_some(),
+                    "zone_id_present": zone_id_opt.is_some(),
+                })),
+            )
+            .await
+            .ok();
+        }
+
+        // Still publish CMD:TERMINATE (best effort) in case orchestrator can reconcile other metadata,
+        // but the terminator job will also pick it up via status='terminating'.
+        // (We don't early-return here; continue to publish.)
+    }
+
     // 2. Update status to 'terminating' in DB (provider resource exists, orchestrator will delete it)
     let update_result = sqlx::query(
-        "UPDATE instances SET status = 'terminating' WHERE id = $1 AND status != 'terminated'"
+        "UPDATE instances
+         SET status = 'terminating',
+             last_reconciliation = NULL
+         WHERE id = $1 AND status != 'terminated'",
     )
     .bind(id)
     .execute(&state.db)
     .await;
 
     match update_result {
-        Ok(result) if result.rows_affected() > 0 => println!("✅ Instance {} status set to 'terminating'", id),
+        Ok(result) if result.rows_affected() > 0 => {
+            println!("✅ Instance {} status set to 'terminating'", id)
+        }
         Ok(_) => {
             if let Some(log_id) = log_id {
                 let duration = start.elapsed().as_millis() as i32;
-                simple_logger::log_action_complete(&state.db, log_id, "failed", duration, Some("Instance not found"))
-                    .await
-                    .ok();
+                simple_logger::log_action_complete(
+                    &state.db,
+                    log_id,
+                    "failed",
+                    duration,
+                    Some("Instance not found"),
+                )
+                .await
+                .ok();
             }
             return (StatusCode::NOT_FOUND, "Instance not found").into_response();
         }
@@ -2105,9 +2435,15 @@ async fn terminate_instance(
             if let Some(log_id) = log_id {
                 let duration = start.elapsed().as_millis() as i32;
                 let msg = format!("Database error: {:?}", e);
-                simple_logger::log_action_complete(&state.db, log_id, "failed", duration, Some(&msg))
-                    .await
-                    .ok();
+                simple_logger::log_action_complete(
+                    &state.db,
+                    log_id,
+                    "failed",
+                    duration,
+                    Some(&msg),
+                )
+                .await
+                .ok();
             }
             return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
         }
@@ -2118,13 +2454,17 @@ async fn terminate_instance(
         "type": "CMD:TERMINATE",
         "instance_id": id.to_string(),
         "correlation_id": log_id.map(|id| id.to_string()),
-    }).to_string();
+    })
+    .to_string();
 
     println!("📤 Publishing termination event to Redis: {}", event);
-    
+
     match state.redis_client.get_multiplexed_async_connection().await {
         Ok(mut conn) => {
-            match conn.publish::<_, _, ()>("orchestrator_events", &event).await {
+            match conn
+                .publish::<_, _, ()>("orchestrator_events", &event)
+                .await
+            {
                 Ok(_) => {
                     println!("✅ Termination event published successfully");
                     // Log success
@@ -2155,7 +2495,11 @@ async fn terminate_instance(
                             Some(serde_json::json!({"redis_published": false, "event_type": "CMD:TERMINATE"})),
                         ).await.ok();
                     }
-                    (StatusCode::INTERNAL_SERVER_ERROR, "Failed to queue termination").into_response()
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to queue termination",
+                    )
+                        .into_response()
                 }
             }
         }
@@ -2173,7 +2517,11 @@ async fn terminate_instance(
                     Some(serde_json::json!({"redis_published": false, "event_type": "CMD:TERMINATE"})),
                 ).await.ok();
             }
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to queue termination").into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to queue termination",
+            )
+                .into_response()
         }
     }
 }
@@ -2221,7 +2569,7 @@ async fn list_action_logs(
     Query(params): Query<ActionLogQuery>,
 ) -> Json<Vec<ActionLogResponse>> {
     let limit = params.limit.unwrap_or(100).min(1000);
-    
+
     let logs = sqlx::query_as::<Postgres, ActionLogResponse>(
         "SELECT 
             id, action_type, component, status, 
@@ -2233,7 +2581,7 @@ async fn list_action_logs(
            AND ($3::text IS NULL OR status = $3)
            AND ($4::text IS NULL OR action_type = $4)
          ORDER BY created_at DESC
-         LIMIT $5"
+         LIMIT $5",
     )
     .bind(params.instance_id)
     .bind(params.component)
@@ -2243,7 +2591,7 @@ async fn list_action_logs(
     .fetch_all(&state.db)
     .await
     .unwrap_or_default();
-    
+
     Json(logs)
 }
 
@@ -2268,14 +2616,12 @@ struct ActionTypeResponse {
         (status = 200, description = "List of action types", body = Vec<ActionTypeResponse>)
     )
 )]
-async fn list_action_types(
-    State(state): State<Arc<AppState>>,
-) -> Json<Vec<ActionTypeResponse>> {
+async fn list_action_types(State(state): State<Arc<AppState>>) -> Json<Vec<ActionTypeResponse>> {
     let rows = sqlx::query_as::<Postgres, ActionTypeResponse>(
         "SELECT code, label, icon, color_class, category, is_active
          FROM action_types
          WHERE is_active = true
-         ORDER BY category NULLS LAST, code ASC"
+         ORDER BY category NULLS LAST, code ASC",
     )
     .fetch_all(&state.db)
     .await
@@ -2313,7 +2659,9 @@ async fn events_stream(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<EventsStreamParams>,
 ) -> Sse<ReceiverStream<Result<Event, Infallible>>> {
-    let topics_raw = params.topics.unwrap_or_else(|| "instances,actions".to_string());
+    let topics_raw = params
+        .topics
+        .unwrap_or_else(|| "instances,actions".to_string());
     let topics: std::collections::HashSet<String> = topics_raw
         .split(',')
         .map(|s| s.trim().to_ascii_lowercase())
@@ -2332,9 +2680,7 @@ async fn events_stream(
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
 
         // Quick handshake
-        let hello = Event::default()
-            .event("hello")
-            .data(r#"{"ok":true}"#);
+        let hello = Event::default().event("hello").data(r#"{"ok":true}"#);
         if tx.send(Ok(hello)).await.is_err() {
             return;
         }
@@ -2404,7 +2750,11 @@ async fn events_stream(
             if topics.contains("actions") || topics.contains("action_logs") {
                 // Important: action logs often "update in place" (status in_progress -> success/failed)
                 // by setting completed_at + duration + metadata. Track changes using changed_at.
-                let rows: Vec<(uuid::Uuid, Option<uuid::Uuid>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+                let rows: Vec<(
+                    uuid::Uuid,
+                    Option<uuid::Uuid>,
+                    chrono::DateTime<chrono::Utc>,
+                )> = sqlx::query_as(
                     r#"
                     SELECT
                       id,

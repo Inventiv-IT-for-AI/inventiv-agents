@@ -1,6 +1,6 @@
-use utoipa::OpenApi;
-use inventiv_common::{Instance, InstanceStatus, Region, Zone, InstanceType, LlmModel};
 use crate::settings;
+use inventiv_common::{Instance, InstanceStatus, InstanceType, LlmModel, Region, Zone};
+use utoipa::OpenApi;
 
 #[derive(OpenApi)]
 #[openapi(
@@ -24,7 +24,7 @@ use crate::settings;
     ),
     components(
         schemas(
-            crate::DeploymentRequest, 
+            crate::DeploymentRequest,
             crate::DeploymentResponse,
             crate::CreateModelRequest,
             crate::UpdateModelRequest,
