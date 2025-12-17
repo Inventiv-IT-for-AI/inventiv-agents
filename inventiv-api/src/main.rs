@@ -113,6 +113,8 @@ async fn main() {
         // API Keys (dashboard-managed)
         .route("/api_keys", get(api_keys::list_api_keys).post(api_keys::create_api_key))
         .route("/api_keys/:id", axum::routing::put(api_keys::update_api_key).delete(api_keys::revoke_api_key))
+        // Runtime models (models in service + historical + counters)
+        .route("/runtime/models", get(list_runtime_models))
         .route("/deployments", post(create_deployment))
         // Realtime (SSE)
         .route("/events/stream", get(events_stream))
@@ -213,6 +215,89 @@ fn openai_worker_stale_seconds() -> i64 {
         .and_then(|s| s.trim().parse::<i64>().ok())
         .filter(|v| *v >= 10 && *v <= 24 * 60 * 60)
         .unwrap_or(300) // 5 minutes
+}
+
+#[derive(Serialize, sqlx::FromRow, utoipa::ToSchema)]
+struct RuntimeModelRow {
+    model_id: String,
+    first_seen_at: chrono::DateTime<chrono::Utc>,
+    last_seen_at: chrono::DateTime<chrono::Utc>,
+    instances_available: i64,
+    gpus_available: i64,
+    vram_total_gb: i64,
+    total_requests: i64,
+    failed_requests: i64,
+}
+
+#[utoipa::path(
+    get,
+    path = "/runtime/models",
+    responses((status = 200, description = "Runtime models (live capacity + history + counters)", body = Vec<RuntimeModelRow>))
+)]
+async fn list_runtime_models(State(state): State<Arc<AppState>>) -> Json<Vec<RuntimeModelRow>> {
+    let stale = openai_worker_stale_seconds();
+
+    // Live capacity aggregation (only "ready" + recent heartbeats).
+    // Note: instance_types may be null in some edge cases; we treat missing as 0.
+    let rows = sqlx::query_as::<Postgres, RuntimeModelRow>(
+        r#"
+        WITH live AS (
+          SELECT
+            i.worker_model_id AS model_id,
+            COUNT(*)::bigint AS instances_available,
+            COALESCE(SUM(COALESCE(it.gpu_count, 0))::bigint, 0) AS gpus_available,
+            COALESCE(SUM(COALESCE(it.gpu_count, 0) * COALESCE(it.vram_per_gpu_gb, 0))::bigint, 0) AS vram_total_gb
+          FROM instances i
+          LEFT JOIN instance_types it ON it.id = i.instance_type_id
+          WHERE i.status::text = 'ready'
+            AND i.ip_address IS NOT NULL
+            AND i.worker_status = 'ready'
+            AND i.worker_model_id IS NOT NULL
+            AND i.worker_last_heartbeat IS NOT NULL
+            AND i.worker_last_heartbeat > NOW() - ($1::bigint * INTERVAL '1 second')
+          GROUP BY i.worker_model_id
+        )
+        SELECT
+          rm.model_id,
+          rm.first_seen_at,
+          rm.last_seen_at,
+          COALESCE(l.instances_available, 0) AS instances_available,
+          COALESCE(l.gpus_available, 0) AS gpus_available,
+          COALESCE(l.vram_total_gb, 0) AS vram_total_gb,
+          rm.total_requests,
+          rm.failed_requests
+        FROM runtime_models rm
+        LEFT JOIN live l ON l.model_id = rm.model_id
+        ORDER BY COALESCE(l.instances_available, 0) DESC, rm.last_seen_at DESC
+        "#,
+    )
+    .bind(stale)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    Json(rows)
+}
+
+async fn bump_runtime_model_counters(db: &Pool<Postgres>, model_id: &str, ok: bool) {
+    let mid = model_id.trim();
+    if mid.is_empty() {
+        return;
+    }
+    let _ = sqlx::query(
+        r#"
+        INSERT INTO runtime_models (model_id, first_seen_at, last_seen_at, total_requests, failed_requests)
+        VALUES ($1, NOW(), NOW(), 1, CASE WHEN $2 THEN 0 ELSE 1 END)
+        ON CONFLICT (model_id) DO UPDATE
+          SET last_seen_at = GREATEST(runtime_models.last_seen_at, NOW()),
+              total_requests = runtime_models.total_requests + 1,
+              failed_requests = runtime_models.failed_requests + (CASE WHEN $2 THEN 0 ELSE 1 END)
+        "#,
+    )
+    .bind(mid)
+    .bind(ok)
+    .execute(db)
+    .await;
 }
 
 async fn select_ready_worker_for_model(
@@ -394,6 +479,7 @@ async fn openai_proxy_to_worker(
     let sticky = header_value(&headers, "X-Inventiv-Session");
 
     let Some((instance_id, base_url)) = select_ready_worker_for_model(&state.db, &model_id, sticky.as_deref()).await else {
+        bump_runtime_model_counters(&state.db, &model_id, false).await;
         return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({
             "error":"no_ready_worker",
             "message":"No READY worker found for requested model",
@@ -437,6 +523,7 @@ async fn openai_proxy_to_worker(
     {
         Ok(r) => r,
         Err(e) => {
+            bump_runtime_model_counters(&state.db, &model_id, false).await;
             let _ = simple_logger::log_action_with_metadata(
                 &state.db,
                 "OPENAI_PROXY",
@@ -461,6 +548,8 @@ async fn openai_proxy_to_worker(
     }
 
     if stream {
+        // Count as success if upstream accepted (2xx). We'll treat other codes as failed.
+        bump_runtime_model_counters(&state.db, &model_id, status.is_success()).await;
         let byte_stream = upstream.bytes_stream().map(|chunk| {
             chunk.map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "upstream_stream_error"))
         });
@@ -470,9 +559,11 @@ async fn openai_proxy_to_worker(
     let bytes = match upstream.bytes().await {
         Ok(b) => b,
         Err(e) => {
+            bump_runtime_model_counters(&state.db, &model_id, false).await;
             return (StatusCode::BAD_GATEWAY, Json(json!({"error":"upstream_read_failed","message":e.to_string()}))).into_response();
         }
     };
+    bump_runtime_model_counters(&state.db, &model_id, status.is_success()).await;
     (status, resp_headers, bytes).into_response()
 }
 
