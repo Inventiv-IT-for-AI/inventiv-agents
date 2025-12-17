@@ -552,6 +552,31 @@ pub async fn process_provisioning(
             "correlation_id": correlation_id_meta,
         })),
     ).await.ok();
+
+    // Model is mandatory (request must define which model to install).
+    // Safety net: even if API validation is bypassed, provisioning should not proceed without it.
+    let (model_from_db, _vol_from_db) = resolve_instance_model_and_volume(&pool, instance_uuid).await;
+    if model_from_db.is_none() {
+        let msg = "Missing model for instance (instances.model_id is NULL)";
+        eprintln!("❌ {}", msg);
+        let _ = sqlx::query(
+            "UPDATE instances
+             SET status='failed',
+                 error_code=COALESCE(error_code,'MISSING_MODEL'),
+                 error_message=COALESCE($2,error_message),
+                 failed_at=COALESCE(failed_at,NOW())
+             WHERE id=$1"
+        )
+        .bind(instance_uuid)
+        .bind(msg)
+        .execute(&pool)
+        .await;
+        if let Some(log_id) = log_id_execute {
+            let duration = start.elapsed().as_millis() as i32;
+            logger::log_event_complete(&pool, log_id, "failed", duration, Some(msg)).await.ok();
+        }
+        return;
+    }
     
     // 1. Init Provider
     let provider_opt = ProviderManager::get_provider(&provider_name, pool.clone());
@@ -821,13 +846,8 @@ pub async fn process_provisioning(
             } else {
                 let (model_from_db, _vol_from_db) =
                     resolve_instance_model_and_volume(&pool, instance_uuid).await;
-                let worker_model = model_from_db
-                    .or_else(|| {
-                        std::env::var("WORKER_MODEL_ID")
-                            .ok()
-                            .filter(|s| !s.trim().is_empty())
-                    })
-                    .unwrap_or_else(|| "Qwen/Qwen2.5-0.5B-Instruct".to_string());
+                // model is mandatory; do not fallback silently here
+                let worker_model = model_from_db.expect("model is mandatory (validated before provisioning)");
 
                 let vllm_image = std::env::var("WORKER_VLLM_IMAGE")
                     .ok()
@@ -972,13 +992,8 @@ pub async fn process_provisioning(
                 if let Some(gb) = vol_from_db.filter(|gb| *gb > 0) {
                     data_conf = Some((gb, None, true));
                 } else {
-                    let worker_model = model_from_db
-                        .or_else(|| {
-                            std::env::var("WORKER_MODEL_ID")
-                                .ok()
-                                .filter(|s| !s.trim().is_empty())
-                        })
-                        .unwrap_or_else(|| "Qwen/Qwen2.5-0.5B-Instruct".to_string());
+                    // model is mandatory; do not fallback silently here
+                    let worker_model = model_from_db.expect("model is mandatory (validated before provisioning)");
                     if let Some(gb) = worker_storage::recommended_data_volume_gb(&worker_model) {
                         data_conf = Some((gb, None, true));
                     }

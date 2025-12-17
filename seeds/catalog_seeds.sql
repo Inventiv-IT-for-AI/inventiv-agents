@@ -141,6 +141,9 @@ INSERT INTO action_types (code, label, icon, color_class, category, is_active) V
   ('INSTANCE_CREATED', 'Instance Created', 'Database', 'bg-green-500 hover:bg-green-600 text-white', 'create', TRUE),
   ('HEALTH_CHECK', 'Health Check', 'Clock', 'bg-teal-600 hover:bg-teal-700 text-white', 'health', TRUE),
   ('WORKER_MODEL_READY_CHECK', 'Worker Model Ready Check', 'Activity', 'bg-sky-600 hover:bg-sky-700 text-white', 'health', TRUE),
+  ('WORKER_VLLM_HTTP_OK', 'vLLM HTTP Ready', 'Activity', 'bg-sky-600 hover:bg-sky-700 text-white', 'health', TRUE),
+  ('WORKER_MODEL_LOADED', 'Model Loaded', 'CheckCircle', 'bg-sky-600 hover:bg-sky-700 text-white', 'health', TRUE),
+  ('WORKER_VLLM_WARMUP', 'vLLM Warmup', 'Activity', 'bg-sky-600 hover:bg-sky-700 text-white', 'health', TRUE),
   ('INSTANCE_READY', 'Instance Ready', 'CheckCircle', 'bg-green-600 hover:bg-green-700 text-white', 'health', TRUE),
   ('INSTANCE_STARTUP_FAILED', 'Instance Startup Failed', 'AlertTriangle', 'bg-gray-600 hover:bg-gray-700 text-white', 'health', TRUE),
 

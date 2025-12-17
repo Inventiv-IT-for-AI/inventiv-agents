@@ -6,6 +6,9 @@ export type Instance = {
     id: string;
     provider_id: string;
     provider_name: string;
+    model_id?: string | null;
+    model_name?: string | null;
+    model_code?: string | null;
     zone: string;
     region: string;
     instance_type: string;

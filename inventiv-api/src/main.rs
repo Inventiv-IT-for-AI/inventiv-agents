@@ -251,10 +251,13 @@ async fn list_runtime_models(State(state): State<Arc<AppState>>) -> Json<Vec<Run
           LEFT JOIN instance_types it ON it.id = i.instance_type_id
           WHERE i.status::text = 'ready'
             AND i.ip_address IS NOT NULL
-            AND i.worker_status = 'ready'
             AND i.worker_model_id IS NOT NULL
-            AND i.worker_last_heartbeat IS NOT NULL
-            AND i.worker_last_heartbeat > NOW() - ($1::bigint * INTERVAL '1 second')
+            AND (i.worker_status = 'ready' OR i.worker_status IS NULL)
+            AND GREATEST(
+              COALESCE(i.worker_last_heartbeat, 'epoch'::timestamptz),
+              COALESCE(i.last_health_check, 'epoch'::timestamptz),
+              COALESCE((i.last_reconciliation AT TIME ZONE 'UTC'), 'epoch'::timestamptz)
+            ) > NOW() - ($1::bigint * INTERVAL '1 second')
           GROUP BY i.worker_model_id
         )
         SELECT
@@ -322,8 +325,20 @@ async fn select_ready_worker_for_model(
           AND ip_address IS NOT NULL
           AND (worker_status = 'ready' OR worker_status IS NULL)
           AND ($1::text = '' OR worker_model_id = $1)
-          AND (worker_last_heartbeat IS NULL OR worker_last_heartbeat > NOW() - ($2::bigint * INTERVAL '1 second'))
-        ORDER BY worker_queue_depth NULLS LAST, worker_last_heartbeat DESC NULLS LAST, created_at DESC
+          -- Use the same freshness signal as /v1/models + /runtime/models:
+          -- allow either worker heartbeat OR orchestrator health timestamps to keep the instance routable.
+          AND GREATEST(
+              COALESCE(worker_last_heartbeat, 'epoch'::timestamptz),
+              COALESCE(last_health_check, 'epoch'::timestamptz),
+              COALESCE((last_reconciliation AT TIME ZONE 'UTC'), 'epoch'::timestamptz)
+            ) > NOW() - ($2::bigint * INTERVAL '1 second')
+        ORDER BY worker_queue_depth NULLS LAST,
+                 GREATEST(
+                   COALESCE(worker_last_heartbeat, 'epoch'::timestamptz),
+                   COALESCE(last_health_check, 'epoch'::timestamptz),
+                   COALESCE((last_reconciliation AT TIME ZONE 'UTC'), 'epoch'::timestamptz)
+                 ) DESC,
+                 created_at DESC
         LIMIT 50
         "#,
     )
@@ -402,14 +417,23 @@ async fn openai_list_models(State(state): State<Arc<AppState>>) -> impl IntoResp
         r#"
         SELECT
           worker_model_id as model_id,
-          MAX(worker_last_heartbeat) as last_seen
+          MAX(
+            GREATEST(
+              COALESCE(worker_last_heartbeat, 'epoch'::timestamptz),
+              COALESCE(last_health_check, 'epoch'::timestamptz),
+              COALESCE((last_reconciliation AT TIME ZONE 'UTC'), 'epoch'::timestamptz)
+            )
+          ) as last_seen
         FROM instances
         WHERE status::text = 'ready'
           AND ip_address IS NOT NULL
-          AND worker_status = 'ready'
+          AND (worker_status = 'ready' OR worker_status IS NULL)
           AND worker_model_id IS NOT NULL
-          AND worker_last_heartbeat IS NOT NULL
-          AND worker_last_heartbeat > NOW() - ($1::bigint * INTERVAL '1 second')
+          AND GREATEST(
+              COALESCE(worker_last_heartbeat, 'epoch'::timestamptz),
+              COALESCE(last_health_check, 'epoch'::timestamptz),
+              COALESCE((last_reconciliation AT TIME ZONE 'UTC'), 'epoch'::timestamptz)
+            ) > NOW() - ($1::bigint * INTERVAL '1 second')
         GROUP BY worker_model_id
         ORDER BY worker_model_id
         "#
@@ -489,22 +513,34 @@ async fn openai_proxy_to_worker(
 
     let target = format!("{}{}", base_url.trim_end_matches('/'), path);
 
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(3))
-        .timeout(std::time::Duration::from_secs(0)) // streaming can be long
-        .build();
+    let mut client_builder = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(3));
+    // Non-stream responses should be bounded; stream can be long-lived.
+    if stream {
+        client_builder = client_builder.timeout(std::time::Duration::from_secs(0));
+    } else {
+        client_builder = client_builder.timeout(std::time::Duration::from_secs(60));
+    }
+    let client = client_builder.build();
     let Ok(client) = client else {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"http_client_build_failed"}))).into_response();
     };
 
-    // Forward headers best-effort.
+    // Forward headers (allowlist).
+    //
+    // IMPORTANT:
+    // - Do NOT forward client Authorization (API key) to workers.
+    // - Keep headers minimal to avoid hop-by-hop / proxy-only headers causing issues.
     let mut out_headers = reqwest::header::HeaderMap::new();
-    for (k, v) in headers.iter() {
-        let name = k.as_str().to_ascii_lowercase();
-        if name == "host" || name == "content-length" || name == "connection" {
-            continue;
-        }
-        out_headers.insert(k, v.clone());
+    if let Some(ct) = headers.get(axum::http::header::CONTENT_TYPE) {
+        out_headers.insert(reqwest::header::CONTENT_TYPE, ct.clone());
+    } else {
+        out_headers.insert(reqwest::header::CONTENT_TYPE, reqwest::header::HeaderValue::from_static("application/json"));
+    }
+    if let Some(acc) = headers.get(axum::http::header::ACCEPT) {
+        out_headers.insert(reqwest::header::ACCEPT, acc.clone());
+    } else {
+        out_headers.insert(reqwest::header::ACCEPT, reqwest::header::HeaderValue::from_static("application/json"));
     }
     // Ensure sticky header is forwarded (HAProxy config uses it).
     if let Some(sid) = sticky.as_deref() {
@@ -810,6 +846,11 @@ pub struct InstanceResponse {
     pub provider_id: uuid::Uuid,
     pub zone_id: Option<uuid::Uuid>,
     pub instance_type_id: Option<uuid::Uuid>,
+    /// Provisioned model (catalog) selected at deployment time (optional).
+    pub model_id: Option<uuid::Uuid>,
+    pub model_name: Option<String>,
+    /// Model code / HF repo id for the provisioned model (optional).
+    pub model_code: Option<String>,
     pub provider_instance_id: Option<String>,
     pub status: String,
     pub ip_address: Option<String>,
@@ -1165,6 +1206,7 @@ async fn create_deployment(
             "provider_code": requested_provider_code,
             "zone": payload.zone,
             "instance_type": payload.instance_type,
+            "model_id": payload.model_id.map(|m| m.to_string()),
         })),
     )
     .await
@@ -1192,6 +1234,44 @@ async fn create_deployment(
                 duration,
                 Some(msg),
                 Some(serde_json::json!({"error_code": "MISSING_PARAMS"})),
+            )
+            .await
+            .ok();
+        }
+
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(DeploymentResponse {
+                status: "failed".to_string(),
+                instance_id,
+                message: Some(msg.to_string()),
+            }),
+        )
+            .into_response();
+    }
+
+    // Model is mandatory: request cannot be created without defining the model to install.
+    if payload.model_id.is_none() {
+        let msg = "Missing model_id";
+        let _ = sqlx::query(
+            "UPDATE instances SET status='provisioning_failed', error_code=$2, error_message=$3, failed_at=NOW()
+             WHERE id=$1"
+        )
+        .bind(instance_id_uuid)
+        .bind("MISSING_MODEL")
+        .bind(msg)
+        .execute(&state.db)
+        .await;
+
+        if let Some(id) = log_id {
+            let duration = start.elapsed().as_millis() as i32;
+            simple_logger::log_action_complete_with_metadata(
+                &state.db,
+                id,
+                "failed",
+                duration,
+                Some(msg),
+                Some(serde_json::json!({"error_code": "MISSING_MODEL"})),
             )
             .await
             .ok();
@@ -1314,19 +1394,18 @@ async fn create_deployment(
         _ => {}
     }
 
-    // Validate model (optional)
+    // Validate model (mandatory)
     if validation_error.is_none() {
-        if let Some(mid) = payload.model_id {
-            let m: Option<bool> = sqlx::query_scalar("SELECT is_active FROM models WHERE id = $1")
-                .bind(mid)
-                .fetch_optional(&state.db)
-                .await
-                .unwrap_or(None);
-            match m {
-                None => validation_error = Some(("INVALID_MODEL", "Invalid model_id (not found)")),
-                Some(false) => validation_error = Some(("INACTIVE_MODEL", "Model is inactive")),
-                Some(true) => {}
-            }
+        let mid = payload.model_id.expect("validated above");
+        let m: Option<bool> = sqlx::query_scalar("SELECT is_active FROM models WHERE id = $1")
+            .bind(mid)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None);
+        match m {
+            None => validation_error = Some(("INVALID_MODEL", "Invalid model_id (not found)")),
+            Some(false) => validation_error = Some(("INACTIVE_MODEL", "Model is inactive")),
+            Some(true) => {}
         }
     }
 
@@ -1698,6 +1777,9 @@ async fn list_instances(
         r#"
         SELECT 
             i.id, i.provider_id, i.zone_id, i.instance_type_id,
+            i.model_id,
+            m.name as model_name,
+            m.model_id as model_code,
             i.provider_instance_id::text as provider_instance_id,
             i.status::text as status, 
             i.ip_address::text as ip_address, 
@@ -1724,6 +1806,7 @@ async fn list_instances(
         LEFT JOIN zones z ON i.zone_id = z.id
         LEFT JOIN regions r ON z.region_id = r.id
         LEFT JOIN instance_types it ON i.instance_type_id = it.id
+        LEFT JOIN models m ON m.id = i.model_id
         WHERE i.is_archived = $1
         ORDER BY i.created_at DESC
         "#
@@ -1755,6 +1838,9 @@ async fn get_instance(
         r#"
         SELECT 
             i.id, i.provider_id, i.zone_id, i.instance_type_id,
+            i.model_id,
+            m.name as model_name,
+            m.model_id as model_code,
             i.provider_instance_id::text as provider_instance_id,
             i.status::text as status, 
             i.ip_address::text as ip_address, 
@@ -1781,6 +1867,7 @@ async fn get_instance(
         LEFT JOIN zones z ON i.zone_id = z.id
         LEFT JOIN regions r ON z.region_id = r.id
         LEFT JOIN instance_types it ON i.instance_type_id = it.id
+        LEFT JOIN models m ON m.id = i.model_id
         WHERE i.id = $1
         LIMIT 1
         "#

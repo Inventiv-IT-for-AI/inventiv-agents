@@ -2,50 +2,46 @@
 
 ## ✅ État actuel (repo)
 
-Le frontend utilise maintenant **`NEXT_PUBLIC_API_URL`** + le helper **`apiUrl()`** (dans `inventiv-frontend/src/lib/api.ts`).
-Cela évite les URLs hardcodées et garantit que l’UI parle toujours au bon backend.
+Le frontend supporte 2 modes :
+
+1) **Recommandé (UI dans Docker, UI-only exposée)**  
+Le navigateur parle uniquement à l’UI (port 3000 + offset). Les appels backend passent en **same-origin** via `/api/backend/*` (routes Next.js) qui proxy côté serveur vers `API_INTERNAL_URL=http://api:8003` (réseau Docker).
+
+2) **UI sur le host (debug)**  
+Le navigateur appelle directement l’API via `NEXT_PUBLIC_API_URL` (il faut alors exposer l’API sur le host, ex: `make api-expose`).
 
 ## Configuration
 
-### 1. Créer `/inventiv-frontend/.env.local`
+### Mode recommandé: UI dans Docker
+
+- Démarrage:
 
 ```bash
-# Backend API URL
-NEXT_PUBLIC_API_URL=http://localhost:8003
+make up
+make ui
 ```
 
-### 2. Helper `apiUrl()`
+- Par défaut, l’API n’est **pas** exposée sur le host.
 
-Déjà implémenté dans `inventiv-frontend/src/lib/api.ts`.
+### Mode host: UI sur le host (debug)
 
-### 3. Endroits typiques à vérifier
+- Exposer l’API en loopback:
 
-- Dashboard: `inventiv-frontend/src/app/(app)/(dashboard)/page.tsx`
-- Instances: `inventiv-frontend/src/app/(app)/instances/page.tsx` + `inventiv-frontend/src/components/instances/*`
-- Monitoring: `inventiv-frontend/src/app/(app)/monitoring/page.tsx`
-- Traces: `inventiv-frontend/src/app/(app)/traces/page.tsx`
-- Settings: `inventiv-frontend/src/app/(app)/settings/page.tsx`
-- Login: `inventiv-frontend/src/app/(auth)/login/page.tsx`
-
-### 4. Configuration par environnement
-
-#### Développement local
-`.env.local` (gitignored)
 ```bash
-NEXT_PUBLIC_API_URL=http://localhost:8003
+make api-expose
 ```
 
-#### Staging
-`.env.staging`
+- Puis créer `inventiv-frontend/.env.local` :
+
 ```bash
-NEXT_PUBLIC_API_URL=https://api-staging.yourdomain.com
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8003
 ```
 
-#### Production
-`.env.production`
-```bash
-NEXT_PUBLIC_API_URL=https://api.yourdomain.com
-```
+> Note: si tu utilises `PORT_OFFSET`, l’API exposée devient `8003 + PORT_OFFSET` (ex: `18003`).
+
+### Helper `apiUrl()`
+
+Le helper `apiUrl()` est centralisé dans `inventiv-frontend/src/lib/api.ts` pour éviter les URLs hardcodées.
 
 ## 🎯 Bénéfices
 

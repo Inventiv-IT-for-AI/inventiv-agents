@@ -1,7 +1,8 @@
 # Inventiv Agents
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](VERSION)
+[![GHCR (build + promote)](https://github.com/Inventiv-IT-for-AI/inventiv-agents/actions/workflows/ghcr.yml/badge.svg)](https://github.com/Inventiv-IT-for-AI/inventiv-agents/actions/workflows/ghcr.yml)
+[![Version](https://img.shields.io/badge/version-0.3.5-blue.svg)](VERSION)
 
 **Control-plane + data-plane pour exécuter des agents/instances IA** — Infrastructure d'inférence LLM scalable, modulaire et performante, écrite en **Rust**.
 
@@ -97,8 +98,7 @@ mkdir -p deploy/secrets
 echo "<your-admin-password>" > deploy/secrets/default_admin_password
 ```
 
-> Note: si tu utilises un modèle Hugging Face **privé**, configure `WORKER_HF_TOKEN` dans `env/dev.env` (ou utilise un modèle public).  
-> Attention: en mode auto-install (cloud-init / SSH bootstrap), ce token est injecté dans le script de bootstrap de la VM (donc présent côté VM).
+> Note: si tu utilises un modèle Hugging Face **privé**, préfère `WORKER_HF_TOKEN_FILE` (secret file) plutôt qu’un token en clair dans `env/*.env`.
 
 ### 2. Lancement de la stack
 
@@ -109,7 +109,7 @@ make up
 
 **URLs locales** :
 - **Frontend (UI)** : `http://localhost:3000` (ou `3000 + PORT_OFFSET`, voir étape 3)
-- **API / Orchestrator / DB / Redis** : **non exposés sur le host par défaut** (communication via réseau Docker uniquement)
+- **API / Orchestrator / DB / Redis** : **non exposés sur le host par défaut** (communication via réseau Docker)
 
 Si tu as besoin d’accéder à l’API depuis le host (ex: tunnel Cloudflare), utilise :
 
@@ -144,7 +144,8 @@ Les appels backend passent via des routes same-origin `/api/backend/*` côté fr
 
 ```bash
 # 1) Créer inventiv-frontend/.env.local
-echo "NEXT_PUBLIC_API_URL=http://localhost:8003" > inventiv-frontend/.env.local
+# (nécessite d’exposer l’API sur le host, voir `make api-expose`)
+echo "NEXT_PUBLIC_API_URL=http://127.0.0.1:8003" > inventiv-frontend/.env.local
 
 # 2) Installer les dépendances (première fois)
 cd inventiv-frontend && npm install
@@ -174,7 +175,8 @@ SEED_CATALOG_PATH=/app/seeds/catalog_seeds.sql
 **Manuel** :
 
 ```bash
-psql "postgresql://postgres:password@localhost:5432/llminfra" -f seeds/catalog_seeds.sql
+docker compose --env-file env/dev.env exec -T db \
+  psql -U postgres -d llminfra -f /app/seeds/catalog_seeds.sql
 ```
 
 > Le seed est **idempotent** (via `ON CONFLICT`) et peut être re-joué.
@@ -328,6 +330,7 @@ psql "postgresql://postgres:password@localhost:5432/llminfra" -f seeds/catalog_s
 
 **Deployments** :
 - `POST /deployments` : Créer une instance (publie `CMD:PROVISION`)
+  - `model_id` est **obligatoire** (la requête est rejetée sinon)
 
 **Settings** :
 - `GET/PUT /providers`, `/regions`, `/zones`, `/instance_types`
@@ -352,31 +355,55 @@ psql "postgresql://postgres:password@localhost:5432/llminfra" -f seeds/catalog_s
 
 ### Documentation API
 
-**Swagger UI** : `http://localhost:8003/swagger-ui`
+Par défaut l’API n’est **pas exposée** sur le host en dev (UI-only). Pour consulter Swagger depuis le navigateur :
 
-**OpenAPI spec** : `http://localhost:8003/api-docs/openapi.json`
+```bash
+make api-expose
+```
+
+Puis :
+
+- **Swagger UI** : `http://127.0.0.1:8003/swagger-ui` (ou `8003 + PORT_OFFSET`)
+
+- **OpenAPI spec** : `http://127.0.0.1:8003/api-docs/openapi.json` (ou `8003 + PORT_OFFSET`)
 
 ### Exemples curl
 
 ```bash
-# Login
-curl -X POST http://localhost:8003/auth/login \
+# (Option 1) Depuis le host : exposer l'API en loopback
+make api-expose
+
+# Login (session cookie)
+curl -X POST http://127.0.0.1:8003/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@inventiv.local","password":"<password>"}' \
   -c cookies.txt
 
 # Créer une instance (avec session cookie)
-curl -X POST http://localhost:8003/deployments \
+curl -X POST http://127.0.0.1:8003/deployments \
   -H "Content-Type: application/json" \
   -b cookies.txt \
-  -d '{"instance_type_id":"<uuid>","zone_id":"<uuid>"}'
+  -d '{"instance_type_id":"<uuid>","zone_id":"<uuid>","model_id":"<uuid>"}'
 
 # Lister les instances
-curl http://localhost:8003/instances -b cookies.txt
+curl http://127.0.0.1:8003/instances -b cookies.txt
 
 # Terminer une instance
-curl -X DELETE http://localhost:8003/instances/<id> -b cookies.txt
+curl -X DELETE http://127.0.0.1:8003/instances/<id> -b cookies.txt
 ```
+
+### OpenAI-compatible API (proxy)
+
+L’API expose un proxy OpenAI-compatible (sélection d’un worker READY pour le modèle demandé) :
+
+- `GET /v1/models`
+- `POST /v1/chat/completions` (streaming supporté)
+- `POST /v1/completions`
+- `POST /v1/embeddings`
+
+Auth:
+- session user **ou**
+- API key (Bearer)
 
 ## Worker (inventiv-worker)
 
@@ -424,15 +451,12 @@ Dossier `inventiv-worker/flavors/` : configurations par provider/environnement.
 
 ### Configuration API
 
-**Fichier** : `inventiv-frontend/.env.local`
+Le navigateur parle **uniquement** à l’UI, qui proxy ensuite vers le backend via `/api/backend/*`.
 
-```bash
-NEXT_PUBLIC_API_URL=http://localhost:8003
-```
+- **Mode recommandé (UI dans Docker)** : pas besoin de `NEXT_PUBLIC_API_URL`, l’UI utilise `API_INTERNAL_URL=http://api:8003`.
+- **Mode UI sur le host** : définir `NEXT_PUBLIC_API_URL` et exposer l’API via `make api-expose`.
 
-**Helper centralisé** : `inventiv-frontend/src/lib/api.ts` (fonction `apiUrl()`)
-
-**Rewrites** : Si nécessaire, configurer dans `next.config.js` pour proxy `/api/backend` → `NEXT_PUBLIC_API_URL`
+Voir [docs/API_URL_CONFIGURATION.md](docs/API_URL_CONFIGURATION.md).
 
 ### Dev
 
@@ -467,6 +491,8 @@ make edge-cert      # Générer/renew certificats SSL
 
 **Staging** :
 
+DNS cible (prévu) : `https://studio-stg.inventiv-agents.fr`
+
 ```bash
 make stg-provision      # Provisionner la VM
 make stg-bootstrap      # Bootstrap initial
@@ -477,6 +503,8 @@ make stg-cert           # Générer/renew certificats
 ```
 
 **Production** :
+
+DNS cible (prévu) : `https://studio-prd.inventiv-agents.fr`
 
 ```bash
 make prod-provision

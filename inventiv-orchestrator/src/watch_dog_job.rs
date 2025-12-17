@@ -4,6 +4,7 @@ use uuid::Uuid;
 use crate::provider_manager::ProviderManager;
 use crate::state_machine;
 use crate::finops_events;
+use crate::health_check_flow;
 
 /// job-watch-dog: checks READY instances still exist on provider.
 /// Uses SKIP LOCKED claiming so multiple orchestrators can run safely.
@@ -26,12 +27,14 @@ pub async fn watchdog_ready_instances(
     pool: &Pool<Postgres>,
     redis_client: &redis::Client,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    let claimed: Vec<(Uuid, Uuid, String, String)> = sqlx::query_as(
+    let claimed: Vec<(Uuid, Uuid, String, String, Option<String>, Option<String>)> = sqlx::query_as(
         "WITH cte AS (
             SELECT i.id,
                    i.provider_id,
                    i.provider_instance_id::text AS provider_instance_id,
-                   COALESCE(z.code, z.name) AS zone
+                   COALESCE(z.code, z.name) AS zone,
+                   i.ip_address::text as ip,
+                   NULLIF(btrim(COALESCE(i.worker_model_id, '')), '') as worker_model_id
             FROM instances i
             JOIN zones z ON i.zone_id = z.id
             WHERE i.status = 'ready'
@@ -45,7 +48,7 @@ pub async fn watchdog_ready_instances(
         SET last_reconciliation = NOW()
         FROM cte
         WHERE i.id = cte.id
-        RETURNING cte.id, cte.provider_id, cte.provider_instance_id, cte.zone",
+        RETURNING cte.id, cte.provider_id, cte.provider_instance_id, cte.zone, cte.ip, cte.worker_model_id",
     )
     .fetch_all(pool)
     .await?;
@@ -55,7 +58,12 @@ pub async fn watchdog_ready_instances(
     }
 
     let mut orphaned_count = 0;
-    for (instance_id, provider_id, provider_instance_id, zone) in claimed {
+    let vllm_port: u16 = std::env::var("WORKER_VLLM_PORT")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(8000);
+
+    for (instance_id, provider_id, provider_instance_id, zone, ip, worker_model_id) in claimed {
         let provider_code: String = sqlx::query_scalar("SELECT code FROM providers WHERE id = $1")
             .bind(provider_id)
             .fetch_optional(pool)
@@ -93,7 +101,35 @@ pub async fn watchdog_ready_instances(
                 }
                 orphaned_count += 1;
             }
-            Ok(true) => {}
+            Ok(true) => {
+                // If the instance is READY but `worker_model_id` is missing, infer it from vLLM `/v1/models`
+                // and persist worker runtime fields so the runtime Models module can show serving models.
+                if worker_model_id.is_none() {
+                    if let Some(ip) = ip.as_deref().filter(|s| !s.trim().is_empty()) {
+                        let (ok, ids, _ms, _err) = health_check_flow::check_vllm_http_models(ip, vllm_port).await;
+                        if ok {
+                            if let Some(mid) = ids.get(0).cloned() {
+                                let _ = sqlx::query(
+                                    r#"
+                                    UPDATE instances
+                                    SET
+                                      worker_model_id = $2,
+                                      worker_status = 'ready',
+                                      worker_last_heartbeat = NOW(),
+                                      worker_vllm_port = $3
+                                    WHERE id = $1 AND (worker_model_id IS NULL OR btrim(worker_model_id) = '')
+                                    "#,
+                                )
+                                .bind(instance_id)
+                                .bind(mid)
+                                .bind(vllm_port as i32)
+                                .execute(pool)
+                                .await;
+                            }
+                        }
+                    }
+                }
+            }
             Err(e) => {
                 eprintln!("⚠️  [job-watch-dog] Error checking instance {}: {:?}", instance_id, e);
                 let _ = sqlx::query("UPDATE instances SET last_reconciliation = NULL WHERE id = $1")
