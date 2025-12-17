@@ -1398,20 +1398,28 @@ export default function SettingsPage() {
                                             <InfoHint text={descFor("WORKER_EXPOSE_PORTS", "Provider security group opens inbound worker ports (dev convenience).")} />
                                         </span>
                                     </Label>
-                                    <div className="col-span-3">
-                                        <Select
-                                            value={formData.worker_expose_ports}
-                                            onValueChange={(v) => setFormData({ ...formData, worker_expose_ports: v as any })}
+                                    <div className="col-span-3 flex items-center gap-3">
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => setFormData({ ...formData, worker_expose_ports: "default" })}
+                                            disabled={formData.worker_expose_ports === "default"}
                                         >
-                                            <SelectTrigger>
-                                                <SelectValue placeholder="default" />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                <SelectItem value="default">default</SelectItem>
-                                                <SelectItem value="true">true</SelectItem>
-                                                <SelectItem value="false">false</SelectItem>
-                                            </SelectContent>
-                                        </Select>
+                                            Default
+                                        </Button>
+                                        <ActiveToggle
+                                            checked={
+                                                formData.worker_expose_ports === "default"
+                                                    ? (settingsDefs["WORKER_EXPOSE_PORTS"]?.defBool ?? true)
+                                                    : formData.worker_expose_ports === "true"
+                                            }
+                                            onCheckedChange={(c) => setFormData({ ...formData, worker_expose_ports: c ? "true" : "false" })}
+                                            aria-label="Toggle expose ports"
+                                        />
+                                        <span className="text-xs text-muted-foreground">
+                                            {formData.worker_expose_ports === "default" ? "using default" : "override"}
+                                        </span>
                                     </div>
                                 </div>
 
