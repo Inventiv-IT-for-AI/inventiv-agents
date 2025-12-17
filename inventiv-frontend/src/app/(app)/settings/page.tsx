@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { apiUrl } from "@/lib/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Pencil, Settings2, Plus } from "lucide-react";
+import { Pencil, Settings2, Plus, Info } from "lucide-react";
 import { ManageZonesModal } from "@/components/settings/ManageZonesModal";
 import type { Provider, ProviderParams, GlobalSetting, Region, Zone, InstanceType, LlmModel, ApiKey } from "@/lib/types";
 import { VirtualizedDataTable, type DataTableColumn } from "@/components/shared/VirtualizedDataTable";
@@ -18,6 +18,48 @@ import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList"
 import { formatEur } from "@/lib/utils";
 import { ActiveToggle } from "@/components/shared/ActiveToggle";
 import { CopyButton } from "@/components/shared/CopyButton";
+
+function InfoHint({ text }: { text: string }) {
+    const [open, setOpen] = useState(false);
+    useEffect(() => {
+        if (!open) return;
+        const onDoc = (e: MouseEvent | TouchEvent) => {
+            const t = e.target as HTMLElement | null;
+            if (!t) return;
+            if (t.closest("[data-infohint-root='true']")) return;
+            setOpen(false);
+        };
+        document.addEventListener("mousedown", onDoc);
+        document.addEventListener("touchstart", onDoc);
+        return () => {
+            document.removeEventListener("mousedown", onDoc);
+            document.removeEventListener("touchstart", onDoc);
+        };
+    }, [open]);
+
+    return (
+        <span data-infohint-root="true" className="relative inline-flex items-center">
+            <button
+                type="button"
+                onClick={() => setOpen((v) => !v)}
+                className="ml-2 inline-flex h-5 w-5 items-center justify-center rounded hover:bg-muted focus:outline-none focus:ring-2 focus:ring-sky-500"
+                aria-label="Help"
+                title={text}
+            >
+                <Info className="h-4 w-4 text-muted-foreground" />
+            </button>
+            <span
+                className={[
+                    "absolute right-0 top-6 z-50 w-[360px] rounded-md border bg-popover p-3 text-xs text-popover-foreground shadow-md",
+                    "opacity-0 pointer-events-none transition-opacity",
+                    open ? "opacity-100 pointer-events-auto" : "group-hover:opacity-100",
+                ].join(" ")}
+            >
+                {text}
+            </span>
+        </span>
+    );
+}
 export default function SettingsPage() {
     const [activeTab, setActiveTab] = useState<"providers" | "regions" | "zones" | "types" | "models" | "global_params" | "api_keys">("providers");
     const [refreshTick, setRefreshTick] = useState({ providers: 0, regions: 0, zones: 0, types: 0, models: 0, global_params: 0, api_keys: 0 });
@@ -46,6 +88,10 @@ export default function SettingsPage() {
     const [regionsList, setRegionsList] = useState<Region[]>([]);
     const [providerParamsById, setProviderParamsById] = useState<Record<string, ProviderParams>>({});
     const [settingsDefs, setSettingsDefs] = useState<Record<string, { min?: number; max?: number; defInt?: number; defBool?: boolean; defText?: string; desc?: string }>>({});
+
+    const descFor = useMemo(() => {
+        return (key: string, fallback: string) => (settingsDefs[key]?.desc?.trim() ? String(settingsDefs[key]?.desc) : fallback);
+    }, [settingsDefs]);
 
     const [globalSettings, setGlobalSettings] = useState<GlobalSetting[]>([]);
     const [globalSettingsLoading, setGlobalSettingsLoading] = useState(false);
@@ -1257,10 +1303,10 @@ export default function SettingsPage() {
 
                                 <div className="grid grid-cols-6 items-start gap-4">
                                     <Label className="col-span-3 text-right leading-tight">
-                                        <div>Worker startup timeout</div>
-                                        <div className="text-xs text-muted-foreground">
-                                            {settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"]?.desc ?? "BOOTING→STARTUP_FAILED timeout for worker instances (includes image pulls + model download/load)."}
-                                        </div>
+                                        <span className="group inline-flex items-center justify-end">
+                                            Worker startup timeout
+                                            <InfoHint text={descFor("WORKER_INSTANCE_STARTUP_TIMEOUT_S", "BOOTING→STARTUP_FAILED timeout for worker instances (includes image pulls + model download/load).")} />
+                                        </span>
                                     </Label>
                                     <Input
                                         value={formData.worker_instance_startup_timeout_s}
@@ -1272,10 +1318,10 @@ export default function SettingsPage() {
 
                                 <div className="grid grid-cols-6 items-start gap-4">
                                     <Label className="col-span-3 text-right leading-tight">
-                                        <div>Instance startup timeout</div>
-                                        <div className="text-xs text-muted-foreground">
-                                            {settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"]?.desc ?? "BOOTING→STARTUP_FAILED timeout for non-worker instances."}
-                                        </div>
+                                        <span className="group inline-flex items-center justify-end">
+                                            Instance startup timeout
+                                            <InfoHint text={descFor("INSTANCE_STARTUP_TIMEOUT_S", "BOOTING→STARTUP_FAILED timeout for non-worker instances.")} />
+                                        </span>
                                     </Label>
                                     <Input
                                         value={formData.instance_startup_timeout_s}
@@ -1287,10 +1333,10 @@ export default function SettingsPage() {
 
                                 <div className="grid grid-cols-6 items-start gap-4">
                                     <Label className="col-span-3 text-right leading-tight">
-                                        <div>SSH bootstrap timeout</div>
-                                        <div className="text-xs text-muted-foreground">
-                                            {settingsDefs["WORKER_SSH_BOOTSTRAP_TIMEOUT_S"]?.desc ?? "Max time allowed for SSH bootstrap script (docker install/pull/start)."}
-                                        </div>
+                                        <span className="group inline-flex items-center justify-end">
+                                            SSH bootstrap timeout
+                                            <InfoHint text={descFor("WORKER_SSH_BOOTSTRAP_TIMEOUT_S", "SSH bootstrap timeout for worker auto-install.")} />
+                                        </span>
                                     </Label>
                                     <Input
                                         value={formData.worker_ssh_bootstrap_timeout_s}
@@ -1302,10 +1348,10 @@ export default function SettingsPage() {
 
                                 <div className="grid grid-cols-6 items-start gap-4">
                                     <Label className="col-span-3 text-right leading-tight">
-                                        <div>Health port</div>
-                                        <div className="text-xs text-muted-foreground">
-                                            {settingsDefs["WORKER_HEALTH_PORT"]?.desc ?? "Port used by worker agent for /healthz and /readyz."}
-                                        </div>
+                                        <span className="group inline-flex items-center justify-end">
+                                            Health port
+                                            <InfoHint text={descFor("WORKER_HEALTH_PORT", "Worker health server port (agent /readyz).")} />
+                                        </span>
                                     </Label>
                                     <Input
                                         value={formData.worker_health_port}
@@ -1317,10 +1363,10 @@ export default function SettingsPage() {
 
                                 <div className="grid grid-cols-6 items-start gap-4">
                                     <Label className="col-span-3 text-right leading-tight">
-                                        <div>vLLM port</div>
-                                        <div className="text-xs text-muted-foreground">
-                                            {settingsDefs["WORKER_VLLM_PORT"]?.desc ?? "Port exposed by vLLM OpenAI-compatible server."}
-                                        </div>
+                                        <span className="group inline-flex items-center justify-end">
+                                            vLLM port
+                                            <InfoHint text={descFor("WORKER_VLLM_PORT", "vLLM OpenAI-compatible port on the worker.")} />
+                                        </span>
                                     </Label>
                                     <Input
                                         value={formData.worker_vllm_port}
@@ -1332,10 +1378,10 @@ export default function SettingsPage() {
 
                                 <div className="grid grid-cols-6 items-start gap-4">
                                     <Label className="col-span-3 text-right leading-tight">
-                                        <div>Default data volume (GB)</div>
-                                        <div className="text-xs text-muted-foreground">
-                                            {settingsDefs["WORKER_DATA_VOLUME_GB_DEFAULT"]?.desc ?? "Fallback data volume size when model has no explicit recommendation."}
-                                        </div>
+                                        <span className="group inline-flex items-center justify-end">
+                                            Default data volume (GB)
+                                            <InfoHint text={descFor("WORKER_DATA_VOLUME_GB_DEFAULT", "Fallback data volume size when model has no explicit recommendation.")} />
+                                        </span>
                                     </Label>
                                     <Input
                                         value={formData.worker_data_volume_gb_default}
@@ -1347,10 +1393,10 @@ export default function SettingsPage() {
 
                                 <div className="grid grid-cols-6 items-start gap-4">
                                     <Label className="col-span-3 text-right leading-tight">
-                                        <div>Expose ports</div>
-                                        <div className="text-xs text-muted-foreground">
-                                            {settingsDefs["WORKER_EXPOSE_PORTS"]?.desc ?? "Whether provider security groups open inbound ports to reach vLLM/health endpoints (dev convenience)."}
-                                        </div>
+                                        <span className="group inline-flex items-center justify-end">
+                                            Expose ports
+                                            <InfoHint text={descFor("WORKER_EXPOSE_PORTS", "Provider security group opens inbound worker ports (dev convenience).")} />
+                                        </span>
                                     </Label>
                                     <div className="col-span-3">
                                         <Select
@@ -1371,10 +1417,10 @@ export default function SettingsPage() {
 
                                 <div className="grid grid-cols-6 items-start gap-4">
                                     <Label className="col-span-3 text-right leading-tight">
-                                        <div>vLLM mode</div>
-                                        <div className="text-xs text-muted-foreground">
-                                            {settingsDefs["WORKER_VLLM_MODE"]?.desc ?? "mono = 1 vLLM for all GPUs; multi = 1 vLLM per GPU behind local HAProxy."}
-                                        </div>
+                                        <span className="group inline-flex items-center justify-end">
+                                            vLLM mode
+                                            <InfoHint text={descFor("WORKER_VLLM_MODE", "vLLM mode: mono|multi (multi = 1 vLLM per GPU behind HAProxy).")} />
+                                        </span>
                                     </Label>
                                     <div className="col-span-3">
                                         <Select
@@ -1395,10 +1441,10 @@ export default function SettingsPage() {
 
                                 <div className="grid grid-cols-6 items-start gap-4">
                                     <Label className="col-span-3 text-right leading-tight">
-                                        <div>vLLM image</div>
-                                        <div className="text-xs text-muted-foreground">
-                                            {settingsDefs["WORKER_VLLM_IMAGE"]?.desc ?? "Docker image used to start vLLM on the worker."}
-                                        </div>
+                                        <span className="group inline-flex items-center justify-end">
+                                            vLLM image
+                                            <InfoHint text={descFor("WORKER_VLLM_IMAGE", "Docker image for vLLM OpenAI server.")} />
+                                        </span>
                                     </Label>
                                     <Input
                                         value={formData.worker_vllm_image}
