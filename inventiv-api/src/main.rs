@@ -27,6 +27,7 @@ use tokio_stream::StreamExt;
 use utoipa::{OpenApi, IntoParams};
 use utoipa_swagger_ui::SwaggerUi;
 mod settings; // Module
+mod provider_settings;
 mod action_logs_search;
 mod api_docs;
 mod simple_logger;
@@ -136,6 +137,9 @@ async fn main() {
         .route("/providers", get(settings::list_providers).post(settings::create_provider))
         .route("/providers/search", get(settings::search_providers))
         .route("/providers/:id", axum::routing::put(settings::update_provider))
+        // Provider-scoped params
+        .route("/providers/params", get(provider_settings::list_provider_params))
+        .route("/providers/:id/params", axum::routing::put(provider_settings::update_provider_params))
         .route("/regions", get(settings::list_regions).post(settings::create_region))
         .route("/regions/search", get(settings::search_regions))
         .route("/regions/:id", axum::routing::put(settings::update_region))

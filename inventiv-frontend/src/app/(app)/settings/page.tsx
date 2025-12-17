@@ -12,18 +12,18 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Pencil, Settings2, Plus } from "lucide-react";
 import { ManageZonesModal } from "@/components/settings/ManageZonesModal";
-import type { Provider, Region, Zone, InstanceType, LlmModel, ApiKey } from "@/lib/types";
+import type { Provider, ProviderParams, Region, Zone, InstanceType, LlmModel, ApiKey } from "@/lib/types";
 import { VirtualizedDataTable, type DataTableColumn } from "@/components/shared/VirtualizedDataTable";
 import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
 import { formatEur } from "@/lib/utils";
 import { ActiveToggle } from "@/components/shared/ActiveToggle";
 import { CopyButton } from "@/components/shared/CopyButton";
 export default function SettingsPage() {
-    const [activeTab, setActiveTab] = useState<"providers" | "regions" | "zones" | "types" | "models" | "api_keys">("providers");
-    const [refreshTick, setRefreshTick] = useState({ providers: 0, regions: 0, zones: 0, types: 0, models: 0, api_keys: 0 });
+    const [activeTab, setActiveTab] = useState<"providers" | "regions" | "zones" | "types" | "models" | "provider_params" | "api_keys">("providers");
+    const [refreshTick, setRefreshTick] = useState({ providers: 0, regions: 0, zones: 0, types: 0, models: 0, provider_params: 0, api_keys: 0 });
 
     type EntityType = "provider" | "region" | "zone" | "type" | "model";
-    type RefreshKey = "providers" | "regions" | "zones" | "types" | "models" | "api_keys";
+    type RefreshKey = "providers" | "regions" | "zones" | "types" | "models" | "provider_params" | "api_keys";
     const refreshKeyFor = (t: EntityType): RefreshKey => {
         switch (t) {
             case "provider":
@@ -44,11 +44,17 @@ export default function SettingsPage() {
     const [isEditOpen, setIsEditOpen] = useState(false);
     const [providersList, setProvidersList] = useState<Provider[]>([]);
     const [regionsList, setRegionsList] = useState<Region[]>([]);
+    const [providerParams, setProviderParams] = useState<ProviderParams[]>([]);
+    const [providerParamsLoading, setProviderParamsLoading] = useState(false);
+    const [providerParamsEditOpen, setProviderParamsEditOpen] = useState(false);
+    const [editingProviderParams, setEditingProviderParams] = useState<ProviderParams | null>(null);
+    const [workerStartupTimeoutS, setWorkerStartupTimeoutS] = useState<string>("");
+    const [instanceStartupTimeoutS, setInstanceStartupTimeoutS] = useState<string>("");
 
     const searchParams = useSearchParams();
     useEffect(() => {
         const tab = (searchParams.get("tab") || "").toLowerCase();
-        if (tab === "providers" || tab === "regions" || tab === "zones" || tab === "types" || tab === "models" || tab === "api_keys") {
+        if (tab === "providers" || tab === "regions" || tab === "zones" || tab === "types" || tab === "models" || tab === "provider_params" || tab === "api_keys") {
             setActiveTab(tab as any);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -250,6 +256,38 @@ export default function SettingsPage() {
         openCreate("model");
     };
 
+    const openEditProviderParams = (row: ProviderParams) => {
+        setEditingProviderParams(row);
+        setWorkerStartupTimeoutS(row.worker_instance_startup_timeout_s != null ? String(row.worker_instance_startup_timeout_s) : "");
+        setInstanceStartupTimeoutS(row.instance_startup_timeout_s != null ? String(row.instance_startup_timeout_s) : "");
+        setProviderParamsEditOpen(true);
+    };
+
+    const saveProviderParams = async () => {
+        if (!editingProviderParams) return;
+        const workerV = workerStartupTimeoutS.trim() === "" ? null : Number(workerStartupTimeoutS.trim());
+        const instV = instanceStartupTimeoutS.trim() === "" ? null : Number(instanceStartupTimeoutS.trim());
+
+        // Range validation: 30..86400 seconds (same as backend).
+        if (workerV != null && (!Number.isFinite(workerV) || workerV < 30 || workerV > 86400)) return;
+        if (instV != null && (!Number.isFinite(instV) || instV < 30 || instV > 86400)) return;
+
+        const res = await fetch(apiUrl(`providers/${editingProviderParams.provider_id}/params`), {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                worker_instance_startup_timeout_s: workerV,
+                instance_startup_timeout_s: instV,
+            }),
+        });
+        if (!res.ok) return;
+        setProviderParamsEditOpen(false);
+        setEditingProviderParams(null);
+        setWorkerStartupTimeoutS("");
+        setInstanceStartupTimeoutS("");
+        setRefreshTick((t) => ({ ...t, provider_params: t.provider_params + 1 }));
+    };
+
     const providerColumns: DataTableColumn<Provider>[] = [
         { id: "name", label: "Name", width: 220, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
         { id: "code", label: "Code", width: 160, cell: ({ row }) => <span className="font-mono text-xs">{row.code}</span> },
@@ -283,6 +321,48 @@ export default function SettingsPage() {
             cell: ({ row }) => (
                 <div className="flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
                     <Button variant="outline" size="sm" onClick={() => handleEdit(row, "provider")}>
+                        <Pencil className="h-4 w-4 mr-2" />
+                        Modifier
+                    </Button>
+                </div>
+            ),
+        },
+    ];
+
+    const providerParamsColumns: DataTableColumn<ProviderParams>[] = [
+        { id: "provider_name", label: "Provider", width: 220, cell: ({ row }) => <span className="font-medium">{row.provider_name}</span> },
+        { id: "provider_code", label: "Code", width: 160, cell: ({ row }) => <span className="font-mono text-xs">{row.provider_code}</span> },
+        {
+            id: "worker_instance_startup_timeout_s",
+            label: "WORKER_INSTANCE_STARTUP_TIMEOUT_S",
+            width: 320,
+            cell: ({ row }) =>
+                row.worker_instance_startup_timeout_s == null ? (
+                    <span className="text-muted-foreground text-sm">default</span>
+                ) : (
+                    <span className="font-mono text-xs">{row.worker_instance_startup_timeout_s}s</span>
+                ),
+        },
+        {
+            id: "instance_startup_timeout_s",
+            label: "INSTANCE_STARTUP_TIMEOUT_S",
+            width: 240,
+            cell: ({ row }) =>
+                row.instance_startup_timeout_s == null ? (
+                    <span className="text-muted-foreground text-sm">default</span>
+                ) : (
+                    <span className="font-mono text-xs">{row.instance_startup_timeout_s}s</span>
+                ),
+        },
+        {
+            id: "actions",
+            label: "Actions",
+            width: 140,
+            align: "right",
+            disableReorder: true,
+            cell: ({ row }) => (
+                <div className="flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+                    <Button variant="outline" size="sm" onClick={() => openEditProviderParams(row)}>
                         <Pencil className="h-4 w-4 mr-2" />
                         Modifier
                     </Button>
@@ -498,6 +578,17 @@ export default function SettingsPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeTab, refreshTick.models]);
 
+    useEffect(() => {
+        if (activeTab !== "provider_params") return;
+        setProviderParamsLoading(true);
+        fetch(apiUrl("providers/params"))
+            .then((r) => (r.ok ? r.json() : []))
+            .then((rows) => setProviderParams(rows as ProviderParams[]))
+            .catch(() => null)
+            .finally(() => setProviderParamsLoading(false));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeTab, refreshTick.provider_params]);
+
     const modelColumns: DataTableColumn<ModelRow>[] = [
         { id: "name", label: "Name", width: 260, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
         { id: "model_id", label: "HF Model ID", width: 360, cell: ({ row }) => <span className="font-mono text-xs">{row.model_id}</span> },
@@ -692,6 +783,7 @@ export default function SettingsPage() {
                     <TabsTrigger value="zones">Zones</TabsTrigger>
                     <TabsTrigger value="types">Instance Types</TabsTrigger>
                     <TabsTrigger value="models">Models</TabsTrigger>
+                    <TabsTrigger value="provider_params">Provider Params</TabsTrigger>
                     <TabsTrigger value="api_keys">API Keys</TabsTrigger>
                 </TabsList>
 
@@ -825,6 +917,26 @@ export default function SettingsPage() {
                     </Card>
                 </TabsContent>
 
+                {/* PROVIDER PARAMS */}
+                <TabsContent value="provider_params">
+                    <Card>
+                        <CardContent>
+                            <VirtualizedDataTable<ProviderParams>
+                                listId="settings:provider_params"
+                                title="Provider Params"
+                                dataKey={String(refreshTick.provider_params)}
+                                leftMeta={providerParamsLoading ? <span className="text-sm text-muted-foreground">Loading…</span> : undefined}
+                                rightHeader={<div className="text-sm text-muted-foreground">Empty = default (env → built-in)</div>}
+                                autoHeight={true}
+                                height={300}
+                                rowHeight={52}
+                                columns={providerParamsColumns}
+                                rows={providerParams}
+                            />
+                        </CardContent>
+                    </Card>
+                </TabsContent>
+
                 {/* API KEYS */}
                 <TabsContent value="api_keys">
                     <Card>
@@ -851,6 +963,65 @@ export default function SettingsPage() {
                     </Card>
                 </TabsContent>
             </Tabs>
+
+            {/* Edit Provider Params dialog */}
+            <Dialog
+                open={providerParamsEditOpen}
+                onOpenChange={(open) => {
+                    setProviderParamsEditOpen(open);
+                    if (!open) {
+                        setEditingProviderParams(null);
+                        setWorkerStartupTimeoutS("");
+                        setInstanceStartupTimeoutS("");
+                    }
+                }}
+            >
+                <DialogContent showCloseButton={false}>
+                    <DialogHeader>
+                        <DialogTitle>Provider Params</DialogTitle>
+                    </DialogHeader>
+                    <div className="grid gap-4 py-4">
+                        <div className="text-sm text-muted-foreground">
+                            Provider: <span className="font-medium text-foreground">{editingProviderParams?.provider_name}</span>{" "}
+                            (<span className="font-mono text-xs">{editingProviderParams?.provider_code}</span>)
+                        </div>
+
+                        <div className="grid grid-cols-4 items-center gap-4">
+                            <Label htmlFor="worker_startup_timeout" className="text-right">
+                                WORKER_INSTANCE_STARTUP_TIMEOUT_S
+                            </Label>
+                            <Input
+                                id="worker_startup_timeout"
+                                value={workerStartupTimeoutS}
+                                onChange={(e) => setWorkerStartupTimeoutS(e.target.value)}
+                                placeholder="default"
+                                className="col-span-3"
+                            />
+                        </div>
+
+                        <div className="grid grid-cols-4 items-center gap-4">
+                            <Label htmlFor="instance_startup_timeout" className="text-right">
+                                INSTANCE_STARTUP_TIMEOUT_S
+                            </Label>
+                            <Input
+                                id="instance_startup_timeout"
+                                value={instanceStartupTimeoutS}
+                                onChange={(e) => setInstanceStartupTimeoutS(e.target.value)}
+                                placeholder="default"
+                                className="col-span-3"
+                            />
+                        </div>
+
+                        <div className="text-xs text-muted-foreground">Range: 30..86400 seconds. Leave empty for default.</div>
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setProviderParamsEditOpen(false)}>
+                            Annuler
+                        </Button>
+                        <Button onClick={saveProviderParams}>Enregistrer</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
 
             {/* Create API Key dialog (shows secret once) */}
             <Dialog open={apiKeyCreateOpen} onOpenChange={(open) => { setApiKeyCreateOpen(open); if (!open) { setCreatedApiKey(null); setApiKeyName(''); } }}>

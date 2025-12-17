@@ -192,6 +192,22 @@ async fn check_instance_ssh(ip: &str) -> bool {
     .unwrap_or(false)
 }
 
+async fn provider_setting_i64(db: &Pool<Postgres>, provider_id: uuid::Uuid, key: &str) -> Option<i64> {
+    sqlx::query_scalar(
+        r#"
+        SELECT value_int
+        FROM provider_settings
+        WHERE provider_id = $1 AND key = $2
+        "#,
+    )
+    .bind(provider_id)
+    .bind(key)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten()
+}
+
 fn sh_escape_single(s: &str) -> String {
     // Safe single-quote escape for bash: wrap with '...' and escape internal quotes.
     format!("'{}'", s.replace('\'', "'\"'\"'"))
@@ -722,8 +738,13 @@ pub async fn check_and_transition_instance(
     db: Pool<Postgres>,
 ) {
     // Mock provider: no real SSH. We emulate a successful startup so the rest of the platform can be tested.
-    let provider_code: Option<String> = sqlx::query_scalar(
-        "SELECT p.code FROM instances i JOIN providers p ON p.id = i.provider_id WHERE i.id = $1",
+    #[derive(sqlx::FromRow)]
+    struct ProviderInfo {
+        provider_id: uuid::Uuid,
+        provider_code: String,
+    }
+    let provider: Option<ProviderInfo> = sqlx::query_as(
+        "SELECT i.provider_id as provider_id, p.code as provider_code FROM instances i JOIN providers p ON p.id = i.provider_id WHERE i.id = $1",
     )
     .bind(instance_id)
     .fetch_optional(&db)
@@ -739,7 +760,7 @@ pub async fn check_and_transition_instance(
         }
     };
 
-    if provider_code.as_deref() == Some("mock") {
+    if provider.as_ref().map(|p| p.provider_code.as_str()) == Some("mock") {
         println!("✅ Instance {} is on mock provider: auto-ready", instance_id);
         let hc_start = std::time::Instant::now();
         let log_id = logger::log_event_with_metadata(
@@ -760,6 +781,11 @@ pub async fn check_and_transition_instance(
         return;
     }
 
+    let Some(provider) = provider else {
+        println!("⚠️  Instance {} has no provider, skipping health check", instance_id);
+        return;
+    };
+
     // Determine if this instance is expected to run a worker.
     let instance_type_code: Option<String> = sqlx::query_scalar(
         "SELECT it.code FROM instances i JOIN instance_types it ON it.id = i.instance_type_id WHERE i.id = $1",
@@ -778,23 +804,31 @@ pub async fn check_and_transition_instance(
         std::env::var("WORKER_AUTO_INSTALL_INSTANCE_PATTERNS").ok().as_deref(),
     );
     let expect_worker = auto_install
-        && provider_code.as_deref() == Some("scaleway")
+        && provider.provider_code.as_str() == "scaleway"
         && instance_type_code
             .as_deref()
             .map(|it| inventiv_common::worker_target::instance_type_matches_patterns(it, &patterns))
             .unwrap_or(false);
 
-    // Timeout: workers can take longer (image pulls + model downloads).
-    // Make it configurable because some models (e.g. 20B+) can exceed 20 minutes on first pull/load.
+    // Timeout: provider-scoped (DB) -> env -> default.
+    // Workers can take longer (image pulls + model downloads).
     let timeout_secs: i64 = if expect_worker {
-        std::env::var("WORKER_INSTANCE_STARTUP_TIMEOUT_S")
-            .ok()
-            .and_then(|s| s.trim().parse::<i64>().ok())
+        provider_setting_i64(&db, provider.provider_id, "WORKER_INSTANCE_STARTUP_TIMEOUT_S")
+            .await
+            .or_else(|| {
+                std::env::var("WORKER_INSTANCE_STARTUP_TIMEOUT_S")
+                    .ok()
+                    .and_then(|s| s.trim().parse::<i64>().ok())
+            })
             .unwrap_or(3600)
     } else {
-        std::env::var("INSTANCE_STARTUP_TIMEOUT_S")
-            .ok()
-            .and_then(|s| s.trim().parse::<i64>().ok())
+        provider_setting_i64(&db, provider.provider_id, "INSTANCE_STARTUP_TIMEOUT_S")
+            .await
+            .or_else(|| {
+                std::env::var("INSTANCE_STARTUP_TIMEOUT_S")
+                    .ok()
+                    .and_then(|s| s.trim().parse::<i64>().ok())
+            })
             .unwrap_or(300)
     };
 

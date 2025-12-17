@@ -37,6 +37,18 @@ export type Provider = {
     is_active?: boolean;
 };
 
+// -----------------------------
+// Provider-scoped parameters
+// -----------------------------
+
+export type ProviderParams = {
+    provider_id: string;
+    provider_name: string;
+    provider_code: string;
+    worker_instance_startup_timeout_s?: number | null;
+    instance_startup_timeout_s?: number | null;
+};
+
 export type Region = {
     id: string;
     provider_id?: string;
