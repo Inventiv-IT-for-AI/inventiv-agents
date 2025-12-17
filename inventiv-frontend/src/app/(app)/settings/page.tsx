@@ -1255,12 +1255,12 @@ export default function SettingsPage() {
                                     Leave empty / “default” to use env → built-in defaults. Values are validated in DB.
                                 </div>
 
-                                <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label className="text-right">
-                                        Worker startup timeout
-                                        <span className="block text-xs text-muted-foreground">
+                                <div className="grid grid-cols-6 items-start gap-4">
+                                    <Label className="col-span-3 text-right leading-tight">
+                                        <div>Worker startup timeout</div>
+                                        <div className="text-xs text-muted-foreground">
                                             {settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"]?.desc ?? "BOOTING→STARTUP_FAILED timeout for worker instances (includes image pulls + model download/load)."}
-                                        </span>
+                                        </div>
                                     </Label>
                                     <Input
                                         value={formData.worker_instance_startup_timeout_s}
@@ -1270,12 +1270,12 @@ export default function SettingsPage() {
                                     />
                                 </div>
 
-                                <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label className="text-right">
-                                        Instance startup timeout
-                                        <span className="block text-xs text-muted-foreground">
+                                <div className="grid grid-cols-6 items-start gap-4">
+                                    <Label className="col-span-3 text-right leading-tight">
+                                        <div>Instance startup timeout</div>
+                                        <div className="text-xs text-muted-foreground">
                                             {settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"]?.desc ?? "BOOTING→STARTUP_FAILED timeout for non-worker instances."}
-                                        </span>
+                                        </div>
                                     </Label>
                                     <Input
                                         value={formData.instance_startup_timeout_s}
@@ -1285,12 +1285,12 @@ export default function SettingsPage() {
                                     />
                                 </div>
 
-                                <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label className="text-right">
-                                        SSH bootstrap timeout
-                                        <span className="block text-xs text-muted-foreground">
+                                <div className="grid grid-cols-6 items-start gap-4">
+                                    <Label className="col-span-3 text-right leading-tight">
+                                        <div>SSH bootstrap timeout</div>
+                                        <div className="text-xs text-muted-foreground">
                                             {settingsDefs["WORKER_SSH_BOOTSTRAP_TIMEOUT_S"]?.desc ?? "Max time allowed for SSH bootstrap script (docker install/pull/start)."}
-                                        </span>
+                                        </div>
                                     </Label>
                                     <Input
                                         value={formData.worker_ssh_bootstrap_timeout_s}
@@ -1300,12 +1300,12 @@ export default function SettingsPage() {
                                     />
                                 </div>
 
-                                <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label className="text-right">
-                                        Health port
-                                        <span className="block text-xs text-muted-foreground">
+                                <div className="grid grid-cols-6 items-start gap-4">
+                                    <Label className="col-span-3 text-right leading-tight">
+                                        <div>Health port</div>
+                                        <div className="text-xs text-muted-foreground">
                                             {settingsDefs["WORKER_HEALTH_PORT"]?.desc ?? "Port used by worker agent for /healthz and /readyz."}
-                                        </span>
+                                        </div>
                                     </Label>
                                     <Input
                                         value={formData.worker_health_port}
@@ -1315,12 +1315,12 @@ export default function SettingsPage() {
                                     />
                                 </div>
 
-                                <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label className="text-right">
-                                        vLLM port
-                                        <span className="block text-xs text-muted-foreground">
+                                <div className="grid grid-cols-6 items-start gap-4">
+                                    <Label className="col-span-3 text-right leading-tight">
+                                        <div>vLLM port</div>
+                                        <div className="text-xs text-muted-foreground">
                                             {settingsDefs["WORKER_VLLM_PORT"]?.desc ?? "Port exposed by vLLM OpenAI-compatible server."}
-                                        </span>
+                                        </div>
                                     </Label>
                                     <Input
                                         value={formData.worker_vllm_port}
@@ -1330,12 +1330,12 @@ export default function SettingsPage() {
                                     />
                                 </div>
 
-                                <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label className="text-right">
-                                        Default data volume (GB)
-                                        <span className="block text-xs text-muted-foreground">
+                                <div className="grid grid-cols-6 items-start gap-4">
+                                    <Label className="col-span-3 text-right leading-tight">
+                                        <div>Default data volume (GB)</div>
+                                        <div className="text-xs text-muted-foreground">
                                             {settingsDefs["WORKER_DATA_VOLUME_GB_DEFAULT"]?.desc ?? "Fallback data volume size when model has no explicit recommendation."}
-                                        </span>
+                                        </div>
                                     </Label>
                                     <Input
                                         value={formData.worker_data_volume_gb_default}
@@ -1345,12 +1345,12 @@ export default function SettingsPage() {
                                     />
                                 </div>
 
-                                <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label className="text-right">
-                                        Expose ports
-                                        <span className="block text-xs text-muted-foreground">
+                                <div className="grid grid-cols-6 items-start gap-4">
+                                    <Label className="col-span-3 text-right leading-tight">
+                                        <div>Expose ports</div>
+                                        <div className="text-xs text-muted-foreground">
                                             {settingsDefs["WORKER_EXPOSE_PORTS"]?.desc ?? "Whether provider security groups open inbound ports to reach vLLM/health endpoints (dev convenience)."}
-                                        </span>
+                                        </div>
                                     </Label>
                                     <div className="col-span-3">
                                         <Select
@@ -1369,12 +1369,12 @@ export default function SettingsPage() {
                                     </div>
                                 </div>
 
-                                <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label className="text-right">
-                                        vLLM mode
-                                        <span className="block text-xs text-muted-foreground">
+                                <div className="grid grid-cols-6 items-start gap-4">
+                                    <Label className="col-span-3 text-right leading-tight">
+                                        <div>vLLM mode</div>
+                                        <div className="text-xs text-muted-foreground">
                                             {settingsDefs["WORKER_VLLM_MODE"]?.desc ?? "mono = 1 vLLM for all GPUs; multi = 1 vLLM per GPU behind local HAProxy."}
-                                        </span>
+                                        </div>
                                     </Label>
                                     <div className="col-span-3">
                                         <Select
@@ -1393,12 +1393,12 @@ export default function SettingsPage() {
                                     </div>
                                 </div>
 
-                                <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label className="text-right">
-                                        vLLM image
-                                        <span className="block text-xs text-muted-foreground">
+                                <div className="grid grid-cols-6 items-start gap-4">
+                                    <Label className="col-span-3 text-right leading-tight">
+                                        <div>vLLM image</div>
+                                        <div className="text-xs text-muted-foreground">
                                             {settingsDefs["WORKER_VLLM_IMAGE"]?.desc ?? "Docker image used to start vLLM on the worker."}
-                                        </span>
+                                        </div>
                                     </Label>
                                     <Input
                                         value={formData.worker_vllm_image}
