@@ -211,6 +211,7 @@ export function Sidebar() {
                     <div className="space-y-1">
                         <SidebarLink href="/" icon={LayoutDashboard} label="Dashboard" />
                         <SidebarLink href="/instances" icon={Server} label="Instances" />
+                        <SidebarLink href="/models" icon={Activity} label="Models" />
                         <SidebarLink href="/monitoring" icon={BarChart3} label="Monitoring" />
                         <SidebarLink href="/settings" icon={Settings} label="Settings" />
                         <SidebarLink href="/users" icon={Users} label="Users" />

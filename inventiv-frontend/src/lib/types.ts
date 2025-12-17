@@ -101,6 +101,21 @@ export type ApiKey = {
     revoked_at?: string | null;
 };
 
+// -----------------------------
+// Runtime Models (in service / seen on workers)
+// -----------------------------
+
+export type RuntimeModel = {
+    model_id: string;
+    first_seen_at: string;
+    last_seen_at: string;
+    instances_available: number;
+    gpus_available: number;
+    vram_total_gb: number;
+    total_requests: number;
+    failed_requests: number;
+};
+
 export type ActionLog = {
     id: string;
     action_type: string;
