@@ -50,6 +50,7 @@ export default function SettingsPage() {
     const [editingProviderParams, setEditingProviderParams] = useState<ProviderParams | null>(null);
     const [workerStartupTimeoutS, setWorkerStartupTimeoutS] = useState<string>("");
     const [instanceStartupTimeoutS, setInstanceStartupTimeoutS] = useState<string>("");
+    const [settingsDefs, setSettingsDefs] = useState<Record<string, { min?: number; max?: number; def?: number; desc?: string }>>({});
 
     const searchParams = useSearchParams();
     useEffect(() => {
@@ -268,9 +269,15 @@ export default function SettingsPage() {
         const workerV = workerStartupTimeoutS.trim() === "" ? null : Number(workerStartupTimeoutS.trim());
         const instV = instanceStartupTimeoutS.trim() === "" ? null : Number(instanceStartupTimeoutS.trim());
 
-        // Range validation: 30..86400 seconds (same as backend).
-        if (workerV != null && (!Number.isFinite(workerV) || workerV < 30 || workerV > 86400)) return;
-        if (instV != null && (!Number.isFinite(instV) || instV < 30 || instV > 86400)) return;
+        const wDef = settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"];
+        const iDef = settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"];
+        const wMin = wDef?.min ?? 30;
+        const wMax = wDef?.max ?? 86400;
+        const iMin = iDef?.min ?? 30;
+        const iMax = iDef?.max ?? 86400;
+
+        if (workerV != null && (!Number.isFinite(workerV) || workerV < wMin || workerV > wMax)) return;
+        if (instV != null && (!Number.isFinite(instV) || instV < iMin || instV > iMax)) return;
 
         const res = await fetch(apiUrl(`providers/${editingProviderParams.provider_id}/params`), {
             method: "PUT",
@@ -581,6 +588,22 @@ export default function SettingsPage() {
     useEffect(() => {
         if (activeTab !== "provider_params") return;
         setProviderParamsLoading(true);
+        fetch(apiUrl("settings/definitions"))
+            .then((r) => (r.ok ? r.json() : []))
+            .then((rows) => {
+                const map: Record<string, { min?: number; max?: number; def?: number; desc?: string }> = {};
+                for (const row of rows as any[]) {
+                    if (!row?.key) continue;
+                    map[String(row.key)] = {
+                        min: row.min_int ?? undefined,
+                        max: row.max_int ?? undefined,
+                        def: row.default_int ?? undefined,
+                        desc: row.description ?? undefined,
+                    };
+                }
+                setSettingsDefs(map);
+            })
+            .catch(() => null);
         fetch(apiUrl("providers/params"))
             .then((r) => (r.ok ? r.json() : []))
             .then((rows) => setProviderParams(rows as ProviderParams[]))
@@ -926,7 +949,7 @@ export default function SettingsPage() {
                                 title="Provider Params"
                                 dataKey={String(refreshTick.provider_params)}
                                 leftMeta={providerParamsLoading ? <span className="text-sm text-muted-foreground">Loading…</span> : undefined}
-                                rightHeader={<div className="text-sm text-muted-foreground">Empty = default (env → built-in)</div>}
+                                rightHeader={<div className="text-sm text-muted-foreground">Empty = default (env → built-in). Bounds are defined in DB.</div>}
                                 autoHeight={true}
                                 height={300}
                                 rowHeight={52}
@@ -994,7 +1017,7 @@ export default function SettingsPage() {
                                 id="worker_startup_timeout"
                                 value={workerStartupTimeoutS}
                                 onChange={(e) => setWorkerStartupTimeoutS(e.target.value)}
-                                placeholder="default"
+                                placeholder={settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"]?.def != null ? `default (${settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"]?.def}s)` : "default"}
                                 className="col-span-3"
                             />
                         </div>
@@ -1007,12 +1030,15 @@ export default function SettingsPage() {
                                 id="instance_startup_timeout"
                                 value={instanceStartupTimeoutS}
                                 onChange={(e) => setInstanceStartupTimeoutS(e.target.value)}
-                                placeholder="default"
+                                placeholder={settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"]?.def != null ? `default (${settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"]?.def}s)` : "default"}
                                 className="col-span-3"
                             />
                         </div>
 
-                        <div className="text-xs text-muted-foreground">Range: 30..86400 seconds. Leave empty for default.</div>
+                        <div className="text-xs text-muted-foreground">
+                            Range (worker): {(settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"]?.min ?? 30)}..{(settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"]?.max ?? 86400)}s —{" "}
+                            Range (instance): {(settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"]?.min ?? 30)}..{(settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"]?.max ?? 86400)}s
+                        </div>
                     </div>
                     <DialogFooter>
                         <Button variant="outline" onClick={() => setProviderParamsEditOpen(false)}>

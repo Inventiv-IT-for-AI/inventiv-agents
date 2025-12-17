@@ -12,6 +12,17 @@ use uuid::Uuid;
 use crate::AppState;
 
 #[derive(Debug, Serialize, Deserialize, FromRow, utoipa::ToSchema)]
+pub struct SettingDefinitionRow {
+    pub key: String,
+    pub scope: String,
+    pub value_type: String,
+    pub min_int: Option<i64>,
+    pub max_int: Option<i64>,
+    pub default_int: Option<i64>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, FromRow, utoipa::ToSchema)]
 pub struct ProviderParamsRow {
     pub provider_id: Uuid,
     pub provider_name: String,
@@ -31,6 +42,27 @@ pub struct UpdateProviderParamsRequest {
 fn validate_timeout_s(v: i64) -> bool {
     // Keep sane bounds: 30s .. 24h
     v >= 30 && v <= 86_400
+}
+
+#[utoipa::path(
+    get,
+    path = "/settings/definitions",
+    tag = "Settings",
+    responses((status = 200, description = "Settings definitions catalog", body = Vec<SettingDefinitionRow>))
+)]
+pub async fn list_settings_definitions(State(state): State<Arc<AppState>>) -> Json<Vec<SettingDefinitionRow>> {
+    let rows = sqlx::query_as::<_, SettingDefinitionRow>(
+        r#"
+        SELECT key, scope, value_type, min_int, max_int, default_int, description
+        FROM settings_definitions
+        ORDER BY key
+        "#,
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    Json(rows)
 }
 
 #[utoipa::path(

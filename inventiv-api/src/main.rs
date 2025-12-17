@@ -137,6 +137,7 @@ async fn main() {
         .route("/providers", get(settings::list_providers).post(settings::create_provider))
         .route("/providers/search", get(settings::search_providers))
         .route("/providers/:id", axum::routing::put(settings::update_provider))
+        .route("/settings/definitions", get(provider_settings::list_settings_definitions))
         // Provider-scoped params
         .route("/providers/params", get(provider_settings::list_provider_params))
         .route("/providers/:id/params", axum::routing::put(provider_settings::update_provider_params))

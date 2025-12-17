@@ -89,6 +89,21 @@ ON CONFLICT (code) DO NOTHING;
 -- To be implemented
 
 -- ------------------------------------------------------------
+-- Settings definitions (provider-scoped)
+-- ------------------------------------------------------------
+INSERT INTO settings_definitions (key, scope, value_type, min_int, max_int, default_int, description)
+VALUES
+  ('WORKER_INSTANCE_STARTUP_TIMEOUT_S', 'provider', 'int', 30, 86400, 3600, 'BOOTING->STARTUP_FAILED timeout (worker targets): includes image pulls + model download/load.'),
+  ('INSTANCE_STARTUP_TIMEOUT_S',        'provider', 'int', 30, 86400,  300, 'BOOTING->STARTUP_FAILED timeout (non-worker targets).')
+ON CONFLICT (key) DO UPDATE SET
+  scope = EXCLUDED.scope,
+  value_type = EXCLUDED.value_type,
+  min_int = EXCLUDED.min_int,
+  max_int = EXCLUDED.max_int,
+  default_int = EXCLUDED.default_int,
+  description = EXCLUDED.description;
+
+-- ------------------------------------------------------------
 -- Models (LLM catalog) — curated defaults
 -- Notes:
 -- - `model_id` is the Hugging Face repository id (or local path) used by vLLM.
