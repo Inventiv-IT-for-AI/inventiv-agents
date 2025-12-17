@@ -357,7 +357,7 @@ export default function SettingsPage() {
         { id: "code", label: "Code", width: 160, cell: ({ row }) => <span className="font-mono text-xs">{row.code}</span> },
         {
             id: "p_worker_startup_timeout",
-            label: "WORKER_INSTANCE_STARTUP_TIMEOUT_S",
+            label: "Worker startup timeout",
             width: 260,
             defaultHidden: true,
             cell: ({ row }) => {
@@ -367,7 +367,7 @@ export default function SettingsPage() {
         },
         {
             id: "p_instance_startup_timeout",
-            label: "INSTANCE_STARTUP_TIMEOUT_S",
+            label: "Instance startup timeout",
             width: 220,
             defaultHidden: true,
             cell: ({ row }) => {
@@ -377,7 +377,7 @@ export default function SettingsPage() {
         },
         {
             id: "p_ssh_bootstrap_timeout",
-            label: "WORKER_SSH_BOOTSTRAP_TIMEOUT_S",
+            label: "SSH bootstrap timeout",
             width: 240,
             defaultHidden: true,
             cell: ({ row }) => {
@@ -400,7 +400,7 @@ export default function SettingsPage() {
         },
         {
             id: "p_expose_ports",
-            label: "WORKER_EXPOSE_PORTS",
+            label: "Expose ports",
             width: 190,
             defaultHidden: true,
             cell: ({ row }) => {
@@ -410,7 +410,7 @@ export default function SettingsPage() {
         },
         {
             id: "p_vllm_mode",
-            label: "WORKER_VLLM_MODE",
+            label: "vLLM mode",
             width: 170,
             defaultHidden: true,
             cell: ({ row }) => {
@@ -420,7 +420,7 @@ export default function SettingsPage() {
         },
         {
             id: "p_vllm_image",
-            label: "WORKER_VLLM_IMAGE",
+            label: "vLLM image",
             width: 260,
             defaultHidden: true,
             cellClassName: "truncate",
@@ -1174,7 +1174,7 @@ export default function SettingsPage() {
                     }
                 }}
             >
-                <DialogContent showCloseButton={false}>
+                <DialogContent showCloseButton={false} className="sm:max-w-[980px]">
                     <DialogHeader>
                         <DialogTitle>
                             {editingEntity ? "Modifier" : "Ajouter"}{" "}
@@ -1256,7 +1256,10 @@ export default function SettingsPage() {
                                 </div>
 
                                 <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label className="text-right">WORKER_INSTANCE_STARTUP_TIMEOUT_S</Label>
+                                    <Label className="text-right">
+                                        Worker startup timeout
+                                        <span className="block font-mono text-[10px] text-muted-foreground">WORKER_INSTANCE_STARTUP_TIMEOUT_S</span>
+                                    </Label>
                                     <Input
                                         value={formData.worker_instance_startup_timeout_s}
                                         onChange={(e) => setFormData({ ...formData, worker_instance_startup_timeout_s: e.target.value })}
@@ -1266,7 +1269,10 @@ export default function SettingsPage() {
                                 </div>
 
                                 <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label className="text-right">INSTANCE_STARTUP_TIMEOUT_S</Label>
+                                    <Label className="text-right">
+                                        Instance startup timeout
+                                        <span className="block font-mono text-[10px] text-muted-foreground">INSTANCE_STARTUP_TIMEOUT_S</span>
+                                    </Label>
                                     <Input
                                         value={formData.instance_startup_timeout_s}
                                         onChange={(e) => setFormData({ ...formData, instance_startup_timeout_s: e.target.value })}
@@ -1276,7 +1282,10 @@ export default function SettingsPage() {
                                 </div>
 
                                 <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label className="text-right">WORKER_SSH_BOOTSTRAP_TIMEOUT_S</Label>
+                                    <Label className="text-right">
+                                        SSH bootstrap timeout
+                                        <span className="block font-mono text-[10px] text-muted-foreground">WORKER_SSH_BOOTSTRAP_TIMEOUT_S</span>
+                                    </Label>
                                     <Input
                                         value={formData.worker_ssh_bootstrap_timeout_s}
                                         onChange={(e) => setFormData({ ...formData, worker_ssh_bootstrap_timeout_s: e.target.value })}
@@ -1286,7 +1295,10 @@ export default function SettingsPage() {
                                 </div>
 
                                 <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label className="text-right">WORKER_HEALTH_PORT</Label>
+                                    <Label className="text-right">
+                                        Health port
+                                        <span className="block font-mono text-[10px] text-muted-foreground">WORKER_HEALTH_PORT</span>
+                                    </Label>
                                     <Input
                                         value={formData.worker_health_port}
                                         onChange={(e) => setFormData({ ...formData, worker_health_port: e.target.value })}
@@ -1296,7 +1308,10 @@ export default function SettingsPage() {
                                 </div>
 
                                 <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label className="text-right">WORKER_VLLM_PORT</Label>
+                                    <Label className="text-right">
+                                        vLLM port
+                                        <span className="block font-mono text-[10px] text-muted-foreground">WORKER_VLLM_PORT</span>
+                                    </Label>
                                     <Input
                                         value={formData.worker_vllm_port}
                                         onChange={(e) => setFormData({ ...formData, worker_vllm_port: e.target.value })}
@@ -1306,7 +1321,10 @@ export default function SettingsPage() {
                                 </div>
 
                                 <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label className="text-right">WORKER_DATA_VOLUME_GB_DEFAULT</Label>
+                                    <Label className="text-right">
+                                        Default data volume (GB)
+                                        <span className="block font-mono text-[10px] text-muted-foreground">WORKER_DATA_VOLUME_GB_DEFAULT</span>
+                                    </Label>
                                     <Input
                                         value={formData.worker_data_volume_gb_default}
                                         onChange={(e) => setFormData({ ...formData, worker_data_volume_gb_default: e.target.value })}
@@ -1316,7 +1334,10 @@ export default function SettingsPage() {
                                 </div>
 
                                 <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label className="text-right">WORKER_EXPOSE_PORTS</Label>
+                                    <Label className="text-right">
+                                        Expose ports
+                                        <span className="block font-mono text-[10px] text-muted-foreground">WORKER_EXPOSE_PORTS</span>
+                                    </Label>
                                     <div className="col-span-3">
                                         <Select
                                             value={formData.worker_expose_ports}
@@ -1335,7 +1356,10 @@ export default function SettingsPage() {
                                 </div>
 
                                 <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label className="text-right">WORKER_VLLM_MODE</Label>
+                                    <Label className="text-right">
+                                        vLLM mode
+                                        <span className="block font-mono text-[10px] text-muted-foreground">WORKER_VLLM_MODE</span>
+                                    </Label>
                                     <div className="col-span-3">
                                         <Select
                                             value={formData.worker_vllm_mode}
@@ -1354,7 +1378,10 @@ export default function SettingsPage() {
                                 </div>
 
                                 <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label className="text-right">WORKER_VLLM_IMAGE</Label>
+                                    <Label className="text-right">
+                                        vLLM image
+                                        <span className="block font-mono text-[10px] text-muted-foreground">WORKER_VLLM_IMAGE</span>
+                                    </Label>
                                     <Input
                                         value={formData.worker_vllm_image}
                                         onChange={(e) => setFormData({ ...formData, worker_vllm_image: e.target.value })}
