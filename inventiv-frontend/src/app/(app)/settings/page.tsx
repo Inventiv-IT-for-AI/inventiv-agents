@@ -1258,7 +1258,9 @@ export default function SettingsPage() {
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label className="text-right">
                                         Worker startup timeout
-                                        <span className="block font-mono text-[10px] text-muted-foreground">WORKER_INSTANCE_STARTUP_TIMEOUT_S</span>
+                                        <span className="block text-xs text-muted-foreground">
+                                            {settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"]?.desc ?? "BOOTING→STARTUP_FAILED timeout for worker instances (includes image pulls + model download/load)."}
+                                        </span>
                                     </Label>
                                     <Input
                                         value={formData.worker_instance_startup_timeout_s}
@@ -1271,7 +1273,9 @@ export default function SettingsPage() {
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label className="text-right">
                                         Instance startup timeout
-                                        <span className="block font-mono text-[10px] text-muted-foreground">INSTANCE_STARTUP_TIMEOUT_S</span>
+                                        <span className="block text-xs text-muted-foreground">
+                                            {settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"]?.desc ?? "BOOTING→STARTUP_FAILED timeout for non-worker instances."}
+                                        </span>
                                     </Label>
                                     <Input
                                         value={formData.instance_startup_timeout_s}
@@ -1284,7 +1288,9 @@ export default function SettingsPage() {
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label className="text-right">
                                         SSH bootstrap timeout
-                                        <span className="block font-mono text-[10px] text-muted-foreground">WORKER_SSH_BOOTSTRAP_TIMEOUT_S</span>
+                                        <span className="block text-xs text-muted-foreground">
+                                            {settingsDefs["WORKER_SSH_BOOTSTRAP_TIMEOUT_S"]?.desc ?? "Max time allowed for SSH bootstrap script (docker install/pull/start)."}
+                                        </span>
                                     </Label>
                                     <Input
                                         value={formData.worker_ssh_bootstrap_timeout_s}
@@ -1297,7 +1303,9 @@ export default function SettingsPage() {
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label className="text-right">
                                         Health port
-                                        <span className="block font-mono text-[10px] text-muted-foreground">WORKER_HEALTH_PORT</span>
+                                        <span className="block text-xs text-muted-foreground">
+                                            {settingsDefs["WORKER_HEALTH_PORT"]?.desc ?? "Port used by worker agent for /healthz and /readyz."}
+                                        </span>
                                     </Label>
                                     <Input
                                         value={formData.worker_health_port}
@@ -1310,7 +1318,9 @@ export default function SettingsPage() {
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label className="text-right">
                                         vLLM port
-                                        <span className="block font-mono text-[10px] text-muted-foreground">WORKER_VLLM_PORT</span>
+                                        <span className="block text-xs text-muted-foreground">
+                                            {settingsDefs["WORKER_VLLM_PORT"]?.desc ?? "Port exposed by vLLM OpenAI-compatible server."}
+                                        </span>
                                     </Label>
                                     <Input
                                         value={formData.worker_vllm_port}
@@ -1323,7 +1333,9 @@ export default function SettingsPage() {
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label className="text-right">
                                         Default data volume (GB)
-                                        <span className="block font-mono text-[10px] text-muted-foreground">WORKER_DATA_VOLUME_GB_DEFAULT</span>
+                                        <span className="block text-xs text-muted-foreground">
+                                            {settingsDefs["WORKER_DATA_VOLUME_GB_DEFAULT"]?.desc ?? "Fallback data volume size when model has no explicit recommendation."}
+                                        </span>
                                     </Label>
                                     <Input
                                         value={formData.worker_data_volume_gb_default}
@@ -1336,7 +1348,9 @@ export default function SettingsPage() {
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label className="text-right">
                                         Expose ports
-                                        <span className="block font-mono text-[10px] text-muted-foreground">WORKER_EXPOSE_PORTS</span>
+                                        <span className="block text-xs text-muted-foreground">
+                                            {settingsDefs["WORKER_EXPOSE_PORTS"]?.desc ?? "Whether provider security groups open inbound ports to reach vLLM/health endpoints (dev convenience)."}
+                                        </span>
                                     </Label>
                                     <div className="col-span-3">
                                         <Select
@@ -1358,7 +1372,9 @@ export default function SettingsPage() {
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label className="text-right">
                                         vLLM mode
-                                        <span className="block font-mono text-[10px] text-muted-foreground">WORKER_VLLM_MODE</span>
+                                        <span className="block text-xs text-muted-foreground">
+                                            {settingsDefs["WORKER_VLLM_MODE"]?.desc ?? "mono = 1 vLLM for all GPUs; multi = 1 vLLM per GPU behind local HAProxy."}
+                                        </span>
                                     </Label>
                                     <div className="col-span-3">
                                         <Select
@@ -1380,7 +1396,9 @@ export default function SettingsPage() {
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label className="text-right">
                                         vLLM image
-                                        <span className="block font-mono text-[10px] text-muted-foreground">WORKER_VLLM_IMAGE</span>
+                                        <span className="block text-xs text-muted-foreground">
+                                            {settingsDefs["WORKER_VLLM_IMAGE"]?.desc ?? "Docker image used to start vLLM on the worker."}
+                                        </span>
                                     </Label>
                                     <Input
                                         value={formData.worker_vllm_image}
