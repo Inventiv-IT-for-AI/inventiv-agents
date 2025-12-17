@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Plus, RefreshCcw } from "lucide-react";
@@ -15,20 +15,22 @@ import { TerminateInstanceModal } from "@/components/instances/TerminateInstance
 import { ReinstallInstanceModal } from "@/components/instances/ReinstallInstanceModal";
 import { Server, Activity, AlertCircle, RefreshCcw as RefreshIcon } from "lucide-react";
 import { InstanceTable } from "@/components/instances/InstanceTable";
-import { InstanceDetailsModal } from "@/components/instances/InstanceDetailsModal";
+import { InstanceTimelineModal } from "@/components/instances/InstanceTimelineModal";
 
 export default function InstancesPage() {
     useRealtimeEvents();
     const { instances, refreshInstances } = useInstances();
     const catalog = useCatalog();
 
+    const [refreshSeq, setRefreshSeq] = useState(0);
+
     const [isCreateOpen, setIsCreateOpen] = useState(false);
     const [isTerminateOpen, setIsTerminateOpen] = useState(false);
     const [instanceToTerminate, setInstanceToTerminate] = useState<string | null>(null);
     const [isReinstallOpen, setIsReinstallOpen] = useState(false);
     const [instanceToReinstall, setInstanceToReinstall] = useState<string | null>(null);
-    const [isDetailsOpen, setIsDetailsOpen] = useState(false);
-    const [selectedInstance, setSelectedInstance] = useState<Instance | null>(null);
+    const [isTimelineOpen, setIsTimelineOpen] = useState(false);
+    const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(null);
 
     const openCreateModal = async () => {
         await catalog.fetchCatalog();
@@ -59,10 +61,16 @@ export default function InstancesPage() {
         setIsReinstallOpen(true);
     };
 
-    const openDetailsModal = (instance: Instance) => {
-        setSelectedInstance(instance);
-        setIsDetailsOpen(true);
+    const openTimelineModal = (instance: Instance) => {
+        setSelectedInstanceId(instance.id);
+        setIsTimelineOpen(true);
     };
+
+    useEffect(() => {
+        const handler = () => setRefreshSeq((v) => v + 1);
+        window.addEventListener("refresh-instances", handler);
+        return () => window.removeEventListener("refresh-instances", handler);
+    }, []);
 
     // Calculate stats
     const stats = {
@@ -85,7 +93,14 @@ export default function InstancesPage() {
                     <p className="text-muted-foreground">Manage your GPU infrastructure</p>
                 </div>
                 <div className="flex space-x-2">
-                    <Button variant="outline" size="icon" onClick={refreshInstances}>
+                    <Button
+                        variant="outline"
+                        size="icon"
+                        onClick={() => {
+                            refreshInstances();
+                            setRefreshSeq((v) => v + 1);
+                        }}
+                    >
                         <RefreshCcw className="h-4 w-4" />
                     </Button>
                     <Button onClick={openCreateModal}>
@@ -127,11 +142,11 @@ export default function InstancesPage() {
             <Card>
                 <CardContent>
                     <InstanceTable
-                        instances={instances}
-                        onViewDetails={openDetailsModal}
+                        onViewDetails={openTimelineModal}
                         onTerminate={openTerminateModal}
                         onReinstall={openReinstallModal}
                         onArchive={handleArchive}
+                        refreshKey={String(refreshSeq)}
                     />
                 </CardContent>
             </Card>
@@ -168,11 +183,14 @@ export default function InstancesPage() {
                 onSuccess={refreshInstances}
             />
 
-            <InstanceDetailsModal
-                open={isDetailsOpen}
-                onClose={() => setIsDetailsOpen(false)}
-                instance={selectedInstance}
-            />
+            {/* Instance Actions / Timeline Modal */}
+            {selectedInstanceId ? (
+                <InstanceTimelineModal
+                    open={isTimelineOpen}
+                    onClose={() => setIsTimelineOpen(false)}
+                    instanceId={selectedInstanceId}
+                />
+            ) : null}
         </div>
     );
 }

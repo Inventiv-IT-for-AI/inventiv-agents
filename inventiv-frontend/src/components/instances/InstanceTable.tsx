@@ -7,32 +7,73 @@ import { Eye, Archive, Wrench } from "lucide-react";
 import { CopyButton } from "@/components/shared/CopyButton";
 import type { Instance } from "@/lib/types";
 import { displayOrDash, formatEur } from "@/lib/utils";
-import { InventivDataTable, type InventivDataTableColumn } from "@/components/shared/InventivDataTable";
-import { useMemo } from "react";
+import { apiUrl } from "@/lib/api";
+import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
+import { InventivDataTable, type DataTableSortState, type InventivDataTableColumn } from "@/components/shared/InventivDataTable";
+import { useCallback, useMemo, useState } from "react";
 type InstanceTableProps = {
-  instances: Instance[];
   onViewDetails: (instance: Instance) => void;
   onTerminate: (id: string) => void;
   onReinstall: (id: string) => void;
   onArchive: (id: string) => void;
+  refreshKey?: string;
 };
 
 export function InstanceTable({
-  instances,
   onViewDetails,
   onTerminate,
   onReinstall,
   onArchive,
+  refreshKey,
 }: InstanceTableProps) {
-  
+  const [sort, setSort] = useState<DataTableSortState>(null);
+
+  type InstancesSearchResponse = {
+    offset: number;
+    limit: number;
+    total_count: number;
+    filtered_count: number;
+    rows: Instance[];
+  };
+
+  const loadRange = useCallback(
+    async (offset: number, limit: number): Promise<LoadRangeResult<Instance>> => {
+      const params = new URLSearchParams();
+      params.set("archived", "false");
+      params.set("offset", String(offset));
+      params.set("limit", String(limit));
+      if (sort) {
+        const by = (
+          {
+            provider: "provider",
+            region: "region",
+            zone: "zone",
+            type: "type",
+            cost: "total_cost",
+            status: "status",
+            created: "created_at",
+          } as Record<string, string>
+        )[sort.columnId];
+        if (by) {
+          params.set("sort_by", by);
+          params.set("sort_dir", sort.direction);
+        }
+      }
+      const res = await fetch(apiUrl(`instances/search?${params.toString()}`));
+      if (!res.ok) throw new Error(`instances/search failed (${res.status})`);
+      const data = (await res.json()) as InstancesSearchResponse;
+      return { offset: data.offset, items: data.rows, totalCount: data.total_count, filteredCount: data.filtered_count };
+    },
+    [sort]
+  );
+
   const columns = useMemo<InventivDataTableColumn<Instance>[]>(() => {
     return [
       {
         id: "id",
         label: "ID",
         width: 140,
-        sortable: true,
-        getSortValue: (r) => r.id,
+        sortable: false,
         cell: ({ row }) => (
           <span className="font-mono text-xs">{row.id.split("-")[0]}...</span>
         ),
@@ -42,7 +83,6 @@ export function InstanceTable({
         label: "Provider",
         width: 140,
         sortable: true,
-        getSortValue: (r) => r.provider_name ?? "",
         cell: ({ row }) => displayOrDash(row.provider_name),
       },
       {
@@ -50,7 +90,6 @@ export function InstanceTable({
         label: "Region",
         width: 160,
         sortable: true,
-        getSortValue: (r) => r.region ?? "",
         cell: ({ row }) => displayOrDash(row.region),
       },
       {
@@ -58,7 +97,6 @@ export function InstanceTable({
         label: "Zone",
         width: 140,
         sortable: true,
-        getSortValue: (r) => r.zone ?? "",
         cell: ({ row }) => displayOrDash(row.zone),
       },
       {
@@ -66,7 +104,6 @@ export function InstanceTable({
         label: "Type",
         width: 220,
         sortable: true,
-        getSortValue: (r) => r.instance_type ?? "",
         cell: ({ row }) => displayOrDash(row.instance_type),
       },
       {
@@ -75,7 +112,6 @@ export function InstanceTable({
         width: 120,
         align: "right",
         sortable: true,
-        getSortValue: (r) => (typeof r.total_cost === "number" ? r.total_cost : null),
         cell: ({ row }) => (
           <span className="font-mono">
             {typeof row.total_cost === "number" ? formatEur(row.total_cost, { minFrac: 4, maxFrac: 4 }) : "-"}
@@ -87,7 +123,6 @@ export function InstanceTable({
         label: "Status",
         width: 140,
         sortable: true,
-        getSortValue: (r) => r.status ?? "",
         cell: ({ row }) => (
           <Badge
             variant={
@@ -107,7 +142,6 @@ export function InstanceTable({
         label: "Created",
         width: 170,
         sortable: true,
-        getSortValue: (r) => new Date(r.created_at),
         cell: ({ row }) => (
           <span className="whitespace-nowrap text-muted-foreground">
             {formatDistanceToNow(parseISO(row.created_at), { addSuffix: true })}
@@ -118,8 +152,7 @@ export function InstanceTable({
         id: "ip",
         label: "IP Address",
         width: 200,
-        sortable: true,
-        getSortValue: (r) => r.ip_address ?? "",
+        sortable: false,
         cell: ({ row }) =>
           row.ip_address ? (
             <div className="flex items-center gap-1 font-mono text-sm">
@@ -146,7 +179,7 @@ export function InstanceTable({
                 e.stopPropagation();
                 onViewDetails(row);
               }}
-              title="Voir détails"
+              title="Voir actions"
             >
               <Eye className="h-4 w-4" />
             </Button>
@@ -199,12 +232,15 @@ export function InstanceTable({
     <InventivDataTable<Instance>
       listId="instances:table"
       title="Instances"
+      dataKey={JSON.stringify({ refreshKey, sort })}
       autoHeight={true}
       height={300}
       rowHeight={56}
       columns={columns}
-      rows={instances}
-      getRowKey={(r) => r.id}
+      loadRange={loadRange}
+      sortState={sort}
+      onSortChange={setSort}
+      sortingMode="server"
       onRowClick={onViewDetails}
     />
   );
