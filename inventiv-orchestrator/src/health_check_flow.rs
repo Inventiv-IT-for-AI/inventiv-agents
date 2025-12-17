@@ -266,24 +266,57 @@ async fn maybe_trigger_worker_install_over_ssh(db: &Pool<Postgres>, instance_id:
     let clean_ip = ip.split('/').next().unwrap_or(ip);
     let target = format!("{}@{}", ssh_user, clean_ip);
 
-    // Basic throttle: avoid spamming the same instance with SSH installs.
-    let recent_install: bool = sqlx::query_scalar(
+    // De-dupe / backoff: don't re-run SSH bootstrap in a tight loop.
+    // If the last install succeeded recently, it's more likely we should just wait for model load/readiness.
+    #[derive(sqlx::FromRow)]
+    struct LastSshInstall {
+        status: String,
+        created_at: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>,
+        completed_at: Option<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>>,
+        last_phase: Option<String>,
+    }
+
+    let last: Option<LastSshInstall> = sqlx::query_as(
         r#"
-        SELECT EXISTS(
-          SELECT 1
-          FROM action_logs
-          WHERE instance_id = $1
-            AND action_type = 'WORKER_SSH_INSTALL'
-            AND created_at > NOW() - INTERVAL '2 minutes'
-        )
+        SELECT
+          status::text as status,
+          created_at,
+          completed_at,
+          (metadata->>'last_phase') as last_phase
+        FROM action_logs
+        WHERE instance_id = $1
+          AND action_type = 'WORKER_SSH_INSTALL'
+        ORDER BY created_at DESC
+        LIMIT 1
         "#,
     )
     .bind(instance_id)
-    .fetch_one(db)
+    .fetch_optional(db)
     .await
-    .unwrap_or(false);
-    if recent_install {
-        return;
+    .ok()
+    .flatten();
+
+    if let Some(last) = last {
+        let now = sqlx::types::chrono::Utc::now();
+        let age_s = (now - last.created_at).num_seconds();
+        let status = last.status.trim().to_ascii_lowercase();
+        let last_phase = last.last_phase.unwrap_or_default();
+
+        // If an install is still in progress, don't start another one.
+        if status == "in_progress" {
+            return;
+        }
+
+        // If we just completed a successful install, wait longer (model load can take a while).
+        // This avoids repeatedly restarting vLLM/agent and never reaching READY.
+        if status == "success" && last_phase == "done" && age_s < 30 * 60 {
+            return;
+        }
+
+        // If it failed recently, apply a short backoff before retrying.
+        if status == "failed" && age_s < 5 * 60 {
+            return;
+        }
     }
 
     let mut meta = serde_json::json!({
@@ -752,7 +785,18 @@ pub async fn check_and_transition_instance(
             .unwrap_or(false);
 
     // Timeout: workers can take longer (image pulls + model downloads).
-    let timeout_secs: i64 = if expect_worker { 1200 } else { 300 };
+    // Make it configurable because some models (e.g. 20B+) can exceed 20 minutes on first pull/load.
+    let timeout_secs: i64 = if expect_worker {
+        std::env::var("WORKER_INSTANCE_STARTUP_TIMEOUT_S")
+            .ok()
+            .and_then(|s| s.trim().parse::<i64>().ok())
+            .unwrap_or(3600)
+    } else {
+        std::env::var("INSTANCE_STARTUP_TIMEOUT_S")
+            .ok()
+            .and_then(|s| s.trim().parse::<i64>().ok())
+            .unwrap_or(300)
+    };
 
     // Timeout after N seconds
     let age = sqlx::types::chrono::Utc::now() - created_at;
