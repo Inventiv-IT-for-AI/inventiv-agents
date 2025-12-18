@@ -2,65 +2,46 @@
 
 ## ✅ État actuel (repo)
 
-Le frontend utilise un **proxy same-origin** via **`/api/backend/*`** (route handlers Next.js) + le helper **`apiUrl()`** (dans `inventiv-frontend/src/lib/api.ts`).
+Le frontend supporte 2 modes :
 
-- **Côté navigateur**: l’UI appelle toujours `GET/POST /api/backend/...` (même origin), ce qui facilite **les cookies de session**.
-- **Côté serveur** (SSR / route handlers): la cible upstream est déterminée par:
-  - `API_INTERNAL_URL` (prioritaire, utile en Docker/edge: ex `http://api:8003`)
-  - sinon `NEXT_PUBLIC_API_URL` (ex `http://localhost:8003` en dev)
+1) **Recommandé (UI dans Docker, UI-only exposée)**  
+Le navigateur parle uniquement à l’UI (port 3000 + offset). Les appels backend passent en **same-origin** via `/api/backend/*` (routes Next.js) qui proxy côté serveur vers `API_INTERNAL_URL=http://api:8003` (réseau Docker).
+
+2) **UI sur le host (debug)**  
+Le navigateur appelle directement l’API via `NEXT_PUBLIC_API_URL` (il faut alors exposer l’API sur le host, ex: `make api-expose`).
 
 ## Configuration
 
-### 1. Créer `/inventiv-frontend/.env.local`
+### Mode recommandé: UI dans Docker
+
+- Démarrage:
 
 ```bash
-# Backend API URL
-NEXT_PUBLIC_API_URL=http://localhost:8003
+make up
+make ui
 ```
 
-> En local, `make ui` crée automatiquement ce fichier si absent.
+- Par défaut, l’API n’est **pas** exposée sur le host.
 
-### 2. Helper `apiUrl()`
+### Mode host: UI sur le host (debug)
 
-Déjà implémenté dans `inventiv-frontend/src/lib/api.ts`.
+- Exposer l’API en loopback:
 
-### 3. Proxy `/api/backend/*`
-
-Les appels UI passent par:
-
-- `inventiv-frontend/src/app/api/backend/route.ts`
-- `inventiv-frontend/src/app/api/backend/[...path]/route.ts`
-
-Ces route handlers proxient la requête vers `API_INTERNAL_URL`/`NEXT_PUBLIC_API_URL` et propagent les cookies.
-
-### 3. Endroits typiques à vérifier
-
-- Dashboard: `inventiv-frontend/src/app/(app)/(dashboard)/page.tsx`
-- Instances: `inventiv-frontend/src/app/(app)/instances/page.tsx` + `inventiv-frontend/src/components/instances/*`
-- Monitoring: `inventiv-frontend/src/app/(app)/monitoring/page.tsx`
-- Traces: `inventiv-frontend/src/app/(app)/traces/page.tsx`
-- Settings: `inventiv-frontend/src/app/(app)/settings/page.tsx`
-- Login: `inventiv-frontend/src/app/(auth)/login/page.tsx`
-
-### 4. Configuration par environnement
-
-#### Développement local
-`.env.local` (gitignored)
 ```bash
-NEXT_PUBLIC_API_URL=http://localhost:8003
+make api-expose
 ```
 
-#### Staging
-Exemple `.env.staging` (si tu buildes le frontend hors Docker avec un backend distant):
+- Puis créer `inventiv-frontend/.env.local` :
+
 ```bash
-NEXT_PUBLIC_API_URL=https://api-staging.yourdomain.com
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8003
 ```
 
-#### Production
-Exemple `.env.production` (frontend buildé/déployé séparément):
-```bash
-NEXT_PUBLIC_API_URL=https://api.yourdomain.com
-```
+> Note: si tu utilises `PORT_OFFSET`, l’API exposée devient `8003 + PORT_OFFSET` (ex: `18003`).
+
+### Helper `apiUrl()`
+
+Le helper `apiUrl()` est centralisé dans `inventiv-frontend/src/lib/api.ts` pour éviter les URLs hardcodées.
 
 ## 🎯 Bénéfices
 

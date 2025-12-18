@@ -1,30 +1,30 @@
+use axum::http::{HeaderMap, StatusCode};
 use axum::{
-    extract::{State, ConnectInfo},
+    extract::{ConnectInfo, State},
     response::{IntoResponse, Json},
     routing::{get, post},
     Router,
 };
-use axum::http::{HeaderMap, StatusCode};
+use serde::Deserialize;
 use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use serde::Deserialize;
 use uuid::Uuid;
+mod finops_events;
+mod health_check_job;
+mod logger;
+mod models;
 mod provider;
 mod provider_manager; // NEW
 mod providers; // NEW
-mod models;
-mod logger;
-mod health_check_job;
-mod terminator_job;
-mod watch_dog_job;
 mod provisioning_job;
 mod services; // NEW
-mod finops_events;
-use tokio::time::{sleep, Duration};
+mod terminator_job;
+mod watch_dog_job;
+mod worker_storage;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres};
-
+use tokio::time::{sleep, Duration};
 
 struct AppState {
     db: Pool<Postgres>,
@@ -71,7 +71,12 @@ fn extract_bearer(headers: &HeaderMap) -> Option<String> {
 fn request_client_ip(headers: &HeaderMap, connect: &SocketAddr) -> String {
     // Prefer X-Forwarded-For (edge/proxy), fallback to socket addr (direct).
     if let Some(xff) = headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()) {
-        if let Some(first) = xff.split(',').next().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Some(first) = xff
+            .split(',')
+            .next()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
             return first.to_string();
         }
     }
@@ -98,20 +103,18 @@ async fn verify_worker_token_db(db: &Pool<Postgres>, instance_id: Uuid, token: &
     .unwrap_or(false);
 
     if ok {
-        let _ = sqlx::query("UPDATE worker_auth_tokens SET last_seen_at = NOW() WHERE instance_id = $1")
-            .bind(instance_id)
-            .execute(db)
-            .await;
+        let _ = sqlx::query(
+            "UPDATE worker_auth_tokens SET last_seen_at = NOW() WHERE instance_id = $1",
+        )
+        .bind(instance_id)
+        .execute(db)
+        .await;
     }
 
     ok
 }
 
-async fn verify_worker_auth(
-    db: &Pool<Postgres>,
-    headers: &HeaderMap,
-    instance_id: Uuid,
-) -> bool {
+async fn verify_worker_auth(db: &Pool<Postgres>, headers: &HeaderMap, instance_id: Uuid) -> bool {
     // Backward-compat: allow a global token (useful for early bringup).
     let expected = std::env::var("WORKER_AUTH_TOKEN").unwrap_or_default();
     if !expected.trim().is_empty() {
@@ -218,9 +221,9 @@ struct CommandProvision {
     correlation_id: Option<String>,
 }
 
+mod health_check_flow;
 mod migrations; // NEW
 mod state_machine;
-mod health_check_flow;
 
 #[tokio::main]
 async fn main() {
@@ -229,7 +232,7 @@ async fn main() {
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let redis_url = std::env::var("REDIS_URL").expect("REDIS_URL must be set");
     let redis_client = redis::Client::open(redis_url.clone()).unwrap();
-    
+
     // Connect to Postgres
     let pool = PgPoolOptions::new()
         .max_connections(5)
@@ -260,8 +263,6 @@ async fn main() {
         services::process_catalog_sync(db_catalog).await;
     });
 
-
-
     // 3. Start Scaling Engine Loop (Background Task)
     let state_clone = state.clone();
     tokio::spawn(async move {
@@ -278,7 +279,7 @@ async fn main() {
     tokio::spawn(async move {
         use futures_util::StreamExt;
         let mut stream = pubsub.on_message();
-        
+
         while let Some(msg) = stream.next().await {
             let payload: String = msg.get_payload().unwrap();
             println!("📩 Received Event: {}", payload);
@@ -288,20 +289,56 @@ async fn main() {
 
                 match event_type {
                     "CMD:PROVISION" => {
-                        if let Ok(cmd) = serde_json::from_value::<CommandProvision>(event_json.clone()) {
+                        if let Ok(cmd) =
+                            serde_json::from_value::<CommandProvision>(event_json.clone())
+                        {
                             let pool = state_redis.db.clone();
                             let redis_client = state_redis.redis_client.clone();
                             tokio::spawn(async move {
-                                services::process_provisioning(pool, redis_client, cmd.instance_id, cmd.zone, cmd.instance_type, cmd.correlation_id).await;
+                                services::process_provisioning(
+                                    pool,
+                                    redis_client,
+                                    cmd.instance_id,
+                                    cmd.zone,
+                                    cmd.instance_type,
+                                    cmd.correlation_id,
+                                )
+                                .await;
                             });
                         }
                     }
                     "CMD:TERMINATE" => {
-                        if let Ok(cmd) = serde_json::from_value::<CommandTerminate>(event_json.clone()) {
+                        if let Ok(cmd) =
+                            serde_json::from_value::<CommandTerminate>(event_json.clone())
+                        {
                             let pool = state_redis.db.clone();
                             let redis_client = state_redis.redis_client.clone();
                             tokio::spawn(async move {
-                                services::process_termination(pool, redis_client, cmd.instance_id, cmd.correlation_id).await;
+                                services::process_termination(
+                                    pool,
+                                    redis_client,
+                                    cmd.instance_id,
+                                    cmd.correlation_id,
+                                )
+                                .await;
+                            });
+                        }
+                    }
+                    "CMD:REINSTALL" => {
+                        if let Ok(cmd) =
+                            serde_json::from_value::<CommandReinstall>(event_json.clone())
+                        {
+                            println!("📥 Received Reinstall Command");
+                            let pool = state_redis.db.clone();
+                            let redis_client = state_redis.redis_client.clone();
+                            tokio::spawn(async move {
+                                services::process_reinstall(
+                                    pool,
+                                    redis_client,
+                                    cmd.instance_id,
+                                    cmd.correlation_id,
+                                )
+                                .await;
                             });
                         }
                     }
@@ -313,11 +350,11 @@ async fn main() {
                         });
                     }
                     "CMD:RECONCILE" => {
-                         println!("📥 Received Manual Reconciliation Command");
-                         let pool = state_redis.db.clone();
-                         tokio::spawn(async move {
-                             services::process_full_reconciliation(pool).await;
-                         });
+                        println!("📥 Received Manual Reconciliation Command");
+                        let pool = state_redis.db.clone();
+                        tokio::spawn(async move {
+                            services::process_full_reconciliation(pool).await;
+                        });
                     }
                     _ => eprintln!("⚠️  Unknown event type: {}", event_type),
                 }
@@ -328,21 +365,29 @@ async fn main() {
     // job-watch-dog (READY)
     let pool_watchdog = state.db.clone();
     let redis_watchdog = state.redis_client.clone();
-    tokio::spawn(async move { watch_dog_job::run(pool_watchdog, redis_watchdog).await; });
+    tokio::spawn(async move {
+        watch_dog_job::run(pool_watchdog, redis_watchdog).await;
+    });
 
     // job-terminator (TERMINATING)
     let pool_terminator = state.db.clone();
     let redis_terminator = state.redis_client.clone();
-    tokio::spawn(async move { terminator_job::run(pool_terminator, redis_terminator).await; });
+    tokio::spawn(async move {
+        terminator_job::run(pool_terminator, redis_terminator).await;
+    });
 
     // job-health-check (BOOTING)
     let db_health = state.db.clone();
-    tokio::spawn(async move { health_check_job::run(db_health).await; });
+    tokio::spawn(async move {
+        health_check_job::run(db_health).await;
+    });
 
     // job-provisioning (requeue PROVISIONING when pubsub events were missed)
     let db_prov = state.db.clone();
     let redis_prov = state.redis_client.clone();
-    tokio::spawn(async move { provisioning_job::run(db_prov, redis_prov).await; });
+    tokio::spawn(async move {
+        provisioning_job::run(db_prov, redis_prov).await;
+    });
 
     // 5. Start HTTP Server (Admin API - Simplified for internal health/debug only)
     let app = Router::new()
@@ -358,9 +403,12 @@ async fn main() {
     let addr = SocketAddr::from(([0, 0, 0, 0], 8001));
     println!("Orchestrator listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .await
-        .unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }
 
 async fn root() -> &'static str {
@@ -373,18 +421,26 @@ struct CommandTerminate {
     correlation_id: Option<String>,
 }
 
+#[derive(serde::Deserialize, Debug)]
+struct CommandReinstall {
+    instance_id: String,
+    correlation_id: Option<String>,
+}
+
 // DELETED HANDLERS (Moved to services.rs)
 
 async fn get_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM instances WHERE status != 'terminated'")
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or(0);
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM instances WHERE status != 'terminated'")
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or(0);
 
     Json(json!({
         "cloud_instances_count": count,
         "message": "Full details available via GET /instances"
-    })).into_response()
+    }))
+    .into_response()
 }
 
 async fn worker_register(
@@ -401,11 +457,22 @@ async fn worker_register(
     let authed = verify_worker_auth(&state.db, &headers, payload.instance_id).await;
     let mut issued_token: Option<(String, String)> = None;
     if !authed {
-        let can_bootstrap = instance_bootstrap_allowed(&state.db, payload.instance_id, &client_ip).await;
+        let can_bootstrap =
+            instance_bootstrap_allowed(&state.db, payload.instance_id, &client_ip).await;
         if !can_bootstrap {
-            return (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized"}))).into_response();
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "unauthorized"})),
+            )
+                .into_response();
         }
-        issued_token = issue_worker_token(&state.db, payload.instance_id, payload.worker_id, payload.metadata.clone()).await;
+        issued_token = issue_worker_token(
+            &state.db,
+            payload.instance_id,
+            payload.worker_id,
+            payload.metadata.clone(),
+        )
+        .await;
         if issued_token.is_none() {
             return (
                 StatusCode::CONFLICT,
@@ -452,7 +519,11 @@ async fn worker_register(
                 (StatusCode::OK, Json(json!({"status": "ok"}))).into_response()
             }
         }
-        Ok(_) => (StatusCode::NOT_FOUND, Json(json!({"error": "instance_not_found"}))).into_response(),
+        Ok(_) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "instance_not_found"})),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": "db_error", "message": e.to_string()})),
@@ -467,7 +538,11 @@ async fn worker_heartbeat(
     Json(payload): Json<WorkerHeartbeatRequest>,
 ) -> impl IntoResponse {
     if !verify_worker_auth(&state.db, &headers, payload.instance_id).await {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "unauthorized"})),
+        )
+            .into_response();
     }
 
     let status = payload.status.to_ascii_lowercase();
@@ -475,6 +550,9 @@ async fn worker_heartbeat(
         "💓 worker_heartbeat: instance_id={} status={} model_id={:?} gpu_util={:?}",
         payload.instance_id, status, payload.model_id, payload.gpu_utilization
     );
+
+    // We'll need metadata both for persistence on the instance row and for time-series sampling.
+    let meta_clone = payload.metadata.clone();
 
     let res = sqlx::query(
         r#"
@@ -493,13 +571,85 @@ async fn worker_heartbeat(
     .bind(payload.model_id)
     .bind(payload.queue_depth)
     .bind(payload.gpu_utilization)
-    .bind(payload.metadata)
+    .bind(meta_clone.clone())
     .execute(&state.db)
     .await;
 
+    // Insert time series GPU samples (nvtop-like dashboard).
+    // Prefer per-GPU list in metadata.gpus, fallback to aggregate fields.
+    // Best-effort only: do not fail heartbeat on metrics insert.
+    if let Some(meta) = meta_clone.as_ref() {
+        if let Some(gpus) = meta.get("gpus").and_then(|v| v.as_array()) {
+            for g in gpus {
+                let idx = g.get("index").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                let util = g.get("gpu_utilization").and_then(|v| v.as_f64());
+                let used = g.get("gpu_mem_used_mb").and_then(|v| v.as_f64());
+                let total = g.get("gpu_mem_total_mb").and_then(|v| v.as_f64());
+                let temp = g.get("gpu_temp_c").and_then(|v| v.as_f64());
+                let power = g.get("gpu_power_w").and_then(|v| v.as_f64());
+                let power_limit = g.get("gpu_power_limit_w").and_then(|v| v.as_f64());
+                let _ = sqlx::query(
+                    r#"
+                    INSERT INTO gpu_samples (instance_id, gpu_index, gpu_utilization, vram_used_mb, vram_total_mb, temp_c, power_w, power_limit_w)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    "#,
+                )
+                .bind(payload.instance_id)
+                .bind(idx)
+                .bind(util)
+                .bind(used)
+                .bind(total)
+                .bind(temp)
+                .bind(power)
+                .bind(power_limit)
+                .execute(&state.db)
+                .await;
+            }
+        } else {
+            // Fallback aggregate
+            let total = meta.get("gpu_mem_total_mb").and_then(|v| v.as_f64());
+            let temp = meta.get("gpu_temp_c").and_then(|v| v.as_f64());
+            let power = meta.get("gpu_power_w").and_then(|v| v.as_f64());
+            let power_limit = meta.get("gpu_power_limit_w").and_then(|v| v.as_f64());
+            let _ = sqlx::query(
+                r#"
+                INSERT INTO gpu_samples (instance_id, gpu_index, gpu_utilization, vram_used_mb, vram_total_mb, temp_c, power_w, power_limit_w)
+                VALUES ($1, 0, $2, $3, $4, $5, $6, $7)
+                "#,
+            )
+            .bind(payload.instance_id)
+            .bind(payload.gpu_utilization)
+            .bind(payload.gpu_mem_used_mb)
+            .bind(total)
+            .bind(temp)
+            .bind(power)
+            .bind(power_limit)
+            .execute(&state.db)
+            .await;
+        }
+    } else {
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO gpu_samples (instance_id, gpu_index, gpu_utilization, vram_used_mb, vram_total_mb, temp_c, power_w, power_limit_w)
+            VALUES ($1, 0, $2, $3, NULL, NULL, NULL, NULL)
+            "#,
+        )
+        .bind(payload.instance_id)
+        .bind(payload.gpu_utilization)
+        .bind(payload.gpu_mem_used_mb)
+        .execute(&state.db)
+        .await;
+    }
+
     match res {
-        Ok(r) if r.rows_affected() > 0 => (StatusCode::OK, Json(json!({"status": "ok"}))).into_response(),
-        Ok(_) => (StatusCode::NOT_FOUND, Json(json!({"error": "instance_not_found"}))).into_response(),
+        Ok(r) if r.rows_affected() > 0 => {
+            (StatusCode::OK, Json(json!({"status": "ok"}))).into_response()
+        }
+        Ok(_) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "instance_not_found"})),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": "db_error", "message": e.to_string()})),
@@ -519,5 +669,3 @@ async fn scaling_engine_loop(state: Arc<AppState>) {
         println!("Scaler Heartbeat: {} total instances managed.", count);
     }
 }
-
-

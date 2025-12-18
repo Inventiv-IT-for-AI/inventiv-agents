@@ -6,6 +6,9 @@ export type Instance = {
     id: string;
     provider_id: string;
     provider_name: string;
+    model_id?: string | null;
+    model_name?: string | null;
+    model_code?: string | null;
     zone: string;
     region: string;
     instance_type: string;
@@ -32,6 +35,34 @@ export type Provider = {
     code: string;
     description?: string | null;
     is_active?: boolean;
+};
+
+// -----------------------------
+// Provider-scoped parameters
+// -----------------------------
+
+export type ProviderParams = {
+    provider_id: string;
+    provider_name: string;
+    provider_code: string;
+    worker_instance_startup_timeout_s?: number | null;
+    instance_startup_timeout_s?: number | null;
+    worker_ssh_bootstrap_timeout_s?: number | null;
+    worker_health_port?: number | null;
+    worker_vllm_port?: number | null;
+    worker_data_volume_gb_default?: number | null;
+    worker_expose_ports?: boolean | null;
+    worker_vllm_mode?: string | null;
+    worker_vllm_image?: string | null;
+};
+
+export type GlobalSetting = {
+    key: string;
+    value_type: string;
+    value_int?: number | null;
+    value_bool?: boolean | null;
+    value_text?: string | null;
+    value_json?: Record<string, unknown> | null;
 };
 
 export type Region = {
@@ -69,6 +100,79 @@ export type InstanceType = {
     cpu_count?: number;
     ram_gb?: number;
     bandwidth_bps?: number;
+};
+
+// -----------------------------
+// Models (LLM catalog)
+// -----------------------------
+
+export type LlmModel = {
+    id: string;
+    name: string;
+    model_id: string; // HF repo id (or local path)
+    required_vram_gb: number;
+    context_length: number;
+    is_active: boolean;
+    data_volume_gb?: number | null;
+    metadata?: Record<string, unknown> | null;
+    created_at: string;
+    updated_at: string;
+};
+
+// -----------------------------
+// API Keys (OpenAI clients)
+// -----------------------------
+
+export type ApiKey = {
+    id: string;
+    name: string;
+    key_prefix: string;
+    created_at: string;
+    last_used_at?: string | null;
+    revoked_at?: string | null;
+};
+
+// -----------------------------
+// Runtime Models (in service / seen on workers)
+// -----------------------------
+
+export type RuntimeModel = {
+    model_id: string;
+    first_seen_at: string;
+    last_seen_at: string;
+    instances_available: number;
+    gpus_available: number;
+    vram_total_gb: number;
+    total_requests: number;
+    failed_requests: number;
+};
+
+export type GpuActivitySample = {
+    ts: string;
+    gpu_pct: number | null;
+    vram_pct: number | null;
+    temp_c?: number | null;
+    power_w?: number | null;
+    power_limit_w?: number | null;
+};
+
+export type GpuActivityGpuSeries = {
+    gpu_index: number;
+    samples: GpuActivitySample[];
+};
+
+export type GpuActivityInstanceSeries = {
+    instance_id: string;
+    instance_name: string | null;
+    provider_name: string | null;
+    gpu_count: number | null;
+    gpus: GpuActivityGpuSeries[];
+};
+
+export type GpuActivityResponse = {
+    window_s: number;
+    generated_at: string;
+    instances: GpuActivityInstanceSeries[];
 };
 
 export type ActionLog = {

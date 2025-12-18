@@ -54,6 +54,8 @@ Le système est découpé en 6 micro-services/composants strictement indépendan
 2.  **Flux d'Inférence** : Client -> Routeur -> Worker -> (LLM) -> Worker -> Routeur -> Client.
 3.  **Flux de Monitoring** : Worker metric -> Routeur/Orchestrateur -> DB -> Backend/UI.
 
+> Note (MVP repo): l’UI reçoit des mises à jour quasi temps-réel via **SSE** depuis l’API (instances + action logs).
+
 ## 3. Gestion de l'Infrastructure (Provisioning Modulaire)
 
 ### 3.1 Pattern "Provider Adapters"
@@ -116,7 +118,7 @@ Action : Drainer les connexions (ne plus envoyer de nouvelles requêtes) -> Tuer
 ### 7.1 Architecture Agent-Based
 Pour les machines "On-Premise" ou Bare-Metal tiers :
 *   Installation d'un binaire léger (Agent) authentifié par Token/mTLS.
-*   L'agent ouvre un tunnel (ex: WebSocket, gRPC stream ou VPN WireGuard) vers le Control Plane pour éviter d'exposer des ports publics.
+*   L'agent ouvre un tunnel (ex: **SSE/HTTP long-poll**, gRPC stream ou VPN WireGuard) vers le Control Plane pour éviter d'exposer des ports publics.
 
 ### 7.2 Sécurité & Multi-tenant/Mutualisation
 *   Isolation par conteneurisation stricte.

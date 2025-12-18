@@ -1,37 +1,57 @@
-use async_trait::async_trait;
 use anyhow::Result;
+use async_trait::async_trait;
 
 #[async_trait]
 pub trait CloudProvider: Send + Sync {
-    async fn create_instance(&self, zone: &str, instance_type: &str, image_id: &str) -> Result<String>;
+    async fn create_instance(
+        &self,
+        zone: &str,
+        instance_type: &str,
+        image_id: &str,
+        cloud_init: Option<&str>,
+    ) -> Result<String>;
     async fn start_instance(&self, zone: &str, server_id: &str) -> Result<bool>;
     async fn terminate_instance(&self, zone: &str, server_id: &str) -> Result<bool>;
     async fn get_instance_ip(&self, zone: &str, server_id: &str) -> Result<Option<String>>;
-    
+
     // New Generic Methods
     async fn check_instance_exists(&self, zone: &str, server_id: &str) -> Result<bool>;
 
     // Optional: set cloud-init user-data (text/plain) for a server.
     // Default is a no-op so providers without user-data support can compile.
-    async fn set_cloud_init(&self, _zone: &str, _server_id: &str, _cloud_init: &str) -> Result<bool> {
+    async fn set_cloud_init(
+        &self,
+        _zone: &str,
+        _server_id: &str,
+        _cloud_init: &str,
+    ) -> Result<bool> {
         Ok(false)
     }
 
     // Optional: ensure inbound TCP ports are open (provider firewall / security group).
     // Default is a no-op.
-    async fn ensure_inbound_tcp_ports(&self, _zone: &str, _server_id: &str, _ports: Vec<u16>) -> Result<bool> {
+    async fn ensure_inbound_tcp_ports(
+        &self,
+        _zone: &str,
+        _server_id: &str,
+        _ports: Vec<u16>,
+    ) -> Result<bool> {
         Ok(false)
     }
-    
+
     // For Catalog Sync, returning a list of generic InstanceType definitions
     async fn fetch_catalog(&self, zone: &str) -> Result<Vec<inventory::CatalogItem>>;
-    
+
     // For Reconciliation
     async fn list_instances(&self, zone: &str) -> Result<Vec<inventory::DiscoveredInstance>>;
 
     // Optional: provider-specific boot image resolution.
     // Default implementation returns None (caller falls back to configured image_id).
-    async fn resolve_boot_image(&self, _zone: &str, _instance_type: &str) -> Result<Option<String>> {
+    async fn resolve_boot_image(
+        &self,
+        _zone: &str,
+        _instance_type: &str,
+    ) -> Result<Option<String>> {
         Ok(None)
     }
 
@@ -48,12 +68,28 @@ pub trait CloudProvider: Send + Sync {
         Ok(None)
     }
 
-    async fn attach_volume(&self, _zone: &str, _server_id: &str, _volume_id: &str) -> Result<bool> {
+    async fn attach_volume(
+        &self,
+        _zone: &str,
+        _server_id: &str,
+        _volume_id: &str,
+        _delete_on_termination: bool,
+    ) -> Result<bool> {
         Ok(false)
     }
 
     async fn delete_volume(&self, _zone: &str, _volume_id: &str) -> Result<bool> {
         Ok(false)
+    }
+
+    // Optional: list volumes currently attached to a server.
+    // Used to track provider-created boot volumes so we can delete them on termination and avoid leaks.
+    async fn list_attached_volumes(
+        &self,
+        _zone: &str,
+        _server_id: &str,
+    ) -> Result<Vec<inventory::AttachedVolume>> {
+        Ok(vec![])
     }
 }
 
@@ -77,6 +113,12 @@ pub mod inventory {
         pub ip_address: Option<String>,
         pub created_at: Option<String>,
     }
+
+    #[derive(Clone, Debug)]
+    pub struct AttachedVolume {
+        pub provider_volume_id: String,
+        pub volume_type: String,
+        pub size_bytes: Option<i64>,
+        pub boot: bool,
+    }
 }
-
-

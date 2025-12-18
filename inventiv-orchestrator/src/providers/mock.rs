@@ -1,6 +1,6 @@
-use async_trait::async_trait;
+use crate::provider::{inventory, CloudProvider};
 use anyhow::Result;
-use crate::provider::{CloudProvider, inventory};
+use async_trait::async_trait;
 use sqlx::{Pool, Postgres};
 
 pub struct MockProvider {
@@ -39,11 +39,17 @@ impl MockProvider {
 
     async fn validate_zone_and_type(&self, zone: &str, instance_type: &str) -> Result<()> {
         // Resolve provider id from code (no hardcoded UUIDs)
-        let provider_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM providers WHERE code = $1 LIMIT 1")
-            .bind(self.provider_code)
-            .fetch_optional(&self.db)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("MockProvider: provider '{}' not found in DB", self.provider_code))?;
+        let provider_id: uuid::Uuid =
+            sqlx::query_scalar("SELECT id FROM providers WHERE code = $1 LIMIT 1")
+                .bind(self.provider_code)
+                .fetch_optional(&self.db)
+                .await?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "MockProvider: provider '{}' not found in DB",
+                        self.provider_code
+                    )
+                })?;
 
         // Ensure zone exists for mock provider
         let zone_ok: bool = sqlx::query_scalar(
@@ -106,7 +112,13 @@ impl MockProvider {
 
 #[async_trait]
 impl CloudProvider for MockProvider {
-    async fn create_instance(&self, zone: &str, instance_type: &str, _image_id: &str) -> Result<String> {
+    async fn create_instance(
+        &self,
+        zone: &str,
+        instance_type: &str,
+        _image_id: &str,
+        _cloud_init: Option<&str>,
+    ) -> Result<String> {
         self.validate_zone_and_type(zone, instance_type).await?;
 
         let server_id = format!("mock-{}", uuid::Uuid::new_v4());
@@ -121,11 +133,17 @@ impl CloudProvider for MockProvider {
         let ip = format!("10.{}.{}.{}", 10, third_octet, last_octet);
 
         // Resolve provider id again (cheap) to persist the mock instance row
-        let provider_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM providers WHERE code = $1 LIMIT 1")
-            .bind(self.provider_code)
-            .fetch_optional(&self.db)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("MockProvider: provider '{}' not found in DB", self.provider_code))?;
+        let provider_id: uuid::Uuid =
+            sqlx::query_scalar("SELECT id FROM providers WHERE code = $1 LIMIT 1")
+                .bind(self.provider_code)
+                .fetch_optional(&self.db)
+                .await?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "MockProvider: provider '{}' not found in DB",
+                        self.provider_code
+                    )
+                })?;
 
         sqlx::query(
             r#"
@@ -231,7 +249,10 @@ impl CloudProvider for MockProvider {
         .fetch_optional(&self.db)
         .await?;
 
-        Ok(matches!(status.as_deref(), Some("created" | "running" | "terminating")))
+        Ok(matches!(
+            status.as_deref(),
+            Some("created" | "running" | "terminating")
+        ))
     }
 
     async fn fetch_catalog(&self, _zone: &str) -> Result<Vec<inventory::CatalogItem>> {
@@ -282,14 +303,16 @@ impl CloudProvider for MockProvider {
 
         Ok(rows
             .into_iter()
-            .map(|(id, name, status, ip, created_at)| inventory::DiscoveredInstance {
-                provider_id: id,
-                name,
-                zone: zone.to_string(),
-                status,
-                ip_address: ip,
-                created_at,
-            })
+            .map(
+                |(id, name, status, ip, created_at)| inventory::DiscoveredInstance {
+                    provider_id: id,
+                    name,
+                    zone: zone.to_string(),
+                    status,
+                    ip_address: ip,
+                    created_at,
+                },
+            )
             .collect())
     }
 
@@ -304,7 +327,13 @@ impl CloudProvider for MockProvider {
         Ok(Some(format!("mock-vol-{}", uuid::Uuid::new_v4())))
     }
 
-    async fn attach_volume(&self, _zone: &str, _server_id: &str, _volume_id: &str) -> Result<bool> {
+    async fn attach_volume(
+        &self,
+        _zone: &str,
+        _server_id: &str,
+        _volume_id: &str,
+        _delete_on_termination: bool,
+    ) -> Result<bool> {
         Ok(true)
     }
 
@@ -312,4 +341,3 @@ impl CloudProvider for MockProvider {
         Ok(true)
     }
 }
-

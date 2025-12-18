@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LayoutDashboard, Box, Settings, Activity, Archive, BarChart3, Server, Users } from "lucide-react";
+import { LayoutDashboard, Settings, Activity, Archive, BarChart3, Server, Users, Terminal, KeyRound, Cpu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -211,10 +211,13 @@ export function Sidebar() {
                     <div className="space-y-1">
                         <SidebarLink href="/" icon={LayoutDashboard} label="Dashboard" />
                         <SidebarLink href="/instances" icon={Server} label="Instances" />
+                        <SidebarLink href="/models" icon={Activity} label="Models" />
+                        <SidebarLink href="/gpu-activity" icon={Cpu} label="GPU Activity" />
+                        <SidebarLink href="/workbench" icon={Terminal} label="Workbench" />
                         <SidebarLink href="/monitoring" icon={BarChart3} label="Monitoring" />
-                        <SidebarLink href="/models" icon={Box} label="Models" />
-                        <SidebarLink href="/settings" icon={Settings} label="Settings" />
-                        <SidebarLink href="/users" icon={Users} label="Users" />
+                        <SidebarLink href="/api-keys" icon={KeyRound} label="API Keys" />
+                        {me?.role === "admin" ? <SidebarLink href="/settings" icon={Settings} label="Settings" /> : null}
+                        {me?.role === "admin" ? <SidebarLink href="/users" icon={Users} label="Users" /> : null}
                     </div>
                 </div>
                 <div className="px-3 py-2">

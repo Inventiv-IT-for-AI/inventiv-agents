@@ -1,9 +1,10 @@
+use crate::provider::{inventory, CloudProvider};
+use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::json;
-use anyhow::Result;
-use crate::provider::{CloudProvider, inventory};
 use std::time::Duration;
+use tokio::time::sleep;
 
 pub struct ScalewayProvider {
     client: Client,
@@ -27,7 +28,12 @@ impl ScalewayProvider {
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
-        Self { client, project_id, secret_key, ssh_public_key }
+        Self {
+            client,
+            project_id,
+            secret_key,
+            ssh_public_key,
+        }
     }
 
     fn headers(&self) -> reqwest::header::HeaderMap {
@@ -41,7 +47,10 @@ impl ScalewayProvider {
         let sg_name = "inventiv-agents-worker-sg";
 
         // 1) Find existing SG by name+project
-        let list_url = format!("https://api.scaleway.com/instance/v1/zones/{}/security_groups", zone);
+        let list_url = format!(
+            "https://api.scaleway.com/instance/v1/zones/{}/security_groups",
+            zone
+        );
         let resp = self
             .client
             .get(&list_url)
@@ -51,7 +60,11 @@ impl ScalewayProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("Failed to list security groups: {} - {}", status, text));
+            return Err(anyhow::anyhow!(
+                "Failed to list security groups: {} - {}",
+                status,
+                text
+            ));
         }
         let v: serde_json::Value = resp.json().await?;
         let mut sg_id: Option<String> = None;
@@ -68,7 +81,10 @@ impl ScalewayProvider {
 
         // 2) Create if missing
         if sg_id.is_none() {
-            let create_url = format!("https://api.scaleway.com/instance/v1/zones/{}/security_groups", zone);
+            let create_url = format!(
+                "https://api.scaleway.com/instance/v1/zones/{}/security_groups",
+                zone
+            );
             let body = json!({
                 "name": sg_name,
                 "project": self.project_id,
@@ -87,10 +103,18 @@ impl ScalewayProvider {
             if !resp.status().is_success() {
                 let status = resp.status();
                 let text = resp.text().await.unwrap_or_default();
-                return Err(anyhow::anyhow!("Failed to create security group: {} - {}", status, text));
+                return Err(anyhow::anyhow!(
+                    "Failed to create security group: {} - {}",
+                    status,
+                    text
+                ));
             }
             let v: serde_json::Value = resp.json().await?;
-            sg_id = v.get("security_group").and_then(|x| x.get("id")).and_then(|x| x.as_str()).map(|s| s.to_string());
+            sg_id = v
+                .get("security_group")
+                .and_then(|x| x.get("id"))
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string());
         }
 
         let sg_id = sg_id.ok_or_else(|| anyhow::anyhow!("Security group id resolution failed"))?;
@@ -125,7 +149,11 @@ impl ScalewayProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("Failed to set security group rules: {} - {}", status, text));
+            return Err(anyhow::anyhow!(
+                "Failed to set security group rules: {} - {}",
+                status,
+                text
+            ));
         }
 
         Ok(sg_id)
@@ -134,8 +162,17 @@ impl ScalewayProvider {
 
 #[async_trait]
 impl CloudProvider for ScalewayProvider {
-    async fn create_instance(&self, zone: &str, instance_type: &str, image_id: &str) -> Result<String> {
-        let url = format!("https://api.scaleway.com/instance/v1/zones/{}/servers", zone);
+    async fn create_instance(
+        &self,
+        zone: &str,
+        instance_type: &str,
+        image_id: &str,
+        cloud_init: Option<&str>,
+    ) -> Result<String> {
+        let url = format!(
+            "https://api.scaleway.com/instance/v1/zones/{}/servers",
+            zone
+        );
         let name = format!("inventiv-worker-{}", uuid::Uuid::new_v4());
         let mut body = json!({
             "name": name,
@@ -146,7 +183,21 @@ impl CloudProvider for ScalewayProvider {
         });
         body["image"] = json!(image_id);
 
-        let resp = self.client.post(&url)
+        // Preferred: pass cloud-init at create-time (standard provisioning flow).
+        // Note: some API schemas reject `user_data` (we observed 400: "extra keys not allowed").
+        // In that case, we retry without `user_data` so provisioning can continue, and a later
+        // SSH fallback install can still bootstrap the worker.
+        if let Some(ci) = cloud_init {
+            if !ci.trim().is_empty() {
+                body["user_data"] = json!({
+                    "cloud-init": ci
+                });
+            }
+        }
+
+        let mut resp = self
+            .client
+            .post(&url)
             .headers(self.headers())
             .json(&body)
             .send()
@@ -154,41 +205,46 @@ impl CloudProvider for ScalewayProvider {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await?;
-            return Err(anyhow::anyhow!("Failed to create instance: {} - {}", status, text));
+            let text = resp.text().await.unwrap_or_default();
+
+            // Retry on schema mismatch for user_data.
+            let has_user_data = body.get("user_data").is_some();
+            if has_user_data
+                && status.as_u16() == 400
+                && (text.contains("user_data")
+                    && (text.contains("extra keys") || text.contains("extra keys not allowed")))
+            {
+                let mut body2 = body.clone();
+                body2.as_object_mut().map(|o| o.remove("user_data"));
+                resp = self
+                    .client
+                    .post(&url)
+                    .headers(self.headers())
+                    .json(&body2)
+                    .send()
+                    .await?;
+                if !resp.status().is_success() {
+                    let status2 = resp.status();
+                    let text2 = resp.text().await.unwrap_or_default();
+                    return Err(anyhow::anyhow!(
+                        "Failed to create instance (retry without user_data): {} - {} (initial: {} - {})",
+                        status2,
+                        text2,
+                        status,
+                        text
+                    ));
+                }
+            } else {
+                return Err(anyhow::anyhow!(
+                    "Failed to create instance: {} - {}",
+                    status,
+                    text
+                ));
+            }
         }
 
         let json: serde_json::Value = resp.json().await?;
         let server_id = json["server"]["id"].as_str().unwrap().to_string();
-
-        // Inject SSH key (optional) via cloud-init user-data.
-        //
-        // IMPORTANT: On the Instance API, `user_data` in the create-server payload is not always accepted
-        // (we observed 400: "user_data ... extra keys not allowed"). To be robust across API schema changes,
-        // we set user_data via the dedicated endpoint after server creation.
-        if let Some(pk) = self.ssh_public_key.as_deref() {
-            let cloud_init = format!(
-                "#cloud-config\nssh_authorized_keys:\n  - {}\n",
-                pk.replace('\n', " ")
-            );
-            let ud_url = format!(
-                "https://api.scaleway.com/instance/v1/zones/{}/servers/{}/user_data/cloud-init",
-                zone, server_id
-            );
-            let ud_resp = self
-                .client
-                .put(&ud_url)
-                .header("X-Auth-Token", &self.secret_key)
-                .header("Content-Type", "text/plain")
-                .body(cloud_init)
-                .send()
-                .await?;
-            if !ud_resp.status().is_success() {
-                let status = ud_resp.status();
-                let text = ud_resp.text().await.unwrap_or_default();
-                eprintln!("⚠️ Failed to set Scaleway cloud-init user_data: {} - {}", status, text);
-            }
-        }
 
         Ok(server_id)
     }
@@ -205,17 +261,16 @@ impl CloudProvider for ScalewayProvider {
         }
 
         let url = format!("https://api.scaleway.com/instance/v1/zones/{}/images", zone);
-        let resp = self
-            .client
-            .get(&url)
-            .headers(self.headers())
-            .send()
-            .await?;
+        let resp = self.client.get(&url).headers(self.headers()).send().await?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("Failed to list images: {} - {}", status, text));
+            return Err(anyhow::anyhow!(
+                "Failed to list images: {} - {}",
+                status,
+                text
+            ));
         }
 
         let v: serde_json::Value = resp.json().await?;
@@ -282,18 +337,53 @@ impl CloudProvider for ScalewayProvider {
     }
 
     async fn start_instance(&self, zone: &str, server_id: &str) -> Result<bool> {
-        let url = format!("https://api.scaleway.com/instance/v1/zones/{}/servers/{}/action", zone, server_id);
+        let url = format!(
+            "https://api.scaleway.com/instance/v1/zones/{}/servers/{}/action",
+            zone, server_id
+        );
         let body = json!({"action": "poweron"});
-        
-        let resp = self.client.post(&url)
-            .headers(self.headers())
-            .json(&body)
-            .send()
-            .await?;
 
-        if !resp.status().is_success() {
+        // Scaleway can reject poweron right after volume attach with:
+        // 400 precondition_failed resource_not_usable: "All volumes attached to the server must be available."
+        // This is transient; retry for a short window.
+        let max_wait = Duration::from_secs(60);
+        let start = std::time::Instant::now();
+        let mut attempt: u32 = 0;
+
+        loop {
+            attempt += 1;
+            let resp = self
+                .client
+                .post(&url)
+                .headers(self.headers())
+                .json(&body)
+                .send()
+                .await?;
+
+            if resp.status().is_success() {
+                return Ok(true);
+            }
+
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
+            let transient_not_usable = status.as_u16() == 400
+                && (text.contains("resource_not_usable")
+                    || text.contains("All volumes attached")
+                    || text.contains("precondition_failed"));
+
+            if transient_not_usable && start.elapsed() < max_wait {
+                // Backoff: 500ms, 1s, 2s, 3s, 5s...
+                let delay = match attempt {
+                    1 => Duration::from_millis(500),
+                    2 => Duration::from_secs(1),
+                    3 => Duration::from_secs(2),
+                    4 => Duration::from_secs(3),
+                    _ => Duration::from_secs(5),
+                };
+                sleep(delay).await;
+                continue;
+            }
+
             return Err(anyhow::anyhow!(
                 "Failed to start instance {} in zone {}: {} - {}",
                 server_id,
@@ -302,30 +392,34 @@ impl CloudProvider for ScalewayProvider {
                 text
             ));
         }
-
-        Ok(true)
     }
 
     async fn get_instance_ip(&self, zone: &str, server_id: &str) -> Result<Option<String>> {
-        let url = format!("https://api.scaleway.com/instance/v1/zones/{}/servers/{}", zone, server_id);
-        let resp = self.client.get(&url)
-            .headers(self.headers())
-            .send()
-            .await?;
-            
+        let url = format!(
+            "https://api.scaleway.com/instance/v1/zones/{}/servers/{}",
+            zone, server_id
+        );
+        let resp = self.client.get(&url).headers(self.headers()).send().await?;
+
         if !resp.status().is_success() {
             match resp.status().as_u16() {
                 404 => return Ok(None),
                 _ => {
                     let status = resp.status();
                     let text = resp.text().await.unwrap_or_default();
-                    return Err(anyhow::anyhow!("Failed to get instance IP: {} - {}", status, text));
+                    return Err(anyhow::anyhow!(
+                        "Failed to get instance IP: {} - {}",
+                        status,
+                        text
+                    ));
                 }
             }
         }
-        
+
         let json: serde_json::Value = resp.json().await?;
-        let ip = json["server"]["public_ip"]["address"].as_str().map(|s| s.to_string());
+        let ip = json["server"]["public_ip"]["address"]
+            .as_str()
+            .map(|s| s.to_string());
         Ok(ip)
     }
 
@@ -354,7 +448,12 @@ impl CloudProvider for ScalewayProvider {
         Ok(true)
     }
 
-    async fn ensure_inbound_tcp_ports(&self, zone: &str, server_id: &str, ports: Vec<u16>) -> Result<bool> {
+    async fn ensure_inbound_tcp_ports(
+        &self,
+        zone: &str,
+        server_id: &str,
+        ports: Vec<u16>,
+    ) -> Result<bool> {
         // Ensure we always keep SSH open for debugging.
         let mut ports = ports;
         if !ports.contains(&22) {
@@ -380,7 +479,11 @@ impl CloudProvider for ScalewayProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("Failed to attach security group to server: {} - {}", status, text));
+            return Err(anyhow::anyhow!(
+                "Failed to attach security group to server: {} - {}",
+                status,
+                text
+            ));
         }
         Ok(true)
     }
@@ -391,18 +494,17 @@ impl CloudProvider for ScalewayProvider {
             zone, server_id
         );
 
-        let response = self.client
-            .get(&url)
-            .headers(self.headers())
-            .send()
-            .await?;
+        let response = self.client.get(&url).headers(self.headers()).send().await?;
 
         match response.status().as_u16() {
-            200 => Ok(true),   // Instance exists
-            404 => Ok(false),  // Instance not found
+            200 => Ok(true),  // Instance exists
+            404 => Ok(false), // Instance not found
             _ => {
                 let status = response.status();
-                Err(anyhow::anyhow!("Unexpected status from provider: {}", status))
+                Err(anyhow::anyhow!(
+                    "Unexpected status from provider: {}",
+                    status
+                ))
             }
         }
     }
@@ -413,16 +515,16 @@ impl CloudProvider for ScalewayProvider {
             zone
         );
 
-        let response = self.client
-            .get(&url)
-            .headers(self.headers())
-            .send()
-            .await?;
+        let response = self.client.get(&url).headers(self.headers()).send().await?;
 
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("Failed to fetch catalog: {} - {}", status, text));
+            return Err(anyhow::anyhow!(
+                "Failed to fetch catalog: {} - {}",
+                status,
+                text
+            ));
         }
 
         let json: serde_json::Value = response.json().await?;
@@ -430,18 +532,24 @@ impl CloudProvider for ScalewayProvider {
 
         if let Some(servers) = json.get("servers").and_then(|v| v.as_object()) {
             for (code, details) in servers {
-                 // Extract specs
+                // Extract specs
                 let hourly_price = details["hourly_price"].as_f64().unwrap_or(0.0);
                 let ncpus = details["ncpus"].as_i64().unwrap_or(0) as i32;
                 let ram_bytes = details["ram"].as_i64().unwrap_or(0);
                 let ram_gb = (ram_bytes / 1024 / 1024 / 1024) as i32;
-                
+
                 // GPU Info
                 let gpu_count = details["gpu"].as_i64().unwrap_or(0) as i32;
-                let vram_bytes = details["gpu_info"].get("gpu_memory").and_then(|v| v.as_i64()).unwrap_or(0);
+                let vram_bytes = details["gpu_info"]
+                    .get("gpu_memory")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
                 let vram_gb = (vram_bytes / 1024 / 1024 / 1024) as i32;
-                
-                let bandwidth_bps = details["network"].get("sum_internet_bandwidth").and_then(|v| v.as_i64()).unwrap_or(0);
+
+                let bandwidth_bps = details["network"]
+                    .get("sum_internet_bandwidth")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
 
                 items.push(inventory::CatalogItem {
                     name: code.clone(), // Use commercial type as name
@@ -455,7 +563,7 @@ impl CloudProvider for ScalewayProvider {
                 });
             }
         }
-        
+
         Ok(items)
     }
 
@@ -555,7 +663,11 @@ impl CloudProvider for ScalewayProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("Failed to create volume: {} - {}", status, text));
+            return Err(anyhow::anyhow!(
+                "Failed to create volume: {} - {}",
+                status,
+                text
+            ));
         }
 
         let v: serde_json::Value = resp.json().await?;
@@ -568,7 +680,13 @@ impl CloudProvider for ScalewayProvider {
         Ok(vol_id)
     }
 
-    async fn attach_volume(&self, zone: &str, server_id: &str, volume_id: &str) -> Result<bool> {
+    async fn attach_volume(
+        &self,
+        zone: &str,
+        server_id: &str,
+        volume_id: &str,
+        _delete_on_termination: bool,
+    ) -> Result<bool> {
         // Need to PATCH server volumes with full set (include existing volumes).
         let get_url = format!(
             "https://api.scaleway.com/instance/v1/zones/{}/servers/{}",
@@ -584,11 +702,18 @@ impl CloudProvider for ScalewayProvider {
         if !get_resp.status().is_success() {
             let status = get_resp.status();
             let text = get_resp.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("Failed to fetch server for attach: {} - {}", status, text));
+            return Err(anyhow::anyhow!(
+                "Failed to fetch server for attach: {} - {}",
+                status,
+                text
+            ));
         }
 
         let s: serde_json::Value = get_resp.json().await?;
-        let existing = s["server"]["volumes"].as_object().cloned().unwrap_or_default();
+        let existing = s["server"]["volumes"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
 
         // Determine next volume slot key (volumes are keyed by strings "0", "1", ...)
         let mut max_idx: i32 = -1;
@@ -609,13 +734,30 @@ impl CloudProvider for ScalewayProvider {
                 continue;
             }
             let boot = v.get("boot").and_then(|x| x.as_bool()).unwrap_or(false);
-            // IMPORTANT (Scaleway quirk): for existing attached volumes, sending `volume_type`
-            // can be rejected (e.g. l_ssd -> "not a valid value"). Provide only id + boot.
-            new_volumes.insert(k, json!({ "id": id, "boot": boot }));
+            // Scaleway API requires volume_type per entry; reuse the existing value from the GET payload.
+            // (Do NOT inject extra keys like delete_on_termination: API rejects them as "extra keys not allowed".)
+            let volume_type = v
+                .get("volume_type")
+                .or_else(|| v.get("type"))
+                .and_then(|x| x.as_str())
+                .unwrap_or_default();
+            if volume_type.is_empty() {
+                // If the provider response doesn't include volume_type, we can't safely PATCH.
+                // Skip this volume entry (PATCH will likely fail) rather than sending invalid args.
+                continue;
+            }
+            new_volumes.insert(
+                k,
+                json!({ "id": id, "boot": boot, "volume_type": volume_type }),
+            );
         }
         new_volumes.insert(
             next_key,
-            json!({ "id": volume_id, "boot": false, "volume_type": "sbs_volume" }),
+            json!({
+                "id": volume_id,
+                "boot": false,
+                "volume_type": "sbs_volume"
+            }),
         );
 
         let patch_url = format!(
@@ -634,7 +776,11 @@ impl CloudProvider for ScalewayProvider {
         if !patch_resp.status().is_success() {
             let status = patch_resp.status();
             let text = patch_resp.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("Failed to attach volume: {} - {}", status, text));
+            return Err(anyhow::anyhow!(
+                "Failed to attach volume: {} - {}",
+                status,
+                text
+            ));
         }
         Ok(true)
     }
@@ -656,20 +802,81 @@ impl CloudProvider for ScalewayProvider {
             _ => {
                 let status = resp.status();
                 let text = resp.text().await.unwrap_or_default();
-                Err(anyhow::anyhow!("Failed to delete volume: {} - {}", status, text))
+                Err(anyhow::anyhow!(
+                    "Failed to delete volume: {} - {}",
+                    status,
+                    text
+                ))
             }
         }
     }
 
-    async fn list_instances(&self, zone: &str) -> Result<Vec<inventory::DiscoveredInstance>> {
-        let url = format!("https://api.scaleway.com/instance/v1/zones/{}/servers", zone);
-        let resp = self.client.get(&url)
+    async fn list_attached_volumes(
+        &self,
+        zone: &str,
+        server_id: &str,
+    ) -> Result<Vec<inventory::AttachedVolume>> {
+        let get_url = format!(
+            "https://api.scaleway.com/instance/v1/zones/{}/servers/{}",
+            zone, server_id
+        );
+        let get_resp = self
+            .client
+            .get(&get_url)
             .headers(self.headers())
             .send()
             .await?;
+        if !get_resp.status().is_success() {
+            let status = get_resp.status();
+            let text = get_resp.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Failed to fetch server volumes: {} - {}",
+                status,
+                text
+            ));
+        }
+
+        let s: serde_json::Value = get_resp.json().await?;
+        let vols = s["server"]["volumes"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let mut out = Vec::new();
+        for (_k, v) in vols {
+            let id = v.get("id").and_then(|x| x.as_str()).unwrap_or_default();
+            if id.is_empty() {
+                continue;
+            }
+            let boot = v.get("boot").and_then(|x| x.as_bool()).unwrap_or(false);
+            let volume_type = v
+                .get("volume_type")
+                .or_else(|| v.get("type"))
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let size_bytes = v.get("size").and_then(|x| x.as_i64());
+            out.push(inventory::AttachedVolume {
+                provider_volume_id: id.to_string(),
+                volume_type,
+                size_bytes,
+                boot,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn list_instances(&self, zone: &str) -> Result<Vec<inventory::DiscoveredInstance>> {
+        let url = format!(
+            "https://api.scaleway.com/instance/v1/zones/{}/servers",
+            zone
+        );
+        let resp = self.client.get(&url).headers(self.headers()).send().await?;
 
         if !resp.status().is_success() {
-             return Err(anyhow::anyhow!("Failed to list instances: {}", resp.status()));
+            return Err(anyhow::anyhow!(
+                "Failed to list instances: {}",
+                resp.status()
+            ));
         }
 
         let json: serde_json::Value = resp.json().await?;

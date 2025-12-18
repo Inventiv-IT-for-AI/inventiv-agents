@@ -21,7 +21,7 @@ Le système repose sur une séparation stricte des responsabilités (Pattern **C
     *   Effectue les lectures/écritures d'état "Business" dans la BDD.
     *   **Ne réalise aucune tâche de fond** ni traitement asynchrone.
     *   Notifie le système des changements d'intention (ex: "User veut déployer X") via Events/DB.
-    *   Relais Temps-Réel : Pousse les notifications (WebSocket) vers le Frontend (via les events reçus de l'Orchestrateur).
+    *   Relais Temps-Réel : pousse les notifications vers le Frontend (MVP: **SSE** côté API).
 
 #### 2. Inventiv Orchestrator (Control Plane - Asynchronous)
 *   **Rôle** : Moteur d'exécution et de surveillance (Invisible du public).
@@ -91,7 +91,7 @@ Bootstrap admin:
 
 2.  **Orchestrator -> Backend (via DB/Redis)** :
     *   L'Orchestrateur met à jour le statut dans la DB (`Booting` -> `Ready`).
-    *   Il publie un événement Redis (ex: `EVENT:INSTANCE_READY`) que le Backend écoute pour notifier le Frontend en WebSocket (User Feedback).
+    *   L’API expose un flux **SSE** (`GET /events/stream`) et l’UI s’y abonne (instances/actions) pour rafraîchir quasi temps-réel.
 
 3.  **Monitoring & Scaling** :
     *   L'Orchestrateur collecte les métriques (Workers/Router) en temps réel.

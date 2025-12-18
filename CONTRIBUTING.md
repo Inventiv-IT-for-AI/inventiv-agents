@@ -1,6 +1,6 @@
-# Contributing to Inventiv Agents
+# Contributing to Inventiv-Agents LLM Infra
 
-Thank you for your interest in contributing to the project.
+Thank you for your interest in contributing to our project!
 
 ## Getting Started
 
@@ -9,16 +9,13 @@ Thank you for your interest in contributing to the project.
 3.  **Install dependencies**:
     *   Docker & Docker Compose
     *   Rust (Cargo)
-    *   Node.js (for the frontend)
-4.  **Run the checks**: `make check` and `make test`.
+4.  **Run tests**: `make test`.
 
 ## Development Flow
 
 1.  Create a feature branch: `git checkout -b feat/my-awesome-feature`.
 2.  Make your changes.
-3.  Ensure everything works:
-    - `make up` to run the local stack (API/DB/Redis/Orchestrator/FinOps)
-    - `make ui` to run the Next.js UI
+3.  Ensure everything works: `make up` to run local stack.
 4.  Commit your changes using [Conventional Commits](https://www.conventionalcommits.org/).
 5.  Push and open a **Pull Request**.
 
