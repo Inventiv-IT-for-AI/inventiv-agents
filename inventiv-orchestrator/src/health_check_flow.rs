@@ -979,7 +979,7 @@ pub async fn trigger_worker_reinstall_over_ssh(
 pub async fn check_and_transition_instance(
     instance_id: uuid::Uuid,
     ip: Option<String>,
-    created_at: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>,
+    boot_started_at: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>,
     failures: i32,
     db: Pool<Postgres>,
 ) {
@@ -1098,8 +1098,8 @@ pub async fn check_and_transition_instance(
             .unwrap_or(300)
     };
 
-    // Timeout after N seconds
-    let age = sqlx::types::chrono::Utc::now() - created_at;
+    // Timeout after N seconds (use boot_started_at, not created_at, so reinstalls don't instantly time out)
+    let age = sqlx::types::chrono::Utc::now() - boot_started_at;
     if age.num_seconds() > timeout_secs {
         println!(
             "⏱️  Instance {} timeout exceeded ({}s), marking as startup_failed",

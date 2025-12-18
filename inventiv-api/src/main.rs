@@ -3181,8 +3181,12 @@ async fn reinstall_instance(
     let _ = sqlx::query(
         "UPDATE instances
          SET status = 'booting',
+             boot_started_at = NOW(),
+             last_health_check = NULL,
+             health_check_failures = 0,
              error_code = NULL,
-             error_message = NULL
+             error_message = NULL,
+             failed_at = NULL
          WHERE id = $1
            AND status NOT IN ('terminated', 'terminating')",
     )

@@ -572,6 +572,10 @@ pub async fn process_reinstall(
     let _ = sqlx::query(
         "UPDATE instances
          SET status = 'booting',
+             boot_started_at = NOW(),
+             last_health_check = NULL,
+             health_check_failures = 0,
+             failed_at = NULL,
              error_code = NULL,
              error_message = NULL
          WHERE id = $1
@@ -1923,7 +1927,13 @@ pub async fn process_provisioning(
                 "UPDATE instances
                    SET provider_instance_id = $1,
                        ip_address = $2::inet,
-                       status = 'booting'
+                       status = 'booting',
+                       boot_started_at = NOW(),
+                       last_health_check = NULL,
+                       health_check_failures = 0,
+                       failed_at = NULL,
+                       error_code = NULL,
+                       error_message = NULL
                    WHERE id = $3 AND status NOT IN ('terminating', 'terminated')",
             )
             .bind(&server_id)
