@@ -107,6 +107,19 @@ export function InstanceTable({
         cell: ({ row }) => displayOrDash(row.instance_type),
       },
       {
+        id: "storage",
+        label: "Storage",
+        width: 240,
+        sortable: false,
+        cell: ({ row }) => {
+          const count = row.storage_count ?? 0;
+          const sizes = (row.storage_sizes_gb ?? []).filter((n) => typeof n === "number" && n > 0);
+          if (count <= 0) return <span className="text-muted-foreground">-</span>;
+          const label = `${count} storages${sizes.length ? ` (${sizes.map((s) => `${s}GB`).join(", ")})` : ""}`;
+          return <span className="font-medium">{label}</span>;
+        },
+      },
+      {
         id: "cost",
         label: "Cost",
         width: 120,
@@ -232,7 +245,7 @@ export function InstanceTable({
     <InventivDataTable<Instance>
       listId="instances:table"
       title="Instances"
-      dataKey={JSON.stringify({ refreshKey, sort })}
+      reloadToken={refreshKey}
       autoHeight={true}
       height={300}
       rowHeight={56}

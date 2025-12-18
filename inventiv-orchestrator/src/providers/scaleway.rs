@@ -854,9 +854,46 @@ impl CloudProvider for ScalewayProvider {
                 .and_then(|x| x.as_str())
                 .unwrap_or_default()
                 .to_string();
+            let name = v
+                .get("name")
+                .and_then(|x| x.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
             let size_bytes = v.get("size").and_then(|x| x.as_i64());
+
+            // If the server payload doesn't include name/size, fetch from Block Storage API (best effort).
+            let (name, size_bytes) = if name.is_none() || size_bytes.is_none() {
+                let url = format!(
+                    "https://api.scaleway.com/block/v1/zones/{}/volumes/{}",
+                    zone, id
+                );
+                match self.client.get(&url).headers(self.headers()).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        match resp.json::<serde_json::Value>().await {
+                            Ok(v) => {
+                                let n = v["name"]
+                                    .as_str()
+                                    .or_else(|| v["volume"]["name"].as_str())
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| !s.is_empty())
+                                    .or(name);
+                                let sz = v["size"]
+                                    .as_i64()
+                                    .or_else(|| v["volume"]["size"].as_i64())
+                                    .or(size_bytes);
+                                (n, sz)
+                            }
+                            Err(_) => (name, size_bytes),
+                        }
+                    }
+                    _ => (name, size_bytes),
+                }
+            } else {
+                (name, size_bytes)
+            };
             out.push(inventory::AttachedVolume {
                 provider_volume_id: id.to_string(),
+                provider_volume_name: name,
                 volume_type,
                 size_bytes,
                 boot,

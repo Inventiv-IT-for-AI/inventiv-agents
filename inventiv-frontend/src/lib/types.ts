@@ -27,6 +27,17 @@ export type Instance = {
     gpu_count?: number;
     cost_per_hour?: number;
     total_cost?: number;
+    storage_count?: number;
+    storage_sizes_gb?: number[];
+    storages?: InstanceStorageInfo[];
+};
+
+export type InstanceStorageInfo = {
+    provider_volume_id: string;
+    name?: string | null;
+    volume_type: string;
+    size_gb?: number | null;
+    is_boot: boolean;
 };
 
 export type Provider = {

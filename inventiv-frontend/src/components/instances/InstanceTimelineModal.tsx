@@ -460,6 +460,38 @@ export function InstanceTimelineModal({
                   {displayOrDash(instance?.provider_instance_id)}
                 </span>
               </div>
+              <div className="flex flex-col gap-1 min-w-0 col-span-2 lg:col-span-4">
+                <div className="flex items-baseline gap-2 min-w-0">
+                  <span className="text-muted-foreground">Storage</span>
+                  <span className="text-muted-foreground">:</span>
+                  <span className="font-medium min-w-0 truncate">
+                    {(() => {
+                      const count = instance?.storage_count ?? (instance?.storages?.length ?? 0);
+                      const sizes = (instance?.storage_sizes_gb ?? [])
+                        .filter((n) => typeof n === "number" && n > 0)
+                        .map((n) => `${n}GB`)
+                        .join(", ");
+                      return count > 0 ? `${count} storages${sizes ? ` (${sizes})` : ""}` : "-";
+                    })()}
+                  </span>
+                </div>
+                {instance?.storages?.length ? (
+                  <div className="text-xs text-muted-foreground space-y-1">
+                    {instance.storages.map((s, idx) => (
+                      <div key={`${s.provider_volume_id}:${idx}`} className="truncate">
+                        <span className="font-medium text-foreground/90">Storage {idx + 1}</span>
+                        <span className="text-muted-foreground">:</span>{" "}
+                        <span className="font-mono">{s.name ?? s.provider_volume_id}</span>
+                        {" • "}
+                        <span className="font-medium">{s.volume_type}</span>
+                        {" • "}
+                        <span className="font-medium">{s.size_gb ? `${s.size_gb} GB` : "-"}</span>
+                        {s.is_boot ? <span className="text-muted-foreground"> (boot)</span> : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
               <div className="flex items-center gap-2 min-w-0 col-span-2 lg:col-span-4">
                 <span className="text-muted-foreground">Readiness</span>
                 <span className="text-muted-foreground">:</span>
