@@ -16,3 +16,4 @@ ALTER TABLE public.models
 CREATE INDEX IF NOT EXISTS idx_models_is_active ON public.models(is_active);
 
 
+
