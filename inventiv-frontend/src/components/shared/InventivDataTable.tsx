@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ArrowDown, ArrowUp, GripVertical, Settings2 } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, GripVertical, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -186,6 +186,11 @@ export type InventivDataTableProps<Row> = {
   listId: string;
   /** Optional key to force list reload (clears virtualization cache) when data changes */
   dataKey?: string;
+  /**
+   * Reload trigger that refreshes data **in place** (keeps scroll position and avoids cache/scroll resets).
+   * Prefer this for SSE/polling-driven updates to avoid flicker.
+   */
+  reloadToken?: string | number;
   title?: React.ReactNode;
   rightHeader?: React.ReactNode;
   /** Optional override for the left "Total ..." text */
@@ -221,7 +226,7 @@ export type InventivDataTableProps<Row> = {
   onSortChange?: (next: DataTableSortState) => void;
   /** Default: ["asc","desc","none"] */
   sortCycle?: SortCycleStep[];
-  /** Persist sorting state in localStorage (scoped by listId). Default: false */
+  /** Persist sorting state in localStorage (scoped by listId). Default: true */
   persistSort?: boolean;
   /**
    * Sorting mode:
@@ -239,6 +244,7 @@ export type InventivDataTableProps<Row> = {
 export function InventivDataTable<Row>({
   listId,
   dataKey,
+  reloadToken,
   title,
   rightHeader,
   leftMeta,
@@ -260,7 +266,7 @@ export function InventivDataTable<Row>({
   defaultSortState = null,
   onSortChange,
   sortCycle = ["asc", "desc", "none"],
-  persistSort = false,
+  persistSort = true,
   sortingMode,
   className,
 }: InventivDataTableProps<Row>) {
@@ -333,6 +339,7 @@ export function InventivDataTable<Row>({
   const isSortControlled = sortState !== undefined;
   const [internalSort, setInternalSort] = React.useState<DataTableSortState>(defaultSortState);
   const effectiveSort = isSortControlled ? (sortState ?? null) : internalSort;
+  const didHydrateControlledSortRef = React.useRef(false);
 
   const inferredSortingMode: "client" | "server" | "none" = React.useMemo(() => {
     if (sortingMode) return sortingMode;
@@ -348,6 +355,31 @@ export function InventivDataTable<Row>({
     },
     [isSortControlled, onSortChange]
   );
+
+  // While resizing, avoid applying reloadToken changes (can interrupt pointer capture / feel "broken").
+  // We coalesce the latest token and apply it once resizing ends.
+  const pendingReloadTokenRef = React.useRef<string | number | undefined>(undefined);
+  const appliedReloadTokenRef = React.useRef<string | number | undefined>(undefined);
+  const [coalescedReloadToken, setCoalescedReloadToken] = React.useState<string | number | undefined>(reloadToken);
+
+  React.useEffect(() => {
+    if (reloadToken === appliedReloadTokenRef.current) return;
+    if (isResizing) {
+      pendingReloadTokenRef.current = reloadToken;
+      return;
+    }
+    appliedReloadTokenRef.current = reloadToken;
+    setCoalescedReloadToken(reloadToken);
+  }, [isResizing, reloadToken]);
+
+  React.useEffect(() => {
+    if (isResizing) return;
+    const pending = pendingReloadTokenRef.current;
+    if (pending === undefined) return;
+    pendingReloadTokenRef.current = undefined;
+    appliedReloadTokenRef.current = pending;
+    setCoalescedReloadToken(pending);
+  }, [isResizing]);
 
   const nextSortForColumn = React.useCallback(
     (columnId: ColumnId): DataTableSortState => {
@@ -383,7 +415,9 @@ export function InventivDataTable<Row>({
           for (const c of effectiveColumns) w[c.id] = c.width ?? 160;
           return w;
         });
+        // Sorting: apply defaultSortState for uncontrolled mode.
         if (persistSort && !isSortControlled && defaultSortState !== undefined) setInternalSort(defaultSortState);
+        // For controlled mode, do nothing here (parent owns state).
         setPrefsLoaded(true);
         return;
       }
@@ -417,11 +451,22 @@ export function InventivDataTable<Row>({
         return w;
       });
 
-      if (persistSort && !isSortControlled) {
-        // Only restore if the column still exists.
+      // Sorting restore:
+      // - Uncontrolled: restore localStorage sort directly into internal state.
+      // - Controlled: if parent currently has no sort, request hydration once via onSortChange.
+      if (persistSort) {
         const s = prefs.sort;
-        if (!s || (typeof s.columnId === "string" && colIdSet.has(s.columnId))) {
-          setInternalSort(s ?? null);
+        const restored: DataTableSortState =
+          !s || (typeof s.columnId === "string" && colIdSet.has(s.columnId)) ? (s ?? null) : null;
+
+        if (!isSortControlled) {
+          setInternalSort(restored);
+        } else {
+          // Only hydrate once per mount; parent can ignore if undesired.
+          if (!didHydrateControlledSortRef.current && (sortState ?? null) === null) {
+            didHydrateControlledSortRef.current = true;
+            onSortChange?.(restored);
+          }
         }
       }
       setPrefsLoaded(true);
@@ -436,9 +481,23 @@ export function InventivDataTable<Row>({
         return w;
       });
       if (persistSort && !isSortControlled) setInternalSort(defaultSortState ?? null);
+      if (persistSort && isSortControlled && !didHydrateControlledSortRef.current && (sortState ?? null) === null) {
+        didHydrateControlledSortRef.current = true;
+        onSortChange?.(defaultSortState ?? null);
+      }
       setPrefsLoaded(true);
     }
-  }, [columnsMetaKey, defaultSortState, effectiveColumns, isSortControlled, listId, persistSort, showRowNumbers]);
+  }, [
+    columnsMetaKey,
+    defaultSortState,
+    effectiveColumns,
+    isSortControlled,
+    listId,
+    onSortChange,
+    persistSort,
+    showRowNumbers,
+    sortState,
+  ]);
 
   // Persist on changes
   React.useEffect(() => {
@@ -548,10 +607,12 @@ export function InventivDataTable<Row>({
   const [dropHint, setDropHint] = React.useState<{ targetId: ColumnId; position: "before" | "after" } | null>(
     null
   );
+  const didDragRef = React.useRef(false);
   const onDragStart = (e: React.DragEvent, col: InventivDataTableColumn<Row>) => {
     if (col.disableReorder) return;
     dragIdRef.current = col.id;
     setDraggingId(col.id);
+    didDragRef.current = true;
     e.dataTransfer.effectAllowed = "move";
     try {
       e.dataTransfer.setData("text/plain", col.id);
@@ -613,16 +674,19 @@ export function InventivDataTable<Row>({
     (col: InventivDataTableColumn<Row>) => {
       if (inferredSortingMode === "none") return;
       if (isResizing) return;
+      if (draggingId) return;
+      if (didDragRef.current) return;
       if (!columnCanSort(col)) return;
       setSort(nextSortForColumn(col.id));
     },
-    [columnCanSort, inferredSortingMode, isResizing, nextSortForColumn, setSort]
+    [columnCanSort, draggingId, inferredSortingMode, isResizing, nextSortForColumn, setSort]
   );
 
   const sortIcon = React.useCallback(
-    (colId: ColumnId) => {
+    (colId: ColumnId, canSort: boolean) => {
+      if (!canSort) return null;
       const s = effectiveSort;
-      if (!s || s.columnId !== colId) return null;
+      if (!s || s.columnId !== colId) return <ArrowUpDown className="h-3.5 w-3.5 opacity-60 group-hover:opacity-100" />;
       if (s.direction === "asc") return <ArrowUp className="h-3.5 w-3.5" />;
       return <ArrowDown className="h-3.5 w-3.5" />;
     },
@@ -670,16 +734,31 @@ export function InventivDataTable<Row>({
                 "group relative min-w-0 flex items-center gap-2 rounded-sm px-1 -mx-1",
                 align,
                 col.headerClassName,
-                isDropTarget ? "bg-sky-50" : ""
+                isDropTarget ? "bg-sky-50" : "",
+                canSort ? "cursor-pointer hover:text-foreground transition-colors" : ""
               )}
               draggable={!col.disableReorder}
               onDragStart={(e) => onDragStart(e, col)}
               onDragOver={(e) => onDragOver(e, col)}
               onDrop={(e) => onDrop(e, col)}
+              onClick={() => onHeaderSortClick(col)}
+              onKeyDown={(e) => {
+                if (!canSort) return;
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onHeaderSortClick(col);
+                }
+              }}
+              tabIndex={canSort ? 0 : -1}
+              role={canSort ? "button" : undefined}
+              aria-label={canSort ? `Trier par ${col.label}` : undefined}
               onDragEnd={() => {
                 dragIdRef.current = null;
                 setDraggingId(null);
                 setDropHint(null);
+                window.setTimeout(() => {
+                  didDragRef.current = false;
+                }, 0);
               }}
               onDragLeave={() => {
                 // If leaving the current target, clear hint
@@ -689,22 +768,12 @@ export function InventivDataTable<Row>({
             >
               {!col.disableReorder ? <GripVertical className="h-3.5 w-3.5 text-muted-foreground/70" /> : null}
 
-              {canSort ? (
-                <button
-                  type="button"
-                  className={cn(
-                    "min-w-0 flex items-center gap-1 truncate hover:text-foreground transition-colors",
-                    draggingId ? "pointer-events-none" : ""
-                  )}
-                  onClick={() => onHeaderSortClick(col)}
-                  title="Cliquer pour trier"
-                >
-                  <span className="truncate">{headerContent}</span>
-                  <span className="shrink-0 text-muted-foreground">{sortIcon(col.id)}</span>
-                </button>
-              ) : (
+              <span className={cn("min-w-0 flex items-center gap-1", col.align === "right" ? "ml-auto" : "")}>
                 <span className="truncate">{headerContent}</span>
-              )}
+                <span className={cn("shrink-0 text-muted-foreground", canSort ? "" : "hidden")}>
+                  {sortIcon(col.id, canSort)}
+                </span>
+              </span>
 
               {/* Drop indicator (animated) */}
               {isDropTarget && dropPos ? (
@@ -720,6 +789,12 @@ export function InventivDataTable<Row>({
                 <div
                   className="absolute right-0 top-0 h-full w-4 cursor-col-resize flex items-center justify-center"
                   onPointerDown={(e) => onResizePointerDown(e, col)}
+                  draggable={false}
+                  onDragStart={(e) => {
+                    // Prevent HTML5 drag from hijacking resize gestures.
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
                   title="Redimensionner"
                 >
                   <div className="h-6 w-[3px] rounded-full bg-gray-200 opacity-90 group-hover:bg-gray-400 group-hover:opacity-100 transition-colors" />
@@ -792,6 +867,7 @@ export function InventivDataTable<Row>({
       <div className="border rounded-md overflow-hidden bg-background">
         <VirtualizedRemoteList<Row>
           queryKey={virtualKey}
+          reloadToken={coalescedReloadToken}
           height={effectiveHeight}
           header={headerNode}
           headerHeight={48}

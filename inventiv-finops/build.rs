@@ -3,4 +3,3 @@ fn main() {
     // Ensure Cargo rebuilds this crate whenever migrations change.
     println!("cargo:rerun-if-changed=../sqlx-migrations");
 }
-

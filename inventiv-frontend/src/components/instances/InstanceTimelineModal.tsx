@@ -312,33 +312,18 @@ export function InstanceTimelineModal({
       // Créer un objet avec les informations de l'instance et toutes les actions
       const dataToCopy = {
         instance: {
-          id: instanceId,
-          status: instance?.status,
-          created_at: instance?.created_at,
-          region: instance?.region,
-          zone: instance?.zone,
-          instance_type: instance?.instance_type,
-          ip_address: instance?.ip_address,
-          provider_instance_id: instance?.provider_instance_id,
-          gpu_count: instance?.gpu_count,
-          gpu_vram: instance?.gpu_vram,
+          // Include all known instance fields (including new ones like storages).
+          ...(instance ?? { id: instanceId }),
+          // Explicitly include compute fields from instance types (for schema stability in exports).
+          cpu_count: instance?.cpu_count ?? null,
+          ram_gb: instance?.ram_gb ?? null,
+          // Derived / computed fields shown in header.
+          vllm_mode: vllmMode,
+          readiness,
+          last_ping: lastPing,
         },
-        actions: allActions.map((action) => ({
-          id: action.id,
-          action_type: action.action_type,
-          component: action.component,
-          status: action.status,
-          provider_name: action.provider_name,
-          instance_type: action.instance_type,
-          error_message: action.error_message,
-          instance_id: action.instance_id,
-          duration_ms: action.duration_ms,
-          created_at: action.created_at,
-          completed_at: action.completed_at,
-          metadata: action.metadata,
-          instance_status_before: action.instance_status_before,
-          instance_status_after: action.instance_status_after,
-        })),
+        // Keep full action objects so any newly added fields are automatically included.
+        actions: allActions,
         summary: {
           total_actions: allActions.length,
           exported_at: new Date().toISOString(),
@@ -357,7 +342,7 @@ export function InstanceTimelineModal({
     } finally {
       setCopyingActions(false);
     }
-  }, [copyingActions, fetchAllActions, instanceId, instance]);
+  }, [copyingActions, fetchAllActions, instanceId, instance, lastPing, readiness, vllmMode]);
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
@@ -431,6 +416,16 @@ export function InstanceTimelineModal({
                 <span className="font-medium min-w-0 truncate">{displayOrDash(instance?.instance_type)}</span>
               </div>
               <div className="flex items-baseline gap-2 min-w-0">
+                <span className="text-muted-foreground">CPU</span>
+                <span className="text-muted-foreground">:</span>
+                <span className="font-medium">{typeof instance?.cpu_count === "number" && instance.cpu_count > 0 ? instance.cpu_count : "-"}</span>
+              </div>
+              <div className="flex items-baseline gap-2 min-w-0">
+                <span className="text-muted-foreground">RAM</span>
+                <span className="text-muted-foreground">:</span>
+                <span className="font-medium">{typeof instance?.ram_gb === "number" && instance.ram_gb > 0 ? `${instance.ram_gb} GB` : "-"}</span>
+              </div>
+              <div className="flex items-baseline gap-2 min-w-0">
                 <span className="text-muted-foreground">GPU</span>
                 <span className="text-muted-foreground">:</span>
                 <span className="font-medium">{instance?.gpu_count ?? "-"}</span>
@@ -459,6 +454,45 @@ export function InstanceTimelineModal({
                 <span className="font-medium font-mono min-w-0 truncate">
                   {displayOrDash(instance?.provider_instance_id)}
                 </span>
+              </div>
+              <div className="flex flex-col gap-1 min-w-0 col-span-2 lg:col-span-4">
+                <div className="flex items-baseline gap-2 min-w-0">
+                  <span className="text-muted-foreground">Storage</span>
+                  <span className="text-muted-foreground">:</span>
+                  <span className="font-medium min-w-0 truncate">
+                    {(() => {
+                      const count = instance?.storage_count ?? (instance?.storages?.length ?? 0);
+                      // Prefer aggregated sizes from list/search payload; fallback to detailed storages (instance/:id).
+                      const sizesFromSummary = (instance?.storage_sizes_gb ?? [])
+                        .filter((n) => typeof n === "number" && n > 0)
+                        .map((n) => `${n}GB`);
+                      const sizesFromDetails = (instance?.storages ?? [])
+                        .map((s) => s.size_gb)
+                        .filter((n): n is number => typeof n === "number" && n > 0)
+                        .map((n) => `${n}GB`);
+                      const sizes = (sizesFromSummary.length ? sizesFromSummary : sizesFromDetails).join(", ");
+                      return count > 0 ? `${count} storages${sizes ? ` (${sizes})` : ""}` : "-";
+                    })()}
+                  </span>
+                </div>
+                {instance?.storages?.length ? (
+                  <div className="text-xs text-muted-foreground space-y-1">
+                    {instance.storages.map((s, idx) => (
+                      <div key={`${s.provider_volume_id}:${idx}`} className="truncate">
+                        <span className="font-medium text-foreground/90">Storage {idx + 1}</span>
+                        <span className="text-muted-foreground">:</span>{" "}
+                        <span className="font-medium">{s.volume_type}</span>
+                        {" - "}
+                        <span className="font-medium">{s.size_gb ? `${s.size_gb}GB` : "-"}</span>
+                        {" - "}
+                        <span className="font-mono">{s.name ?? "-"}</span>
+                        {" - "}
+                        <span className="font-mono">{s.provider_volume_id}</span>
+                        {s.is_boot ? <span className="text-muted-foreground"> (boot)</span> : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
               <div className="flex items-center gap-2 min-w-0 col-span-2 lg:col-span-4">
                 <span className="text-muted-foreground">Readiness</span>

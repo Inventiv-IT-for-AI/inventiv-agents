@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiUrl } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,9 +8,10 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useI18n } from "@/i18n/I18nProvider";
 import { LOCALE_LABELS, normalizeLocale } from "@/i18n/i18n";
+import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
+import { InventivDataTable, type DataTableSortState, type InventivDataTableColumn } from "@/components/shared/InventivDataTable";
 
 type User = {
   id: string;
@@ -26,10 +27,11 @@ type User = {
 
 export default function UsersPage() {
   const { t } = useI18n();
-  const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [locales, setLocales] = useState<{ code: string; name: string; native_name?: string | null; direction: string }[]>([]);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [sort, setSort] = useState<DataTableSortState>(null);
+  const [locales, setLocales] = useState<Array<{ code: string; name: string; is_rtl?: boolean; is_active?: boolean }>>([]);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -45,26 +47,6 @@ export default function UsersPage() {
     locale_code: "en-US",
   });
 
-  const fetchUsers = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const res = await fetch(apiUrl("/users"));
-      if (!res.ok) {
-        setError("Accès refusé (admin requis) ou erreur API");
-        setUsers([]);
-        return;
-      }
-      const data = (await res.json()) as User[];
-      setUsers(data);
-    } catch (e) {
-      console.error(e);
-      setError("Erreur réseau");
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const fetchLocales = async () => {
     try {
       const res = await fetch(apiUrl("/locales"));
@@ -77,7 +59,6 @@ export default function UsersPage() {
   };
 
   useEffect(() => {
-    void fetchUsers();
     void fetchLocales();
   }, []);
 
@@ -120,7 +101,7 @@ export default function UsersPage() {
       return;
     }
     setCreateOpen(false);
-    await fetchUsers();
+    setRefreshTick((v) => v + 1);
   };
 
   const saveUser = async () => {
@@ -145,7 +126,7 @@ export default function UsersPage() {
     }
     setEditOpen(false);
     setSelected(null);
-    await fetchUsers();
+    setRefreshTick((v) => v + 1);
   };
 
   const deleteUser = async (u: User) => {
@@ -156,8 +137,92 @@ export default function UsersPage() {
       alert(`Erreur suppression user (${res.status}) ${msg}`);
       return;
     }
-    await fetchUsers();
+    setRefreshTick((v) => v + 1);
   };
+
+  type UsersSearchResponse = {
+    offset: number;
+    limit: number;
+    total_count: number;
+    filtered_count: number;
+    rows: User[];
+  };
+
+  const loadRange = useCallback(
+    async (offset: number, limit: number): Promise<LoadRangeResult<User>> => {
+      const params = new URLSearchParams();
+      params.set("offset", String(offset));
+      params.set("limit", String(limit));
+      if (sort) {
+        const by = ({ username: "username", email: "email", role: "role", created_at: "created_at", updated_at: "updated_at" } as Record<string, string>)[
+          sort.columnId
+        ];
+        if (by) {
+          params.set("sort_by", by);
+          params.set("sort_dir", sort.direction);
+        }
+      }
+      const res = await fetch(apiUrl(`/users/search?${params.toString()}`));
+      if (!res.ok) {
+        throw new Error(`users/search failed (${res.status})`);
+      }
+      const data = (await res.json()) as UsersSearchResponse;
+      return {
+        offset: data.offset,
+        items: data.rows,
+        totalCount: data.total_count,
+        filteredCount: data.filtered_count,
+      };
+    },
+    [sort]
+  );
+
+  const columns = useMemo<InventivDataTableColumn<User>[]>(() => {
+    return [
+      { id: "username", label: t("usersPage.username"), width: 200, sortable: true, cell: ({ row }) => <span className="font-mono text-xs">{row.username}</span> },
+      { id: "email", label: t("usersPage.email"), width: 280, sortable: true, cell: ({ row }) => <span className="font-medium">{row.email}</span> },
+      {
+        id: "name",
+        label: t("usersPage.name"),
+        width: 220,
+        sortable: false,
+        cell: ({ row }) => <span>{`${row.first_name ?? ""} ${row.last_name ?? ""}`.trim() || "-"}</span>,
+      },
+      { id: "role", label: t("usersPage.role"), width: 140, sortable: true, cell: ({ row }) => row.role },
+      {
+        id: "locale_code",
+        label: t("usersPage.locale"),
+        width: 160,
+        sortable: false,
+        cell: ({ row }) => <span className="font-mono text-xs">{LOCALE_LABELS[normalizeLocale(row.locale_code)] ?? row.locale_code}</span>,
+      },
+      {
+        id: "created_at",
+        label: t("usersPage.createdAt"),
+        width: 200,
+        sortable: true,
+        cell: ({ row }) => <span className="font-mono text-xs">{new Date(row.created_at).toISOString().slice(0, 19).replace("T", " ")}</span>,
+      },
+      {
+        id: "actions",
+        label: t("usersPage.actions"),
+        width: 220,
+        align: "right",
+        disableReorder: true,
+        sortable: false,
+        cell: ({ row }) => (
+          <div className="flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+            <Button variant="outline" size="sm" onClick={() => openEdit(row)}>
+              {t("usersPage.edit")}
+            </Button>
+            <Button variant="destructive" size="sm" onClick={() => deleteUser(row)}>
+              {t("usersPage.delete")}
+            </Button>
+          </div>
+        ),
+      },
+    ];
+  }, [deleteUser, openEdit, t]);
 
   return (
     <div className="p-8 space-y-6">
@@ -167,7 +232,7 @@ export default function UsersPage() {
           <p className="text-muted-foreground">{t("usersPage.subtitle")}</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={fetchUsers} disabled={loading}>
+          <Button variant="outline" onClick={() => setRefreshTick((v) => v + 1)} disabled={loading}>
             {t("usersPage.refresh")}
           </Button>
           <Button onClick={openCreate}>{t("usersPage.create")}</Button>
@@ -180,48 +245,20 @@ export default function UsersPage() {
         </CardHeader>
         <CardContent>
           {error ? <div className="text-sm text-red-600 mb-3">{error}</div> : null}
-          {loading ? (
-            <div className="text-sm text-muted-foreground">Chargement…</div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>{t("usersPage.username")}</TableHead>
-                  <TableHead>{t("usersPage.email")}</TableHead>
-                  <TableHead>{t("usersPage.name")}</TableHead>
-                  <TableHead>{t("usersPage.role")}</TableHead>
-                  <TableHead>{t("usersPage.locale")}</TableHead>
-                  <TableHead className="text-right">{t("usersPage.actions")}</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {users.map((u) => (
-                  <TableRow key={u.id}>
-                    <TableCell className="font-mono text-xs">{u.username}</TableCell>
-                    <TableCell className="font-medium">{u.email}</TableCell>
-                    <TableCell>{`${u.first_name ?? ""} ${u.last_name ?? ""}`.trim() || "-"}</TableCell>
-                    <TableCell>{u.role}</TableCell>
-                    <TableCell>{LOCALE_LABELS[normalizeLocale(u.locale_code)] ?? u.locale_code}</TableCell>
-                    <TableCell className="text-right space-x-2">
-                      <Button variant="outline" size="sm" onClick={() => openEdit(u)}>
-                        {t("usersPage.edit")}
-                      </Button>
-                      <Button variant="destructive" size="sm" onClick={() => deleteUser(u)}>
-                        {t("usersPage.delete")}
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {users.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={6} className="text-sm text-muted-foreground">
-                      {t("usersPage.none")}
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-              </TableBody>
-            </Table>
-          )}
+          <InventivDataTable<User>
+            listId="users:list"
+            title={t("usersPage.listTitle")}
+            dataKey={JSON.stringify({ refreshTick, sort })}
+            leftMeta={loading ? <span className="text-sm text-muted-foreground">Loading…</span> : undefined}
+            autoHeight={true}
+            height={520}
+            rowHeight={52}
+            columns={columns}
+            loadRange={loadRange}
+            sortState={sort}
+            onSortChange={setSort}
+            sortingMode="server"
+          />
         </CardContent>
       </Card>
 

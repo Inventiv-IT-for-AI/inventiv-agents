@@ -1,2 +1,2 @@
-pub mod scaleway;
 pub mod mock;
+pub mod scaleway;

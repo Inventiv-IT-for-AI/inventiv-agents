@@ -1,10 +1,10 @@
 use sqlx::{Pool, Postgres};
 use uuid::Uuid;
 
-use crate::provider_manager::ProviderManager;
-use crate::state_machine;
 use crate::finops_events;
 use crate::health_check_flow;
+use crate::provider_manager::ProviderManager;
+use crate::state_machine;
 
 /// job-watch-dog: checks READY instances still exist on provider.
 /// Uses SKIP LOCKED claiming so multiple orchestrators can run safely.
@@ -79,7 +79,10 @@ pub async fn watchdog_ready_instances(
             continue;
         };
 
-        match provider.check_instance_exists(&zone, &provider_instance_id).await {
+        match provider
+            .check_instance_exists(&zone, &provider_instance_id)
+            .await
+        {
             Ok(false) => {
                 let changed = state_machine::mark_provider_deleted(
                     pool,
@@ -102,11 +105,87 @@ pub async fn watchdog_ready_instances(
                 orphaned_count += 1;
             }
             Ok(true) => {
+                // If we don't have volume metadata for this instance yet, introspect provider-attached volumes
+                // and persist them into instance_volumes so UI can display Storage (and terminator can cleanup).
+                let has_any_volumes: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM instance_volumes WHERE instance_id = $1)",
+                )
+                .bind(instance_id)
+                .fetch_one(pool)
+                .await
+                .unwrap_or(false);
+                if !has_any_volumes {
+                    if let Ok(attached) = provider
+                        .list_attached_volumes(&zone, &provider_instance_id)
+                        .await
+                    {
+                        for av in attached {
+                            if av.volume_type != "sbs_volume" {
+                                continue;
+                            }
+                            let exists: bool = sqlx::query_scalar(
+                                "SELECT EXISTS(SELECT 1 FROM instance_volumes WHERE instance_id=$1 AND provider_volume_id=$2)",
+                            )
+                            .bind(instance_id)
+                            .bind(&av.provider_volume_id)
+                            .fetch_one(pool)
+                            .await
+                            .unwrap_or(false);
+                            if exists {
+                                // Update missing metadata (boot volume size/name can be absent on first insert).
+                                if av.size_bytes.unwrap_or(0) > 0
+                                    || av.provider_volume_name.is_some()
+                                {
+                                    let _ = sqlx::query(
+                                        r#"
+                                        UPDATE instance_volumes
+                                        SET
+                                          provider_volume_name = COALESCE(provider_volume_name, $3),
+                                          size_bytes = CASE
+                                            WHEN (size_bytes IS NULL OR size_bytes = 0) AND $4 > 0 THEN $4
+                                            ELSE size_bytes
+                                          END,
+                                          is_boot = $5
+                                        WHERE instance_id = $1
+                                          AND provider_volume_id = $2
+                                        "#,
+                                    )
+                                    .bind(instance_id)
+                                    .bind(&av.provider_volume_id)
+                                    .bind(av.provider_volume_name.as_deref())
+                                    .bind(av.size_bytes.unwrap_or(0))
+                                    .bind(av.boot)
+                                    .execute(pool)
+                                    .await;
+                                }
+                                continue;
+                            }
+                            let row_id = Uuid::new_v4();
+                            let _ = sqlx::query(
+                                "INSERT INTO instance_volumes (id, instance_id, provider_id, zone_code, provider_volume_id, provider_volume_name, volume_type, size_bytes, perf_iops, delete_on_terminate, status, attached_at, is_boot)
+                                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULL,TRUE,'attached',NOW(),$9)",
+                            )
+                            .bind(row_id)
+                            .bind(instance_id)
+                            .bind(provider_id)
+                            .bind(&zone)
+                            .bind(&av.provider_volume_id)
+                            .bind(av.provider_volume_name.as_deref())
+                            .bind(&av.volume_type)
+                            .bind(av.size_bytes.unwrap_or(0))
+                            .bind(av.boot)
+                            .execute(pool)
+                            .await;
+                        }
+                    }
+                }
+
                 // If the instance is READY but `worker_model_id` is missing, infer it from vLLM `/v1/models`
                 // and persist worker runtime fields so the runtime Models module can show serving models.
                 if worker_model_id.is_none() {
                     if let Some(ip) = ip.as_deref().filter(|s| !s.trim().is_empty()) {
-                        let (ok, ids, _ms, _err) = health_check_flow::check_vllm_http_models(ip, vllm_port).await;
+                        let (ok, ids, _ms, _err) =
+                            health_check_flow::check_vllm_http_models(ip, vllm_port).await;
                         if ok {
                             if let Some(mid) = ids.get(0).cloned() {
                                 let _ = sqlx::query(
@@ -131,11 +210,15 @@ pub async fn watchdog_ready_instances(
                 }
             }
             Err(e) => {
-                eprintln!("⚠️  [job-watch-dog] Error checking instance {}: {:?}", instance_id, e);
-                let _ = sqlx::query("UPDATE instances SET last_reconciliation = NULL WHERE id = $1")
-                    .bind(instance_id)
-                    .execute(pool)
-                    .await;
+                eprintln!(
+                    "⚠️  [job-watch-dog] Error checking instance {}: {:?}",
+                    instance_id, e
+                );
+                let _ =
+                    sqlx::query("UPDATE instances SET last_reconciliation = NULL WHERE id = $1")
+                        .bind(instance_id)
+                        .execute(pool)
+                        .await;
             }
         }
     }

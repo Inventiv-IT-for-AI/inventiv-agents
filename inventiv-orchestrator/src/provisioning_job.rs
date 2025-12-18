@@ -21,7 +21,9 @@ pub async fn run(pool: Pool<Postgres>, redis_client: redis::Client) {
         interval.tick().await;
 
         match requeue_stale_provisioning(&pool, &redis_client).await {
-            Ok(count) if count > 0 => println!("🔁 job-provisioning: re-queued {} instance(s)", count),
+            Ok(count) if count > 0 => {
+                println!("🔁 job-provisioning: re-queued {} instance(s)", count)
+            }
             Ok(_) => {}
             Err(e) => eprintln!("❌ job-provisioning error: {:?}", e),
         }
@@ -105,13 +107,18 @@ async fn requeue_stale_provisioning(
 
             if let Some(lid) = log_id {
                 let dur = start.elapsed().as_millis() as i32;
-                logger::log_event_complete(&db, lid, "success", dur, Some("Re-queued provisioning"))
-                    .await
-                    .ok();
+                logger::log_event_complete(
+                    &db,
+                    lid,
+                    "success",
+                    dur,
+                    Some("Re-queued provisioning"),
+                )
+                .await
+                .ok();
             }
         });
     }
 
     Ok(claimed_len)
 }
-

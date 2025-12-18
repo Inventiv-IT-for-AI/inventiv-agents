@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiUrl } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -8,14 +8,15 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Plus, Pencil, Trash2 } from "lucide-react";
-import { VirtualizedDataTable, type DataTableColumn } from "@/components/shared/VirtualizedDataTable";
+import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
+import { InventivDataTable, type DataTableSortState, type InventivDataTableColumn } from "@/components/shared/InventivDataTable";
 import type { ApiKey } from "@/lib/types";
 import { CopyButton } from "@/components/shared/CopyButton";
 
 export default function ApiKeysPage() {
     const [refreshTick, setRefreshTick] = useState(0);
+    const [sort, setSort] = useState<DataTableSortState>(null);
 
-    const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
     const [apiKeysLoading, setApiKeysLoading] = useState(false);
 
     const [apiKeyCreateOpen, setApiKeyCreateOpen] = useState(false);
@@ -27,13 +28,11 @@ export default function ApiKeysPage() {
     const [apiKeyEditName, setApiKeyEditName] = useState("");
 
     useEffect(() => {
+        // keep spinner semantics for leftMeta
         setApiKeysLoading(true);
-        fetch(apiUrl("api_keys"))
-            .then((r) => (r.ok ? r.json() : Promise.reject()))
-            .then((rows: ApiKey[]) => setApiKeys(rows))
-            .catch(() => null)
-            .finally(() => setApiKeysLoading(false));
-    }, [refreshTick]);
+        const t = window.setTimeout(() => setApiKeysLoading(false), 150);
+        return () => window.clearTimeout(t);
+    }, [refreshTick, sort]);
 
     const createApiKey = async () => {
         const name = apiKeyName.trim();
@@ -76,19 +75,55 @@ export default function ApiKeysPage() {
         setRefreshTick((s) => s + 1);
     };
 
-    const apiKeyColumns: DataTableColumn<ApiKey>[] = [
-        { id: "name", label: "Name", width: 260, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
-        { id: "prefix", label: "Prefix", width: 160, cell: ({ row }) => <span className="font-mono text-xs">{row.key_prefix}</span> },
+    type ApiKeysSearchResponse = {
+        offset: number;
+        limit: number;
+        total_count: number;
+        filtered_count: number;
+        rows: ApiKey[];
+    };
+
+    const loadRange = useCallback(
+        async (offset: number, limit: number): Promise<LoadRangeResult<ApiKey>> => {
+            const params = new URLSearchParams();
+            params.set("offset", String(offset));
+            params.set("limit", String(limit));
+            if (sort) {
+                const by = ({ name: "name", prefix: "key_prefix", created_at: "created_at", status: "revoked_at" } as Record<string, string>)[sort.columnId];
+                if (by) {
+                    params.set("sort_by", by);
+                    params.set("sort_dir", sort.direction);
+                }
+            }
+            const res = await fetch(apiUrl(`api_keys/search?${params.toString()}`));
+            if (!res.ok) throw new Error(`api_keys/search failed (${res.status})`);
+            const data = (await res.json()) as ApiKeysSearchResponse;
+            return {
+                offset: data.offset,
+                items: data.rows,
+                totalCount: data.total_count,
+                filteredCount: data.filtered_count,
+            };
+        },
+        [sort]
+    );
+
+    const apiKeyColumns = useMemo<InventivDataTableColumn<ApiKey>[]>(() => {
+        return [
+            { id: "name", label: "Name", width: 260, sortable: true, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
+            { id: "prefix", label: "Prefix", width: 160, sortable: true, cell: ({ row }) => <span className="font-mono text-xs">{row.key_prefix}</span> },
         {
             id: "created_at",
             label: "Created",
             width: 180,
+            sortable: true,
             cell: ({ row }) => <span className="font-mono text-xs">{new Date(row.created_at).toISOString().slice(0, 19).replace("T", " ")}</span>,
         },
         {
             id: "status",
             label: "Status",
             width: 120,
+            sortable: true,
             cell: ({ row }) =>
                 row.revoked_at ? (
                     <span className="text-xs px-2 py-1 rounded bg-gray-200 text-gray-700">revoked</span>
@@ -102,6 +137,7 @@ export default function ApiKeysPage() {
             width: 200,
             align: "right",
             disableReorder: true,
+            sortable: false,
             cell: ({ row }) => (
                 <div className="flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
                     <Button variant="outline" size="sm" onClick={() => openRename(row)}>
@@ -115,7 +151,8 @@ export default function ApiKeysPage() {
                 </div>
             ),
         },
-    ];
+        ];
+    }, [apiKeyEditOpen, createdApiKey, apiKeyCreateOpen, editingApiKey]);
 
     return (
         <div className="p-6 space-y-4">
@@ -132,16 +169,19 @@ export default function ApiKeysPage() {
 
             <Card>
                 <CardContent>
-                    <VirtualizedDataTable<ApiKey>
+                    <InventivDataTable<ApiKey>
                         listId="api_keys:list"
                         title="API Keys"
-                        dataKey={String(refreshTick)}
+                        dataKey={JSON.stringify({ refreshTick, sort })}
                         leftMeta={apiKeysLoading ? <span className="text-sm text-muted-foreground">Loading…</span> : undefined}
                         autoHeight={true}
                         height={420}
                         rowHeight={52}
                         columns={apiKeyColumns}
-                        rows={apiKeys}
+                        loadRange={loadRange}
+                        sortState={sort}
+                        onSortChange={setSort}
+                        sortingMode="server"
                     />
                 </CardContent>
             </Card>

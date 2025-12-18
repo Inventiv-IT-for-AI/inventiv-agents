@@ -132,6 +132,7 @@ async fn main() {
             "/api_keys",
             get(api_keys::list_api_keys).post(api_keys::create_api_key),
         )
+        .route("/api_keys/search", get(api_keys::search_api_keys))
         .route(
             "/api_keys/:id",
             axum::routing::put(api_keys::update_api_key).delete(api_keys::revoke_api_key),
@@ -270,6 +271,7 @@ async fn main() {
             "/users",
             get(users_endpoint::list_users).post(users_endpoint::create_user),
         )
+        .route("/users/search", get(users_endpoint::search_users))
         .route(
             "/users/:id",
             get(users_endpoint::get_user)
@@ -1432,18 +1434,40 @@ pub struct InstanceResponse {
     pub deletion_reason: Option<String>,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
+    /// Count of attached block volumes (not deleted) tracked in DB.
+    pub storage_count: i64,
+    /// Attached block volume sizes in GB (not deleted) tracked in DB.
+    pub storage_sizes_gb: Vec<i32>,
     
     // Joined Fields
     pub provider_name: String,
     pub region: String,
     pub zone: String,
     pub instance_type: String,
+    pub cpu_count: Option<i32>,
+    pub ram_gb: Option<i32>,
     pub gpu_vram: Option<i32>,
     pub gpu_count: Option<i32>, // NEW: Distinct GPU count
     pub cost_per_hour: Option<f64>,
     pub total_cost: Option<f64>,
     pub is_archived: bool,
     pub deleted_by_provider: Option<bool>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct InstanceStorageInfo {
+    pub provider_volume_id: String,
+    pub name: Option<String>,
+    pub volume_type: String,
+    pub size_gb: Option<i64>,
+    pub is_boot: bool,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct InstanceWithStoragesResponse {
+    #[serde(flatten)]
+    pub instance: InstanceResponse,
+    pub storages: Vec<InstanceStorageInfo>,
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -2478,12 +2502,31 @@ async fn list_instances(
             i.deletion_reason,
             i.error_code,
             i.error_message,
+            COALESCE((SELECT COUNT(*) FROM instance_volumes iv WHERE iv.instance_id = i.id AND iv.deleted_at IS NULL), 0)::bigint as storage_count,
+            COALESCE(
+              (SELECT ARRAY_AGG(
+                        (CASE
+                          WHEN iv.size_bytes < 1000000000 THEN iv.size_bytes
+                          ELSE ROUND(iv.size_bytes / 1000000000.0)
+                         END)::int
+                         ORDER BY
+                         (CASE
+                          WHEN iv.size_bytes < 1000000000 THEN iv.size_bytes
+                          ELSE ROUND(iv.size_bytes / 1000000000.0)
+                         END)::int
+                      )
+                 FROM instance_volumes iv
+                WHERE iv.instance_id = i.id AND iv.deleted_at IS NULL AND iv.size_bytes > 0),
+              ARRAY[]::int[]
+            ) as storage_sizes_gb,
             i.is_archived,
             i.deleted_by_provider,
             COALESCE(COALESCE(i18n_get_text(p.name_i18n_id, $2), p.name), 'Unknown Provider') as provider_name,
             COALESCE(COALESCE(i18n_get_text(z.name_i18n_id, $2), z.name), 'Unknown Zone') as zone,
             COALESCE(COALESCE(i18n_get_text(r.name_i18n_id, $2), r.name), 'Unknown Region') as region,
             COALESCE(COALESCE(i18n_get_text(it.name_i18n_id, $2), it.name), 'Unknown Type') as instance_type,
+            it.cpu_count as cpu_count,
+            it.ram_gb as ram_gb,
             it.vram_per_gpu_gb as gpu_vram,
             it.gpu_count as gpu_count,
             cast(it.cost_per_hour as float8) as cost_per_hour,
@@ -2574,12 +2617,31 @@ async fn search_instances(
             i.deletion_reason,
             i.error_code,
             i.error_message,
+            COALESCE((SELECT COUNT(*) FROM instance_volumes iv WHERE iv.instance_id = i.id AND iv.deleted_at IS NULL), 0)::bigint as storage_count,
+            COALESCE(
+              (SELECT ARRAY_AGG(
+                        (CASE
+                          WHEN iv.size_bytes < 1000000000 THEN iv.size_bytes
+                          ELSE ROUND(iv.size_bytes / 1000000000.0)
+                         END)::int
+                         ORDER BY
+                         (CASE
+                          WHEN iv.size_bytes < 1000000000 THEN iv.size_bytes
+                          ELSE ROUND(iv.size_bytes / 1000000000.0)
+                         END)::int
+                      )
+                 FROM instance_volumes iv
+                WHERE iv.instance_id = i.id AND iv.deleted_at IS NULL AND iv.size_bytes > 0),
+              ARRAY[]::int[]
+            ) as storage_sizes_gb,
             i.is_archived,
             i.deleted_by_provider,
             COALESCE(COALESCE(i18n_get_text(p.name_i18n_id, $4), p.name), 'Unknown Provider') as provider_name,
             COALESCE(COALESCE(i18n_get_text(z.name_i18n_id, $4), z.name), 'Unknown Zone') as zone,
             COALESCE(COALESCE(i18n_get_text(r.name_i18n_id, $4), r.name), 'Unknown Region') as region,
             COALESCE(COALESCE(i18n_get_text(it.name_i18n_id, $4), it.name), 'Unknown Type') as instance_type,
+            it.cpu_count as cpu_count,
+            it.ram_gb as ram_gb,
             it.vram_per_gpu_gb as gpu_vram,
             it.gpu_count as gpu_count,
             cast(it.cost_per_hour as float8) as cost_per_hour,
@@ -2621,7 +2683,7 @@ async fn search_instances(
         ("id" = Uuid, Path, description = "Instance Database UUID")
     ),
     responses(
-        (status = 200, description = "Instance details", body = InstanceResponse),
+        (status = 200, description = "Instance details", body = InstanceWithStoragesResponse),
         (status = 404, description = "Instance not found")
     )
 )]
@@ -2649,12 +2711,31 @@ async fn get_instance(
             i.deletion_reason,
             i.error_code,
             i.error_message,
+            COALESCE((SELECT COUNT(*) FROM instance_volumes iv WHERE iv.instance_id = i.id AND iv.deleted_at IS NULL), 0)::bigint as storage_count,
+            COALESCE(
+              (SELECT ARRAY_AGG(
+                        (CASE
+                          WHEN iv.size_bytes < 1000000000 THEN iv.size_bytes
+                          ELSE ROUND(iv.size_bytes / 1000000000.0)
+                         END)::int
+                         ORDER BY
+                         (CASE
+                          WHEN iv.size_bytes < 1000000000 THEN iv.size_bytes
+                          ELSE ROUND(iv.size_bytes / 1000000000.0)
+                         END)::int
+                      )
+                 FROM instance_volumes iv
+                WHERE iv.instance_id = i.id AND iv.deleted_at IS NULL AND iv.size_bytes > 0),
+              ARRAY[]::int[]
+            ) as storage_sizes_gb,
             i.is_archived,
             i.deleted_by_provider,
             COALESCE(COALESCE(i18n_get_text(p.name_i18n_id, $2), p.name), 'Unknown Provider') as provider_name,
             COALESCE(COALESCE(i18n_get_text(z.name_i18n_id, $2), z.name), 'Unknown Zone') as zone,
             COALESCE(COALESCE(i18n_get_text(r.name_i18n_id, $2), r.name), 'Unknown Region') as region,
             COALESCE(COALESCE(i18n_get_text(it.name_i18n_id, $2), it.name), 'Unknown Type') as instance_type,
+            it.cpu_count as cpu_count,
+            it.ram_gb as ram_gb,
             it.vram_per_gpu_gb as gpu_vram,
             it.gpu_count as gpu_count,
             cast(it.cost_per_hour as float8) as cost_per_hour,
@@ -2677,7 +2758,54 @@ async fn get_instance(
     .flatten();
 
     match row {
-        Some(inst) => Json(inst).into_response(),
+        Some(inst) => {
+            let storages: Vec<InstanceStorageInfo> =
+                sqlx::query_as::<Postgres, (String, Option<String>, String, i64, bool)>(
+                    r#"
+                SELECT
+                  provider_volume_id,
+                  provider_volume_name,
+                  volume_type,
+                  size_bytes,
+                  is_boot
+                FROM instance_volumes
+                WHERE instance_id = $1 AND deleted_at IS NULL
+                ORDER BY is_boot DESC, size_bytes DESC
+                "#,
+                )
+                .bind(id)
+                .fetch_all(&state.db)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(
+                    |(provider_volume_id, name, volume_type, size_bytes, is_boot)| {
+                        InstanceStorageInfo {
+                            provider_volume_id,
+                            name,
+                            volume_type,
+                            size_gb: if size_bytes > 0 {
+                                if size_bytes < 1_000_000_000 {
+                                    // Some providers return "size" in GB already.
+                                    Some(size_bytes)
+                                } else {
+                                    Some(((size_bytes as f64) / 1_000_000_000.0).round() as i64)
+                                }
+                            } else {
+                                None
+                            },
+                            is_boot,
+                        }
+                    },
+                )
+                .collect();
+
+            Json(InstanceWithStoragesResponse {
+                instance: inst,
+                storages,
+            })
+            .into_response()
+        }
         None => (StatusCode::NOT_FOUND, "Instance not found").into_response(),
     }
 }
@@ -3146,8 +3274,12 @@ async fn reinstall_instance(
     let _ = sqlx::query(
         "UPDATE instances
          SET status = 'booting',
+             boot_started_at = NOW(),
+             last_health_check = NULL,
+             health_check_failures = 0,
              error_code = NULL,
-             error_message = NULL
+             error_message = NULL,
+             failed_at = NULL
          WHERE id = $1
            AND status NOT IN ('terminated', 'terminating')",
     )

@@ -1,4 +1,5 @@
 use axum::{
+    extract::Query,
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
@@ -6,6 +7,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sqlx::{Postgres, QueryBuilder};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -46,6 +48,34 @@ pub struct UpdateUserRequest {
     pub locale_code: Option<String>,
 }
 
+#[derive(Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+pub struct UsersSearchQuery {
+    pub offset: Option<i64>,
+    pub limit: Option<i64>,
+    /// Search in username/email (ILIKE).
+    pub q: Option<String>,
+    /// Sort field allowlist: username|email|role|created_at|updated_at
+    pub sort_by: Option<String>,
+    /// "asc" | "desc"
+    pub sort_dir: Option<String>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct UsersSearchResponse {
+    pub offset: i64,
+    pub limit: i64,
+    pub total_count: i64,
+    pub filtered_count: i64,
+    pub rows: Vec<UserResponse>,
+}
+
+fn dir_sql(dir: Option<&str>) -> &'static str {
+    match dir.unwrap_or("asc").to_ascii_lowercase().as_str() {
+        "desc" => "DESC",
+        _ => "ASC",
+    }
+}
+
 pub async fn list_users(
     State(state): State<Arc<AppState>>,
     axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
@@ -66,6 +96,98 @@ pub async fn list_users(
     .unwrap_or_default();
 
     Json(rows).into_response()
+}
+
+#[utoipa::path(
+    get,
+    path = "/users/search",
+    tag = "Users",
+    params(UsersSearchQuery),
+    responses((status = 200, description = "Search users (admin)", body = UsersSearchResponse))
+)]
+pub async fn search_users(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
+    Query(params): Query<UsersSearchQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = auth::require_admin(&user) {
+        return e.into_response();
+    }
+
+    let offset = params.offset.unwrap_or(0).max(0);
+    let limit = params.limit.unwrap_or(200).clamp(1, 500);
+    let q_like: Option<String> = params
+        .q
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("%{}%", s));
+
+    let total_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0);
+
+    let filtered_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM users u
+        WHERE ($1::text IS NULL OR u.username ILIKE $1 OR u.email ILIKE $1)
+        "#,
+    )
+    .bind(q_like.as_deref())
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
+    let order_by = match params.sort_by.as_deref() {
+        Some("email") => "email",
+        Some("role") => "role",
+        Some("created_at") => "created_at",
+        Some("updated_at") => "updated_at",
+        _ => "username",
+    };
+    let dir = dir_sql(params.sort_dir.as_deref());
+
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+        r#"
+        SELECT id, username, email, role, first_name, last_name, created_at, updated_at
+        FROM users u
+        WHERE 1=1
+        "#,
+    );
+    if q_like.is_some() {
+        qb.push(" AND (u.username ILIKE ");
+        qb.push_bind(q_like.as_deref());
+        qb.push(" OR u.email ILIKE ");
+        qb.push_bind(q_like.as_deref());
+        qb.push(")");
+    }
+    qb.push(" ORDER BY ");
+    qb.push(order_by);
+    qb.push(" ");
+    qb.push(dir);
+    qb.push(", id ");
+    qb.push(dir);
+    qb.push(" LIMIT ");
+    qb.push_bind(limit);
+    qb.push(" OFFSET ");
+    qb.push_bind(offset);
+
+    let rows: Vec<UserResponse> = qb
+        .build_query_as()
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default();
+
+    Json(UsersSearchResponse {
+        offset,
+        limit,
+        total_count,
+        filtered_count,
+        rows,
+    })
+    .into_response()
 }
 
 pub async fn get_user(
@@ -173,10 +295,22 @@ pub async fn update_user(
         return e.into_response();
     }
 
-    let username = req.username.map(|u| u.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
-    let email = req.email.map(|e| e.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
-    let role = req.role.map(|r| r.trim().to_string()).filter(|s| !s.is_empty());
-    let locale_code = req.locale_code.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let username = req
+        .username
+        .map(|u| u.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty());
+    let email = req
+        .email
+        .map(|e| e.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty());
+    let role = req
+        .role
+        .map(|r| r.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let locale_code = req
+        .locale_code
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
 
     // Update base fields
     let res = sqlx::query(
@@ -312,5 +446,3 @@ pub async fn delete_user(
             .into_response(),
     }
 }
-
-

@@ -115,4 +115,3 @@ pub fn instance_type_matches_patterns(instance_type: &str, patterns: &[String]) 
 
     false
 }
-

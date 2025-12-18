@@ -17,6 +17,10 @@ pub struct ActionLogsSearchQuery {
     pub component: Option<String>,
     pub status: Option<String>,
     pub action_type: Option<String>,
+    /// Sort field (allowlist). Example: created_at, duration_ms, status, component, action_type, provider_name, instance_type, instance_id
+    pub sort_by: Option<String>,
+    /// Sort direction. "asc" or "desc" (default: desc)
+    pub sort_dir: Option<String>,
     /// If true, computes `status_counts` for the filtered set (extra query).
     pub include_stats: Option<bool>,
 }
@@ -79,7 +83,11 @@ fn push_filters(qb: &mut QueryBuilder<'_, Postgres>, params: &ActionLogsSearchQu
         qb.push(" AND al.status = ");
         qb.push_bind(status.to_string());
     }
-    if let Some(action_type) = params.action_type.as_deref().filter(|s| !s.trim().is_empty()) {
+    if let Some(action_type) = params
+        .action_type
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
         qb.push(" AND al.action_type = ");
         qb.push_bind(action_type.to_string());
     }
@@ -102,6 +110,18 @@ pub async fn search_action_logs(
     let offset = params.offset.unwrap_or(0).max(0);
     let limit = params.limit.unwrap_or(200).clamp(1, 500);
     let include_stats = params.include_stats.unwrap_or(false);
+
+    let sort_by = params
+        .sort_by
+        .as_deref()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty());
+    let sort_dir = params
+        .sort_dir
+        .as_deref()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| s == "asc" || s == "desc")
+        .unwrap_or_else(|| "desc".to_string());
 
     // Total count (no filters)
     let total_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM action_logs")
@@ -144,7 +164,53 @@ pub async fn search_action_logs(
           WHERE 1=1"#,
     );
     push_filters(&mut rows_qb, &params);
-    rows_qb.push(" ORDER BY created_at DESC, id DESC");
+    // Safe ORDER BY (allowlist only; no user-controlled SQL injection)
+    rows_qb.push(" ORDER BY ");
+    match sort_by.as_deref() {
+        Some("created_at") => {
+            rows_qb.push("al.created_at ");
+            rows_qb.push(&sort_dir);
+        }
+        Some("duration_ms") => {
+            rows_qb.push("al.duration_ms ");
+            rows_qb.push(&sort_dir);
+            rows_qb.push(" NULLS LAST");
+        }
+        Some("status") => {
+            rows_qb.push("al.status ");
+            rows_qb.push(&sort_dir);
+        }
+        Some("component") => {
+            // Keep consistent with "backend" -> "api" normalization
+            rows_qb.push("CASE WHEN al.component = 'backend' THEN 'api' ELSE al.component END ");
+            rows_qb.push(&sort_dir);
+        }
+        Some("action_type") => {
+            rows_qb.push("al.action_type ");
+            rows_qb.push(&sort_dir);
+        }
+        Some("provider_name") => {
+            rows_qb.push("p.name ");
+            rows_qb.push(&sort_dir);
+            rows_qb.push(" NULLS LAST");
+        }
+        Some("instance_type") => {
+            rows_qb.push("it.name ");
+            rows_qb.push(&sort_dir);
+            rows_qb.push(" NULLS LAST");
+        }
+        Some("instance_id") => {
+            rows_qb.push("al.instance_id ");
+            rows_qb.push(&sort_dir);
+            rows_qb.push(" NULLS LAST");
+        }
+        _ => {
+            // Default
+            rows_qb.push("al.created_at DESC");
+        }
+    }
+    // Deterministic tie-breaker for virtualization pagination
+    rows_qb.push(", al.id DESC");
     rows_qb.push(" LIMIT ");
     rows_qb.push_bind(limit);
     rows_qb.push(" OFFSET ");
@@ -193,4 +259,3 @@ pub async fn search_action_logs(
         rows,
     })
 }
-
