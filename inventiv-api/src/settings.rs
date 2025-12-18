@@ -164,12 +164,24 @@ pub struct UpdateInstanceTypeRequest {
         (status = 200, description = "List all regions", body = Vec<Region>)
     )
 )]
-pub async fn list_regions(State(state): State<Arc<AppState>>) -> Json<Vec<Region>> {
-    // NOTE: list_* endpoints are behind require_user middleware, but older callers might not pass Extension.
-    // Keep backward compat by not extracting user here; locale-aware version is in search endpoints and UI.
+pub async fn list_regions(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
+) -> Json<Vec<Region>> {
+    let locale = user_locale::preferred_locale_code(&state.db, user.user_id).await;
     let regions = sqlx::query_as::<_, Region>(
-        "SELECT id, provider_id, name, code, is_active FROM regions ORDER BY name"
+        r#"
+        SELECT
+          id,
+          provider_id,
+          COALESCE(i18n_get_text(name_i18n_id, $1), name) as name,
+          code,
+          is_active
+        FROM regions
+        ORDER BY COALESCE(i18n_get_text(name_i18n_id, $1), name)
+        "#,
     )
+    .bind(&locale)
     .fetch_all(&state.db)
     .await
     .unwrap_or(vec![]);
@@ -355,10 +367,24 @@ pub async fn update_region(
         (status = 200, description = "List all zones", body = Vec<Zone>)
     )
 )]
-pub async fn list_zones(State(state): State<Arc<AppState>>) -> Json<Vec<Zone>> {
+pub async fn list_zones(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
+) -> Json<Vec<Zone>> {
+    let locale = user_locale::preferred_locale_code(&state.db, user.user_id).await;
     let zones = sqlx::query_as::<_, Zone>(
-        "SELECT id, region_id, name, code, is_active FROM zones ORDER BY name"
+        r#"
+        SELECT
+          id,
+          region_id,
+          COALESCE(i18n_get_text(name_i18n_id, $1), name) as name,
+          code,
+          is_active
+        FROM zones
+        ORDER BY COALESCE(i18n_get_text(name_i18n_id, $1), name)
+        "#,
     )
+    .bind(&locale)
     .fetch_all(&state.db)
     .await
     .unwrap_or(vec![]);
@@ -552,16 +578,30 @@ pub async fn update_zone(
         (status = 200, description = "List all instance types", body = Vec<InstanceType>)
     )
 )]
-pub async fn list_instance_types(State(state): State<Arc<AppState>>) -> Json<Vec<InstanceType>> {
+pub async fn list_instance_types(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
+) -> Json<Vec<InstanceType>> {
+    let locale = user_locale::preferred_locale_code(&state.db, user.user_id).await;
     let types = sqlx::query_as::<_, InstanceType>(
-        r#"SELECT 
-            id, provider_id, name, code, 
-            gpu_count, vram_per_gpu_gb, 
-            cpu_count, ram_gb, bandwidth_bps,
-            is_active, 
-            CAST(cost_per_hour AS DOUBLE PRECISION) as "cost_per_hour"
-           FROM instance_types ORDER BY name"#
+        r#"
+        SELECT
+          id,
+          provider_id,
+          COALESCE(i18n_get_text(name_i18n_id, $1), name) as name,
+          code,
+          gpu_count,
+          vram_per_gpu_gb,
+          cpu_count,
+          ram_gb,
+          bandwidth_bps,
+          is_active,
+          CAST(cost_per_hour AS DOUBLE PRECISION) as "cost_per_hour"
+        FROM instance_types
+        ORDER BY COALESCE(i18n_get_text(name_i18n_id, $1), name)
+        "#
     )
+    .bind(&locale)
     .fetch_all(&state.db)
     .await
     .unwrap_or(vec![]);
@@ -796,10 +836,24 @@ pub struct UpdateProviderRequest {
         (status = 200, description = "List all providers", body = Vec<Provider>)
     )
 )]
-pub async fn list_providers(State(state): State<Arc<AppState>>) -> Json<Vec<Provider>> {
+pub async fn list_providers(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
+) -> Json<Vec<Provider>> {
+    let locale = user_locale::preferred_locale_code(&state.db, user.user_id).await;
     let providers = sqlx::query_as::<_, Provider>(
-        "SELECT id, name, code, description, is_active FROM providers ORDER BY name"
+        r#"
+        SELECT
+          id,
+          COALESCE(i18n_get_text(name_i18n_id, $1), name) as name,
+          code,
+          COALESCE(i18n_get_text(description_i18n_id, $1), description) as description,
+          is_active
+        FROM providers
+        ORDER BY COALESCE(i18n_get_text(name_i18n_id, $1), name)
+        "#,
     )
+    .bind(&locale)
     .fetch_all(&state.db)
     .await
     .unwrap_or(vec![]);

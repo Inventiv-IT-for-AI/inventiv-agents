@@ -2454,9 +2454,11 @@ async fn manual_catalog_sync_trigger(
 )]
 async fn list_instances(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
     axum::extract::Query(params): axum::extract::Query<ListInstanceParams>,
 ) -> Json<Vec<InstanceResponse>> {
     let show_archived = params.archived.unwrap_or(false);
+    let locale = user_locale::preferred_locale_code(&state.db, user.user_id).await;
 
     let instances = sqlx::query_as::<Postgres, InstanceResponse>(
         r#"
@@ -2478,10 +2480,10 @@ async fn list_instances(
             i.error_message,
             i.is_archived,
             i.deleted_by_provider,
-            COALESCE(p.name, 'Unknown Provider') as provider_name,
-            COALESCE(z.name, 'Unknown Zone') as zone,
-            COALESCE(r.name, 'Unknown Region') as region,
-            COALESCE(it.name, 'Unknown Type') as instance_type,
+            COALESCE(COALESCE(i18n_get_text(p.name_i18n_id, $2), p.name), 'Unknown Provider') as provider_name,
+            COALESCE(COALESCE(i18n_get_text(z.name_i18n_id, $2), z.name), 'Unknown Zone') as zone,
+            COALESCE(COALESCE(i18n_get_text(r.name_i18n_id, $2), r.name), 'Unknown Region') as region,
+            COALESCE(COALESCE(i18n_get_text(it.name_i18n_id, $2), it.name), 'Unknown Type') as instance_type,
             it.vram_per_gpu_gb as gpu_vram,
             it.gpu_count as gpu_count,
             cast(it.cost_per_hour as float8) as cost_per_hour,
@@ -2497,6 +2499,7 @@ async fn list_instances(
         "#
     )
     .bind(show_archived)
+    .bind(&locale)
     .fetch_all(&state.db)
     .await
     .unwrap_or(vec![]);
@@ -2512,9 +2515,11 @@ async fn list_instances(
 )]
 async fn search_instances(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
     axum::extract::Query(params): axum::extract::Query<SearchInstancesParams>,
 ) -> Json<SearchInstancesResponse> {
     let show_archived = params.archived.unwrap_or(false);
+    let locale = user_locale::preferred_locale_code(&state.db, user.user_id).await;
     let offset = params.offset.unwrap_or(0).max(0);
     let limit = params.limit.unwrap_or(200).clamp(1, 500);
     let dir = match params
@@ -2542,10 +2547,10 @@ async fn search_instances(
     let total_cost_expr = "(EXTRACT(EPOCH FROM (COALESCE(i.terminated_at, NOW()) - i.created_at)) / 3600.0) * cast(it.cost_per_hour as float8)";
     let order_by = match params.sort_by.as_deref() {
         Some("status") => "i.status",
-        Some("provider") => "p.name",
-        Some("region") => "r.name",
-        Some("zone") => "z.name",
-        Some("type") => "it.name",
+        Some("provider") => "COALESCE(i18n_get_text(p.name_i18n_id, $4), p.name)",
+        Some("region") => "COALESCE(i18n_get_text(r.name_i18n_id, $4), r.name)",
+        Some("zone") => "COALESCE(i18n_get_text(z.name_i18n_id, $4), z.name)",
+        Some("type") => "COALESCE(i18n_get_text(it.name_i18n_id, $4), it.name)",
         Some("cost_per_hour") => "it.cost_per_hour",
         Some("total_cost") => total_cost_expr,
         _ => "i.created_at",
@@ -2571,10 +2576,10 @@ async fn search_instances(
             i.error_message,
             i.is_archived,
             i.deleted_by_provider,
-            COALESCE(p.name, 'Unknown Provider') as provider_name,
-            COALESCE(z.name, 'Unknown Zone') as zone,
-            COALESCE(r.name, 'Unknown Region') as region,
-            COALESCE(it.name, 'Unknown Type') as instance_type,
+            COALESCE(COALESCE(i18n_get_text(p.name_i18n_id, $4), p.name), 'Unknown Provider') as provider_name,
+            COALESCE(COALESCE(i18n_get_text(z.name_i18n_id, $4), z.name), 'Unknown Zone') as zone,
+            COALESCE(COALESCE(i18n_get_text(r.name_i18n_id, $4), r.name), 'Unknown Region') as region,
+            COALESCE(COALESCE(i18n_get_text(it.name_i18n_id, $4), it.name), 'Unknown Type') as instance_type,
             it.vram_per_gpu_gb as gpu_vram,
             it.gpu_count as gpu_count,
             cast(it.cost_per_hour as float8) as cost_per_hour,
@@ -2595,6 +2600,7 @@ async fn search_instances(
         .bind(show_archived)
         .bind(limit)
         .bind(offset)
+        .bind(&locale)
         .fetch_all(&state.db)
         .await
         .unwrap_or_default();
@@ -2621,8 +2627,10 @@ async fn search_instances(
 )]
 async fn get_instance(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
     Path(id): Path<uuid::Uuid>,
 ) -> impl IntoResponse {
+    let locale = user_locale::preferred_locale_code(&state.db, user.user_id).await;
     let row = sqlx::query_as::<Postgres, InstanceResponse>(
         r#"
         SELECT 
@@ -2643,10 +2651,10 @@ async fn get_instance(
             i.error_message,
             i.is_archived,
             i.deleted_by_provider,
-            COALESCE(p.name, 'Unknown Provider') as provider_name,
-            COALESCE(z.name, 'Unknown Zone') as zone,
-            COALESCE(r.name, 'Unknown Region') as region,
-            COALESCE(it.name, 'Unknown Type') as instance_type,
+            COALESCE(COALESCE(i18n_get_text(p.name_i18n_id, $2), p.name), 'Unknown Provider') as provider_name,
+            COALESCE(COALESCE(i18n_get_text(z.name_i18n_id, $2), z.name), 'Unknown Zone') as zone,
+            COALESCE(COALESCE(i18n_get_text(r.name_i18n_id, $2), r.name), 'Unknown Region') as region,
+            COALESCE(COALESCE(i18n_get_text(it.name_i18n_id, $2), it.name), 'Unknown Type') as instance_type,
             it.vram_per_gpu_gb as gpu_vram,
             it.gpu_count as gpu_count,
             cast(it.cost_per_hour as float8) as cost_per_hour,
@@ -2662,6 +2670,7 @@ async fn get_instance(
         "#
     )
     .bind(id)
+    .bind(&locale)
     .fetch_optional(&state.db)
     .await
     .ok()
