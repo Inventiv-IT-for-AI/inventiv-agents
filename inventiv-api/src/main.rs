@@ -2416,7 +2416,17 @@ async fn list_instances(
             i.error_message,
             COALESCE((SELECT COUNT(*) FROM instance_volumes iv WHERE iv.instance_id = i.id AND iv.deleted_at IS NULL), 0)::bigint as storage_count,
             COALESCE(
-              (SELECT ARRAY_AGG(((iv.size_bytes / 1000000000.0))::int ORDER BY ((iv.size_bytes / 1000000000.0))::int)
+              (SELECT ARRAY_AGG(
+                        (CASE
+                          WHEN iv.size_bytes < 1000000000 THEN iv.size_bytes
+                          ELSE ROUND(iv.size_bytes / 1000000000.0)
+                         END)::int
+                         ORDER BY
+                         (CASE
+                          WHEN iv.size_bytes < 1000000000 THEN iv.size_bytes
+                          ELSE ROUND(iv.size_bytes / 1000000000.0)
+                         END)::int
+                      )
                  FROM instance_volumes iv
                 WHERE iv.instance_id = i.id AND iv.deleted_at IS NULL AND iv.size_bytes > 0),
               ARRAY[]::int[]
@@ -2516,7 +2526,17 @@ async fn search_instances(
             i.error_message,
             COALESCE((SELECT COUNT(*) FROM instance_volumes iv WHERE iv.instance_id = i.id AND iv.deleted_at IS NULL), 0)::bigint as storage_count,
             COALESCE(
-              (SELECT ARRAY_AGG(((iv.size_bytes / 1000000000.0))::int ORDER BY ((iv.size_bytes / 1000000000.0))::int)
+              (SELECT ARRAY_AGG(
+                        (CASE
+                          WHEN iv.size_bytes < 1000000000 THEN iv.size_bytes
+                          ELSE ROUND(iv.size_bytes / 1000000000.0)
+                         END)::int
+                         ORDER BY
+                         (CASE
+                          WHEN iv.size_bytes < 1000000000 THEN iv.size_bytes
+                          ELSE ROUND(iv.size_bytes / 1000000000.0)
+                         END)::int
+                      )
                  FROM instance_volumes iv
                 WHERE iv.instance_id = i.id AND iv.deleted_at IS NULL AND iv.size_bytes > 0),
               ARRAY[]::int[]
@@ -2595,7 +2615,17 @@ async fn get_instance(
             i.error_message,
             COALESCE((SELECT COUNT(*) FROM instance_volumes iv WHERE iv.instance_id = i.id AND iv.deleted_at IS NULL), 0)::bigint as storage_count,
             COALESCE(
-              (SELECT ARRAY_AGG(((iv.size_bytes / 1000000000.0))::int ORDER BY ((iv.size_bytes / 1000000000.0))::int)
+              (SELECT ARRAY_AGG(
+                        (CASE
+                          WHEN iv.size_bytes < 1000000000 THEN iv.size_bytes
+                          ELSE ROUND(iv.size_bytes / 1000000000.0)
+                         END)::int
+                         ORDER BY
+                         (CASE
+                          WHEN iv.size_bytes < 1000000000 THEN iv.size_bytes
+                          ELSE ROUND(iv.size_bytes / 1000000000.0)
+                         END)::int
+                      )
                  FROM instance_volumes iv
                 WHERE iv.instance_id = i.id AND iv.deleted_at IS NULL AND iv.size_bytes > 0),
               ARRAY[]::int[]
@@ -2654,7 +2684,12 @@ async fn get_instance(
                             name,
                             volume_type,
                             size_gb: if size_bytes > 0 {
-                                Some(((size_bytes as f64) / 1_000_000_000.0).round() as i64)
+                                if size_bytes < 1_000_000_000 {
+                                    // Some providers return "size" in GB already.
+                                    Some(size_bytes)
+                                } else {
+                                    Some(((size_bytes as f64) / 1_000_000_000.0).round() as i64)
+                                }
                             } else {
                                 None
                             },
