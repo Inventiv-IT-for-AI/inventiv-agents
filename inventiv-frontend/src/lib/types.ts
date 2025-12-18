@@ -25,6 +25,8 @@ export type Instance = {
     error_message?: string | null;
     gpu_vram?: number;
     gpu_count?: number;
+    cpu_count?: number | null;
+    ram_gb?: number | null;
     cost_per_hour?: number;
     total_cost?: number;
     storage_count?: number;

@@ -413,6 +413,16 @@ export function InstanceTimelineModal({
                 <span className="font-medium min-w-0 truncate">{displayOrDash(instance?.instance_type)}</span>
               </div>
               <div className="flex items-baseline gap-2 min-w-0">
+                <span className="text-muted-foreground">CPU</span>
+                <span className="text-muted-foreground">:</span>
+                <span className="font-medium">{typeof instance?.cpu_count === "number" && instance.cpu_count > 0 ? instance.cpu_count : "-"}</span>
+              </div>
+              <div className="flex items-baseline gap-2 min-w-0">
+                <span className="text-muted-foreground">RAM</span>
+                <span className="text-muted-foreground">:</span>
+                <span className="font-medium">{typeof instance?.ram_gb === "number" && instance.ram_gb > 0 ? `${instance.ram_gb} GB` : "-"}</span>
+              </div>
+              <div className="flex items-baseline gap-2 min-w-0">
                 <span className="text-muted-foreground">GPU</span>
                 <span className="text-muted-foreground">:</span>
                 <span className="font-medium">{instance?.gpu_count ?? "-"}</span>
