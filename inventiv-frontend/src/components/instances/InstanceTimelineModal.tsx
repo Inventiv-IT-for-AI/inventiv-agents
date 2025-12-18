@@ -314,6 +314,9 @@ export function InstanceTimelineModal({
         instance: {
           // Include all known instance fields (including new ones like storages).
           ...(instance ?? { id: instanceId }),
+          // Explicitly include compute fields from instance types (for schema stability in exports).
+          cpu_count: instance?.cpu_count ?? null,
+          ram_gb: instance?.ram_gb ?? null,
           // Derived / computed fields shown in header.
           vllm_mode: vllmMode,
           readiness,
