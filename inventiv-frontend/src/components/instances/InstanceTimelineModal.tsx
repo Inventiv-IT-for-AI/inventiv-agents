@@ -312,33 +312,15 @@ export function InstanceTimelineModal({
       // Créer un objet avec les informations de l'instance et toutes les actions
       const dataToCopy = {
         instance: {
-          id: instanceId,
-          status: instance?.status,
-          created_at: instance?.created_at,
-          region: instance?.region,
-          zone: instance?.zone,
-          instance_type: instance?.instance_type,
-          ip_address: instance?.ip_address,
-          provider_instance_id: instance?.provider_instance_id,
-          gpu_count: instance?.gpu_count,
-          gpu_vram: instance?.gpu_vram,
+          // Include all known instance fields (including new ones like storages).
+          ...(instance ?? { id: instanceId }),
+          // Derived / computed fields shown in header.
+          vllm_mode: vllmMode,
+          readiness,
+          last_ping: lastPing,
         },
-        actions: allActions.map((action) => ({
-          id: action.id,
-          action_type: action.action_type,
-          component: action.component,
-          status: action.status,
-          provider_name: action.provider_name,
-          instance_type: action.instance_type,
-          error_message: action.error_message,
-          instance_id: action.instance_id,
-          duration_ms: action.duration_ms,
-          created_at: action.created_at,
-          completed_at: action.completed_at,
-          metadata: action.metadata,
-          instance_status_before: action.instance_status_before,
-          instance_status_after: action.instance_status_after,
-        })),
+        // Keep full action objects so any newly added fields are automatically included.
+        actions: allActions,
         summary: {
           total_actions: allActions.length,
           exported_at: new Date().toISOString(),
@@ -357,7 +339,7 @@ export function InstanceTimelineModal({
     } finally {
       setCopyingActions(false);
     }
-  }, [copyingActions, fetchAllActions, instanceId, instance]);
+  }, [copyingActions, fetchAllActions, instanceId, instance, lastPing, readiness, vllmMode]);
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
