@@ -467,10 +467,15 @@ export function InstanceTimelineModal({
                   <span className="font-medium min-w-0 truncate">
                     {(() => {
                       const count = instance?.storage_count ?? (instance?.storages?.length ?? 0);
-                      const sizes = (instance?.storage_sizes_gb ?? [])
+                      // Prefer aggregated sizes from list/search payload; fallback to detailed storages (instance/:id).
+                      const sizesFromSummary = (instance?.storage_sizes_gb ?? [])
                         .filter((n) => typeof n === "number" && n > 0)
-                        .map((n) => `${n}GB`)
-                        .join(", ");
+                        .map((n) => `${n}GB`);
+                      const sizesFromDetails = (instance?.storages ?? [])
+                        .map((s) => s.size_gb)
+                        .filter((n): n is number => typeof n === "number" && n > 0)
+                        .map((n) => `${n}GB`);
+                      const sizes = (sizesFromSummary.length ? sizesFromSummary : sizesFromDetails).join(", ");
                       return count > 0 ? `${count} storages${sizes ? ` (${sizes})` : ""}` : "-";
                     })()}
                   </span>
@@ -481,11 +486,13 @@ export function InstanceTimelineModal({
                       <div key={`${s.provider_volume_id}:${idx}`} className="truncate">
                         <span className="font-medium text-foreground/90">Storage {idx + 1}</span>
                         <span className="text-muted-foreground">:</span>{" "}
-                        <span className="font-mono">{s.name ?? s.provider_volume_id}</span>
-                        {" • "}
                         <span className="font-medium">{s.volume_type}</span>
-                        {" • "}
-                        <span className="font-medium">{s.size_gb ? `${s.size_gb} GB` : "-"}</span>
+                        {" - "}
+                        <span className="font-medium">{s.size_gb ? `${s.size_gb}GB` : "-"}</span>
+                        {" - "}
+                        <span className="font-mono">{s.name ?? "-"}</span>
+                        {" - "}
+                        <span className="font-mono">{s.provider_volume_id}</span>
                         {s.is_boot ? <span className="text-muted-foreground"> (boot)</span> : null}
                       </div>
                     ))}

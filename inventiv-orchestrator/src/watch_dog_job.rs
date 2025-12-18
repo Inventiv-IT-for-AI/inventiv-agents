@@ -132,6 +132,32 @@ pub async fn watchdog_ready_instances(
                             .await
                             .unwrap_or(false);
                             if exists {
+                                // Update missing metadata (boot volume size/name can be absent on first insert).
+                                if av.size_bytes.unwrap_or(0) > 0
+                                    || av.provider_volume_name.is_some()
+                                {
+                                    let _ = sqlx::query(
+                                        r#"
+                                        UPDATE instance_volumes
+                                        SET
+                                          provider_volume_name = COALESCE(provider_volume_name, $3),
+                                          size_bytes = CASE
+                                            WHEN (size_bytes IS NULL OR size_bytes = 0) AND $4 > 0 THEN $4
+                                            ELSE size_bytes
+                                          END,
+                                          is_boot = $5
+                                        WHERE instance_id = $1
+                                          AND provider_volume_id = $2
+                                        "#,
+                                    )
+                                    .bind(instance_id)
+                                    .bind(&av.provider_volume_id)
+                                    .bind(av.provider_volume_name.as_deref())
+                                    .bind(av.size_bytes.unwrap_or(0))
+                                    .bind(av.boot)
+                                    .execute(pool)
+                                    .await;
+                                }
                                 continue;
                             }
                             let row_id = Uuid::new_v4();

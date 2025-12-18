@@ -1509,20 +1509,49 @@ pub async fn process_provisioning(
                                 .await
                                 .unwrap_or(false);
                                 if exists {
+                                    // Best effort: if we previously stored incomplete metadata (size/name),
+                                    // update it now so UI can show the expected sizes (e.g. boot 20GB).
+                                    if av.size_bytes.unwrap_or(0) > 0
+                                        || av.provider_volume_name.is_some()
+                                    {
+                                        let _ = sqlx::query(
+                                            r#"
+                                            UPDATE instance_volumes
+                                            SET
+                                              provider_volume_name = COALESCE(provider_volume_name, $3),
+                                              size_bytes = CASE
+                                                WHEN (size_bytes IS NULL OR size_bytes = 0) AND $4 > 0 THEN $4
+                                                ELSE size_bytes
+                                              END,
+                                              is_boot = $5
+                                            WHERE instance_id = $1
+                                              AND provider_volume_id = $2
+                                            "#,
+                                        )
+                                        .bind(instance_uuid)
+                                        .bind(&av.provider_volume_id)
+                                        .bind(av.provider_volume_name.as_deref())
+                                        .bind(av.size_bytes.unwrap_or(0))
+                                        .bind(av.boot)
+                                        .execute(&pool)
+                                        .await;
+                                    }
                                     continue;
                                 }
                                 let row_id = Uuid::new_v4();
                                 let _ = sqlx::query(
-                                    "INSERT INTO instance_volumes (id, instance_id, provider_id, zone_code, provider_volume_id, volume_type, size_bytes, perf_iops, delete_on_terminate, status, attached_at)
-                                     VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,TRUE,'attached',NOW())",
+                                    "INSERT INTO instance_volumes (id, instance_id, provider_id, zone_code, provider_volume_id, provider_volume_name, volume_type, size_bytes, perf_iops, delete_on_terminate, status, attached_at, is_boot)
+                                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULL,TRUE,'attached',NOW(),$9)",
                                 )
                                 .bind(row_id)
                                 .bind(instance_uuid)
                                 .bind(provider_id)
                                 .bind(&zone)
                                 .bind(&av.provider_volume_id)
+                                .bind(av.provider_volume_name.as_deref())
                                 .bind(&av.volume_type)
                                 .bind(av.size_bytes.unwrap_or(0))
+                                .bind(av.boot)
                                 .execute(&pool)
                                 .await;
                             }
@@ -1599,14 +1628,15 @@ pub async fn process_provisioning(
 
                         let row_id = Uuid::new_v4();
                         let _ = sqlx::query(
-                            "INSERT INTO instance_volumes (id, instance_id, provider_id, zone_code, provider_volume_id, volume_type, size_bytes, perf_iops, delete_on_terminate, status, attached_at)
-                             VALUES ($1,$2,$3,$4,$5,'sbs_volume',$6,$7,$8,'creating',NULL)"
+                            "INSERT INTO instance_volumes (id, instance_id, provider_id, zone_code, provider_volume_id, provider_volume_name, volume_type, size_bytes, perf_iops, delete_on_terminate, status, attached_at, is_boot)
+                             VALUES ($1,$2,$3,$4,$5,$6,'sbs_volume',$7,$8,$9,'creating',NULL,FALSE)"
                         )
                         .bind(row_id)
                         .bind(instance_uuid)
                         .bind(provider_id)
                         .bind(&zone)
                         .bind(&vol_id)
+                        .bind(&vol_name)
                         .bind(gb_to_bytes(gb))
                         .bind(perf_iops)
                         .bind(delete_on_terminate)

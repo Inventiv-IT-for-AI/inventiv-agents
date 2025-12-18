@@ -859,7 +859,10 @@ impl CloudProvider for ScalewayProvider {
                 .and_then(|x| x.as_str())
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty());
-            let size_bytes = v.get("size").and_then(|x| x.as_i64());
+            let size_bytes = v.get("size").and_then(|x| {
+                x.as_i64()
+                    .or_else(|| x.as_str().and_then(|s| s.parse::<i64>().ok()))
+            });
 
             // If the server payload doesn't include name/size, fetch from Block Storage API (best effort).
             let (name, size_bytes) = if name.is_none() || size_bytes.is_none() {
