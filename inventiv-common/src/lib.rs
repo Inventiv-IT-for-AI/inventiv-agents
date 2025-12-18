@@ -1,6 +1,6 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 pub mod bus;
 pub mod worker_target;
@@ -19,7 +19,7 @@ pub enum InstanceStatus {
     Archived,     // Archived (hidden from active list)
     ProvisioningFailed,
     StartupFailed,
-    Failed,       // Error state
+    Failed, // Error state
 }
 
 // --- Entities (SQLx Mapped) ---
@@ -70,7 +70,7 @@ pub struct InstanceType {
     pub gpu_count: i32,
     pub vram_per_gpu_gb: i32,
     pub is_active: bool,
-    #[sqlx(default)] 
+    #[sqlx(default)]
     pub cost_per_hour: Option<f64>, // Using f64 for simplicity, mapped from numeric
     #[sqlx(default)]
     pub cpu_count: i32,
@@ -104,18 +104,18 @@ pub struct Instance {
     pub zone_id: Uuid,
     pub instance_type_id: Uuid,
     pub model_id: Option<Uuid>,
-    
+
     pub provider_instance_id: Option<String>,
     pub ip_address: Option<String>, // Note: INET type handling needs careful SQLx mapping or String cast
     pub api_key: Option<String>,
-    
+
     pub status: InstanceStatus,
     pub created_at: DateTime<Utc>,
     pub terminated_at: Option<DateTime<Utc>>,
     pub gpu_profile: sqlx::types::Json<InstanceType>, // Snapshot using InstanceType struct
-    
+
     // Deletion tracking fields for orphaned instance detection
     pub deletion_reason: Option<String>,
     pub deleted_by_provider: Option<bool>,
-    pub last_reconciliation: Option<DateTime<Utc>>,  // Updated on every reconciliation check
+    pub last_reconciliation: Option<DateTime<Utc>>, // Updated on every reconciliation check
 }

@@ -14,7 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Pencil, Settings2, Plus, Info } from "lucide-react";
 import { ManageZonesModal } from "@/components/settings/ManageZonesModal";
 import type { Provider, ProviderParams, GlobalSetting, Region, Zone, InstanceType, LlmModel } from "@/lib/types";
-import { VirtualizedDataTable, type DataTableColumn } from "@/components/shared/VirtualizedDataTable";
+import { InventivDataTable, type InventivDataTableColumn, type DataTableSortState } from "@/components/shared/InventivDataTable";
 import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
 import { formatEur } from "@/lib/utils";
 import { ActiveToggle } from "@/components/shared/ActiveToggle";
@@ -67,6 +67,11 @@ export default function SettingsPage() {
     const isAdmin = me?.role === "admin";
     const [activeTab, setActiveTab] = useState<"providers" | "regions" | "zones" | "types" | "models" | "global_params">("providers");
     const [refreshTick, setRefreshTick] = useState({ providers: 0, regions: 0, zones: 0, types: 0, models: 0, global_params: 0 });
+    const [providersSort, setProvidersSort] = useState<DataTableSortState>(null);
+    const [regionsSort, setRegionsSort] = useState<DataTableSortState>(null);
+    const [zonesSort, setZonesSort] = useState<DataTableSortState>(null);
+    const [typesSort, setTypesSort] = useState<DataTableSortState>(null);
+    const [modelsSort, setModelsSort] = useState<DataTableSortState>(null);
 
     type EntityType = "provider" | "region" | "zone" | "type" | "model";
     type RefreshKey = "providers" | "regions" | "zones" | "types" | "models" | "global_params";
@@ -422,9 +427,9 @@ export default function SettingsPage() {
 
     // Provider params are edited within Provider CRUD (create/edit modal + provider list columns).
 
-    const providerColumns: DataTableColumn<Provider>[] = [
-        { id: "name", label: "Name", width: 220, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
-        { id: "code", label: "Code", width: 160, cell: ({ row }) => <span className="font-mono text-xs">{row.code}</span> },
+    const providerColumns: InventivDataTableColumn<Provider>[] = [
+        { id: "name", label: "Name", width: 220, sortable: true, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
+        { id: "code", label: "Code", width: 160, sortable: true, cell: ({ row }) => <span className="font-mono text-xs">{row.code}</span> },
         {
             id: "p_worker_startup_timeout",
             label: "Worker startup timeout",
@@ -510,6 +515,7 @@ export default function SettingsPage() {
             id: "active",
             label: "Active",
             width: 110,
+            sortable: true,
             cell: ({ row }) => (
                 <div className="flex items-center justify-center">
                     <ActiveToggle
@@ -547,7 +553,7 @@ export default function SettingsPage() {
         region_code?: string | null;
     };
 
-    const regionColumns: DataTableColumn<RegionRow>[] = [
+    const regionColumns: InventivDataTableColumn<RegionRow>[] = [
         {
             id: "provider",
             label: "Provider",
@@ -561,12 +567,13 @@ export default function SettingsPage() {
                 </div>
             ),
         },
-        { id: "name", label: "Name", width: 260, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
-        { id: "code", label: "Code", width: 180, cell: ({ row }) => <span className="font-mono text-xs">{row.code}</span> },
+        { id: "name", label: "Name", width: 260, sortable: true, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
+        { id: "code", label: "Code", width: 180, sortable: true, cell: ({ row }) => <span className="font-mono text-xs">{row.code}</span> },
         {
             id: "active",
             label: "Active",
             width: 110,
+            sortable: true,
             cell: ({ row }) => (
                 <div className="flex items-center justify-center">
                     <ActiveToggle
@@ -594,7 +601,7 @@ export default function SettingsPage() {
         },
     ];
 
-    const zoneColumns: DataTableColumn<ZoneRow>[] = [
+    const zoneColumns: InventivDataTableColumn<ZoneRow>[] = [
         {
             id: "provider",
             label: "Provider",
@@ -619,12 +626,13 @@ export default function SettingsPage() {
                 </div>
             ),
         },
-        { id: "name", label: "Name", width: 260, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
-        { id: "code", label: "Code", width: 180, cell: ({ row }) => <span className="font-mono text-xs">{row.code}</span> },
+        { id: "name", label: "Name", width: 260, sortable: true, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
+        { id: "code", label: "Code", width: 180, sortable: true, cell: ({ row }) => <span className="font-mono text-xs">{row.code}</span> },
         {
             id: "active",
             label: "Active",
             width: 110,
+            sortable: true,
             cell: ({ row }) => (
                 <div className="flex items-center justify-center">
                     <ActiveToggle
@@ -654,7 +662,7 @@ export default function SettingsPage() {
 
     type InstanceTypeRow = InstanceType & { provider_name?: string; provider_code?: string | null };
 
-    const typeColumns: DataTableColumn<InstanceTypeRow>[] = [
+    const typeColumns: InventivDataTableColumn<InstanceTypeRow>[] = [
         {
             id: "provider",
             label: "Provider",
@@ -668,8 +676,8 @@ export default function SettingsPage() {
                 </div>
             ),
         },
-        { id: "name", label: "Name", width: 260, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
-        { id: "code", label: "Code", width: 180, cell: ({ row }) => <span className="font-mono text-xs">{row.code}</span> },
+        { id: "name", label: "Name", width: 260, sortable: true, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
+        { id: "code", label: "Code", width: 180, sortable: true, cell: ({ row }) => <span className="font-mono text-xs">{row.code}</span> },
         {
             id: "specs",
             label: "Specs",
@@ -680,11 +688,12 @@ export default function SettingsPage() {
                 </span>
             ),
         },
-        { id: "cost", label: "Cost/Hr", width: 120, align: "right", cell: ({ row }) => <span>{row.cost_per_hour != null ? `${formatEur(row.cost_per_hour, { minFrac: 4, maxFrac: 4 })}/h` : "-"}</span> },
+        { id: "cost", label: "Cost/Hr", width: 120, align: "right", sortable: true, cell: ({ row }) => <span>{row.cost_per_hour != null ? `${formatEur(row.cost_per_hour, { minFrac: 4, maxFrac: 4 })}/h` : "-"}</span> },
         {
             id: "active",
             label: "Active",
             width: 110,
+            sortable: true,
             cell: ({ row }) => (
                 <div className="flex items-center justify-center">
                     <ActiveToggle
@@ -730,7 +739,22 @@ export default function SettingsPage() {
     const refreshModels = async () => {
         setModelsLoading(true);
         try {
-            const res = await fetch(apiUrl("models"));
+            const params = new URLSearchParams();
+            const by = modelsSort
+                ? ({
+                    name: "name",
+                    model_id: "model_id",
+                    required_vram_gb: "required_vram_gb",
+                    context_length: "context_length",
+                    data_volume_gb: "data_volume_gb",
+                    active: "is_active",
+                } as Record<string, string>)[modelsSort.columnId]
+                : null;
+            if (by) {
+                params.set("order_by", by);
+                params.set("order_dir", modelsSort!.direction);
+            }
+            const res = await fetch(apiUrl(`models?${params.toString()}`));
             if (res.ok) {
                 const data = (await res.json()) as ModelRow[];
                 setModels(data);
@@ -744,7 +768,7 @@ export default function SettingsPage() {
         if (activeTab !== "models") return;
         void refreshModels().catch(() => null);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [activeTab, refreshTick.models]);
+    }, [activeTab, refreshTick.models, modelsSort]);
 
     // provider params are loaded in the "providers" tab effect (providerParamsById)
 
@@ -764,16 +788,17 @@ export default function SettingsPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeTab, refreshTick.global_params]);
 
-    const modelColumns: DataTableColumn<ModelRow>[] = [
-        { id: "name", label: "Name", width: 260, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
-        { id: "model_id", label: "HF Model ID", width: 360, cell: ({ row }) => <span className="font-mono text-xs">{row.model_id}</span> },
-        { id: "required_vram_gb", label: "VRAM (GB)", width: 120, align: "right", cell: ({ row }) => <span className="tabular-nums">{row.required_vram_gb}</span> },
-        { id: "context_length", label: "Ctx", width: 120, align: "right", cell: ({ row }) => <span className="tabular-nums">{row.context_length}</span> },
-        { id: "data_volume_gb", label: "Disk (GB)", width: 140, align: "right", cell: ({ row }) => <span className="tabular-nums">{row.data_volume_gb ?? "-"}</span> },
+    const modelColumns: InventivDataTableColumn<ModelRow>[] = [
+        { id: "name", label: "Name", width: 260, sortable: true, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
+        { id: "model_id", label: "HF Model ID", width: 360, sortable: true, cell: ({ row }) => <span className="font-mono text-xs">{row.model_id}</span> },
+        { id: "required_vram_gb", label: "VRAM (GB)", width: 120, align: "right", sortable: true, cell: ({ row }) => <span className="tabular-nums">{row.required_vram_gb}</span> },
+        { id: "context_length", label: "Ctx", width: 120, align: "right", sortable: true, cell: ({ row }) => <span className="tabular-nums">{row.context_length}</span> },
+        { id: "data_volume_gb", label: "Disk (GB)", width: 140, align: "right", sortable: true, cell: ({ row }) => <span className="tabular-nums">{row.data_volume_gb ?? "-"}</span> },
         {
             id: "active",
             label: "Active",
             width: 110,
+            sortable: true,
             cell: ({ row }) => (
                 <div className="flex items-center justify-center">
                     <ActiveToggle
@@ -802,25 +827,59 @@ export default function SettingsPage() {
     ];
 
     const loadProviders = async (offset: number, limit: number): Promise<LoadRangeResult<Provider>> => {
-        const res = await fetch(apiUrl(`providers/search?offset=${offset}&limit=${limit}`));
+        const params = new URLSearchParams();
+        params.set("offset", String(offset));
+        params.set("limit", String(limit));
+        const by = providersSort ? ({ name: "name", code: "code", active: "is_active" } as Record<string, string>)[providersSort.columnId] : null;
+        if (by) {
+            params.set("order_by", by);
+            params.set("order_dir", providersSort!.direction);
+        }
+        const res = await fetch(apiUrl(`providers/search?${params.toString()}`));
         const data: SearchResponse<Provider> = await res.json();
         return { offset: data.offset, items: data.rows, totalCount: data.total_count, filteredCount: data.filtered_count };
     };
 
     const loadRegions = async (offset: number, limit: number): Promise<LoadRangeResult<RegionRow>> => {
-        const res = await fetch(apiUrl(`regions/search?offset=${offset}&limit=${limit}`));
+        const params = new URLSearchParams();
+        params.set("offset", String(offset));
+        params.set("limit", String(limit));
+        const by = regionsSort ? ({ name: "name", code: "code", active: "is_active" } as Record<string, string>)[regionsSort.columnId] : null;
+        if (by) {
+            params.set("order_by", by);
+            params.set("order_dir", regionsSort!.direction);
+        }
+        const res = await fetch(apiUrl(`regions/search?${params.toString()}`));
         const data: SearchResponse<RegionRow> = await res.json();
         return { offset: data.offset, items: data.rows, totalCount: data.total_count, filteredCount: data.filtered_count };
     };
 
     const loadZones = async (offset: number, limit: number): Promise<LoadRangeResult<ZoneRow>> => {
-        const res = await fetch(apiUrl(`zones/search?offset=${offset}&limit=${limit}`));
+        const params = new URLSearchParams();
+        params.set("offset", String(offset));
+        params.set("limit", String(limit));
+        const by = zonesSort ? ({ name: "name", code: "code", active: "is_active" } as Record<string, string>)[zonesSort.columnId] : null;
+        if (by) {
+            params.set("order_by", by);
+            params.set("order_dir", zonesSort!.direction);
+        }
+        const res = await fetch(apiUrl(`zones/search?${params.toString()}`));
         const data: SearchResponse<ZoneRow> = await res.json();
         return { offset: data.offset, items: data.rows, totalCount: data.total_count, filteredCount: data.filtered_count };
     };
 
     const loadTypes = async (offset: number, limit: number): Promise<LoadRangeResult<InstanceType>> => {
-        const res = await fetch(apiUrl(`instance_types/search?offset=${offset}&limit=${limit}`));
+        const params = new URLSearchParams();
+        params.set("offset", String(offset));
+        params.set("limit", String(limit));
+        const by = typesSort
+            ? ({ name: "name", code: "code", cost: "cost_per_hour", active: "is_active" } as Record<string, string>)[typesSort.columnId]
+            : null;
+        if (by) {
+            params.set("order_by", by);
+            params.set("order_dir", typesSort!.direction);
+        }
+        const res = await fetch(apiUrl(`instance_types/search?${params.toString()}`));
         const data: SearchResponse<InstanceTypeRow> = await res.json();
         return { offset: data.offset, items: data.rows, totalCount: data.total_count, filteredCount: data.filtered_count };
     };
@@ -848,10 +907,10 @@ export default function SettingsPage() {
                 <TabsContent value="providers">
                     <Card>
                         <CardContent>
-                            <VirtualizedDataTable<Provider>
+                            <InventivDataTable<Provider>
                                 listId="settings:providers"
                                 title="Providers"
-                                dataKey={String(refreshTick.providers)}
+                                dataKey={JSON.stringify({ refresh: refreshTick.providers, sort: providersSort })}
                                 rightHeader={
                                     <div className="flex gap-2">
                                         <Button size="sm" onClick={() => openCreate("provider")}>
@@ -865,6 +924,9 @@ export default function SettingsPage() {
                                 rowHeight={52}
                                 columns={providerColumns}
                                 loadRange={loadProviders}
+                                sortState={providersSort}
+                                onSortChange={setProvidersSort}
+                                sortingMode="server"
                             />
                         </CardContent>
                     </Card>
@@ -874,10 +936,10 @@ export default function SettingsPage() {
                 <TabsContent value="regions">
                     <Card>
                         <CardContent>
-                            <VirtualizedDataTable<Region>
+                            <InventivDataTable<Region>
                                 listId="settings:regions"
                                 title="Regions"
-                                dataKey={String(refreshTick.regions)}
+                                dataKey={JSON.stringify({ refresh: refreshTick.regions, sort: regionsSort })}
                                 rightHeader={
                                     <div className="flex gap-2">
                                         <Button size="sm" onClick={() => openCreate("region")}>
@@ -891,6 +953,9 @@ export default function SettingsPage() {
                                 rowHeight={52}
                                 columns={regionColumns}
                                 loadRange={loadRegions}
+                                sortState={regionsSort}
+                                onSortChange={setRegionsSort}
+                                sortingMode="server"
                             />
                         </CardContent>
                     </Card>
@@ -900,10 +965,10 @@ export default function SettingsPage() {
                 <TabsContent value="zones">
                     <Card>
                         <CardContent>
-                            <VirtualizedDataTable<Zone>
+                            <InventivDataTable<Zone>
                                 listId="settings:zones"
                                 title="Zones"
-                                dataKey={String(refreshTick.zones)}
+                                dataKey={JSON.stringify({ refresh: refreshTick.zones, sort: zonesSort })}
                                 rightHeader={
                                     <div className="flex gap-2">
                                         <Button size="sm" onClick={() => openCreate("zone")}>
@@ -917,6 +982,9 @@ export default function SettingsPage() {
                                 rowHeight={52}
                                 columns={zoneColumns}
                                 loadRange={loadZones}
+                                sortState={zonesSort}
+                                onSortChange={setZonesSort}
+                                sortingMode="server"
                             />
                         </CardContent>
                     </Card>
@@ -926,10 +994,10 @@ export default function SettingsPage() {
                 <TabsContent value="types">
                     <Card>
                         <CardContent>
-                            <VirtualizedDataTable<InstanceType>
+                            <InventivDataTable<InstanceType>
                                 listId="settings:types"
                                 title="Instance Types"
-                                dataKey={String(refreshTick.types)}
+                                dataKey={JSON.stringify({ refresh: refreshTick.types, sort: typesSort })}
                                 rightHeader={
                                     <div className="flex gap-2">
                                         <Button size="sm" onClick={() => openCreate("type")}>
@@ -943,6 +1011,9 @@ export default function SettingsPage() {
                                 rowHeight={52}
                                 columns={typeColumns}
                                 loadRange={loadTypes}
+                                sortState={typesSort}
+                                onSortChange={setTypesSort}
+                                sortingMode="server"
                             />
                         </CardContent>
                     </Card>
@@ -952,10 +1023,10 @@ export default function SettingsPage() {
                 <TabsContent value="models">
                     <Card>
                         <CardContent>
-                            <VirtualizedDataTable<ModelRow>
+                            <InventivDataTable<ModelRow>
                                 listId="settings:models"
                                 title="Models"
-                                dataKey={String(refreshTick.models)}
+                                dataKey={JSON.stringify({ refresh: refreshTick.models, sort: modelsSort })}
                                 rightHeader={
                                     <div className="flex gap-2">
                                         <Button size="sm" onClick={openCreateModel} disabled={modelsLoading}>
@@ -969,6 +1040,9 @@ export default function SettingsPage() {
                                 rowHeight={52}
                                 columns={modelColumns}
                                 rows={models}
+                                sortState={modelsSort}
+                                onSortChange={setModelsSort}
+                                sortingMode="server"
                             />
                         </CardContent>
                     </Card>

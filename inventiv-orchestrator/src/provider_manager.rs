@@ -1,10 +1,10 @@
 use crate::provider::CloudProvider;
-use crate::providers::scaleway::ScalewayProvider;
 use crate::providers::mock::MockProvider;
+use crate::providers::scaleway::ScalewayProvider;
 // use std::collections::HashMap;
+use sqlx::{Pool, Postgres};
 use std::env;
 use std::fs;
-use sqlx::{Pool, Postgres};
 
 pub struct ProviderManager;
 
@@ -28,8 +28,8 @@ impl ProviderManager {
                     .map(|s| s.trim().to_string())?;
                 // Prefer a project-local key file (mounted in container via /app).
                 // Fallback to an env string if desired.
-                let ssh_public_key_file =
-                    env::var("SCALEWAY_SSH_PUBLIC_KEY_FILE").unwrap_or_else(|_| "/app/.ssh/llm-studio-key.pub".to_string());
+                let ssh_public_key_file = env::var("SCALEWAY_SSH_PUBLIC_KEY_FILE")
+                    .unwrap_or_else(|_| "/app/.ssh/llm-studio-key.pub".to_string());
                 let ssh_public_key = fs::read_to_string(&ssh_public_key_file)
                     .ok()
                     .or_else(|| env::var("SCALEWAY_SSH_PUBLIC_KEY").ok())
@@ -38,7 +38,11 @@ impl ProviderManager {
                     return None;
                 }
                 let _ = db; // not needed for real provider
-                Some(Box::new(ScalewayProvider::new(project_id, secret_key, ssh_public_key)))
+                Some(Box::new(ScalewayProvider::new(
+                    project_id,
+                    secret_key,
+                    ssh_public_key,
+                )))
             }
             "mock" => Some(Box::new(MockProvider::new(db))),
             // Add other providers here:

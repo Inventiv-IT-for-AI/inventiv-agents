@@ -18,6 +18,11 @@ export type LoadRangeResult<T> = {
 type VirtualizedRemoteListProps<T> = {
   /** Changing this resets cache + scroll position */
   queryKey: string;
+  /**
+   * Reload trigger that refreshes data **in place** (keeps scroll position and does not clear cache/counts first).
+   * Useful for live updates (SSE/polling) to avoid flicker.
+   */
+  reloadToken?: string | number;
   height: number;
   rowHeight: number;
   /** Optional sticky header rendered inside the same scroll viewport */
@@ -50,6 +55,7 @@ type VirtualizedRemoteListProps<T> = {
 
 export function VirtualizedRemoteList<T>({
   queryKey,
+  reloadToken,
   height,
   rowHeight,
   header,
@@ -151,6 +157,20 @@ export function VirtualizedRemoteList<T>({
     const lastPage = Math.floor(endIndex / pageSize);
     for (let p = firstPage; p <= lastPage; p++) void requestPage(p);
   }, [startIndex, endIndex, totalRows, pageSize, requestPage]);
+
+  // Soft reload (in place): refetch visible pages without resetting scroll/caches.
+  React.useEffect(() => {
+    if (reloadToken === undefined) return;
+    inflightPages.current.clear();
+
+    // Always refresh first page to refresh counts/meta.
+    void requestPage(0);
+
+    if (totalRows <= 0) return;
+    const firstPage = Math.floor(startIndex / pageSize);
+    const lastPage = Math.floor(endIndex / pageSize);
+    for (let p = firstPage; p <= lastPage; p++) void requestPage(p);
+  }, [reloadToken, endIndex, pageSize, requestPage, startIndex, totalRows]);
 
   const totalHeight = effectiveHeaderHeight + totalRows * rowHeight;
   const rowsToRender: number[] = [];

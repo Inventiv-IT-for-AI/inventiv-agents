@@ -2,7 +2,7 @@ use sqlx::{Pool, Postgres};
 
 pub async fn run_inline_migrations(pool: &Pool<Postgres>) {
     println!("📦 Running Migrations (Inline Schema)...");
-    
+
     // Minimal Schema for Orchestrator to work (Instances Table)
     let schema_sql = r#"
         CREATE TYPE instance_status AS ENUM (
@@ -54,12 +54,10 @@ pub async fn run_inline_migrations(pool: &Pool<Postgres>) {
     for statement in schema_sql.split(';') {
         let stmt = statement.trim();
         if !stmt.is_empty() {
-             let _ = sqlx::query(stmt).execute(pool).await;
+            let _ = sqlx::query(stmt).execute(pool).await;
         }
     }
 
-
-    
     let db_updates = vec![
         // Providers
         r#"ALTER TABLE providers ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE"#,

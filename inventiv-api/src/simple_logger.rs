@@ -33,7 +33,7 @@ pub async fn log_action_with_metadata(
     } else {
         None
     };
-    
+
     sqlx::query(
         "INSERT INTO action_logs 
          (id, action_type, component, status, error_message, instance_id, metadata, instance_status_before, created_at) 
@@ -48,7 +48,7 @@ pub async fn log_action_with_metadata(
     .bind(before_status)
     .execute(db)
     .await?;
-    
+
     println!("📝 [API] Logged: {} - {} ({})", action_type, status, log_id);
     Ok(log_id)
 }
@@ -74,11 +74,12 @@ pub async fn log_action_complete_with_metadata(
     metadata: Option<serde_json::Value>,
 ) -> Result<(), sqlx::Error> {
     // Capture instance status at completion (if the log has an instance_id)
-    let instance_id: Option<Uuid> = sqlx::query_scalar("SELECT instance_id FROM action_logs WHERE id = $1")
-        .bind(log_id)
-        .fetch_optional(db)
-        .await
-        .unwrap_or(None);
+    let instance_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT instance_id FROM action_logs WHERE id = $1")
+            .bind(log_id)
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None);
 
     let after_status: Option<String> = if let Some(iid) = instance_id {
         sqlx::query_scalar("SELECT status::text FROM instances WHERE id = $1")
@@ -95,7 +96,7 @@ pub async fn log_action_complete_with_metadata(
          SET status = $2, duration_ms = $3, error_message = $4, metadata = COALESCE($5, metadata),
              instance_status_after = COALESCE($6, instance_status_after),
              completed_at = NOW()
-         WHERE id = $1"
+         WHERE id = $1",
     )
     .bind(log_id)
     .bind(status)
@@ -105,6 +106,6 @@ pub async fn log_action_complete_with_metadata(
     .bind(after_status)
     .execute(db)
     .await?;
-    
+
     Ok(())
 }

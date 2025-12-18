@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Plus, RefreshCcw } from "lucide-react";
@@ -23,6 +23,7 @@ export default function InstancesPage() {
     const catalog = useCatalog();
 
     const [refreshSeq, setRefreshSeq] = useState(0);
+    const refreshTimerRef = useRef<number | null>(null);
 
     const [isCreateOpen, setIsCreateOpen] = useState(false);
     const [isTerminateOpen, setIsTerminateOpen] = useState(false);
@@ -67,9 +68,23 @@ export default function InstancesPage() {
     };
 
     useEffect(() => {
-        const handler = () => setRefreshSeq((v) => v + 1);
+        const schedule = () => {
+            // Debounce frequent refresh bursts (SSE + polling) to avoid hammering the virtualized list.
+            if (refreshTimerRef.current != null) return;
+            refreshTimerRef.current = window.setTimeout(() => {
+                refreshTimerRef.current = null;
+                setRefreshSeq((v) => v + 1);
+            }, 2000);
+        };
+        const handler = () => schedule();
         window.addEventListener("refresh-instances", handler);
-        return () => window.removeEventListener("refresh-instances", handler);
+        return () => {
+            window.removeEventListener("refresh-instances", handler);
+            if (refreshTimerRef.current != null) {
+                window.clearTimeout(refreshTimerRef.current);
+                refreshTimerRef.current = null;
+            }
+        };
     }, []);
 
     // Calculate stats
@@ -98,6 +113,7 @@ export default function InstancesPage() {
                         size="icon"
                         onClick={() => {
                             refreshInstances();
+                            // If no event fires (edge case), still bump the reload token.
                             setRefreshSeq((v) => v + 1);
                         }}
                     >

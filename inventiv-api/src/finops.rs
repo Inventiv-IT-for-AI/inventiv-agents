@@ -2,7 +2,7 @@ use axum::extract::{Query, State};
 use axum::Json;
 use chrono::Timelike;
 use serde::{Deserialize, Serialize};
-use sqlx::{Postgres};
+use sqlx::Postgres;
 use std::sync::Arc;
 
 use crate::AppState;
@@ -60,14 +60,13 @@ fn default_minutes(v: Option<i64>) -> i64 {
 pub async fn get_cost_current(State(state): State<Arc<AppState>>) -> Json<CostCurrentResponse> {
     let db = &state.db;
 
-    let latest_bucket: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
-        "SELECT MAX(bucket_minute) FROM finops.cost_forecast_minute",
-    )
-    .fetch_optional(db)
-    .await
-    .ok()
-    .flatten()
-    .flatten();
+    let latest_bucket: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT MAX(bucket_minute) FROM finops.cost_forecast_minute")
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten()
+            .flatten();
 
     let forecast = if let Some(bucket) = latest_bucket {
         sqlx::query_as::<Postgres, ForecastMinuteRow>(
@@ -631,11 +630,15 @@ pub async fn get_costs_dashboard_summary(
     ];
 
     if let Some(end_bucket) = latest_bucket {
-        let end_cum = cumulative_total_at_or_before(db, end_bucket).await.unwrap_or(0.0);
+        let end_cum = cumulative_total_at_or_before(db, end_bucket)
+            .await
+            .unwrap_or(0.0);
         for (label, mins) in windows {
             let start_bucket = end_bucket - chrono::Duration::minutes((mins - 1).max(0));
             let prev_bucket = start_bucket - chrono::Duration::minutes(1);
-            let prev_cum = cumulative_total_at_or_before(db, prev_bucket).await.unwrap_or(0.0);
+            let prev_cum = cumulative_total_at_or_before(db, prev_bucket)
+                .await
+                .unwrap_or(0.0);
             actual_spend_windows.push(WindowSpendRow {
                 window: label.to_string(),
                 minutes: mins,
@@ -1011,4 +1014,3 @@ pub async fn get_costs_dashboard_window(
         by_instance_eur,
     })
 }
-

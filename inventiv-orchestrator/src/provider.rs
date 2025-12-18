@@ -117,6 +117,7 @@ pub mod inventory {
     #[derive(Clone, Debug)]
     pub struct AttachedVolume {
         pub provider_volume_id: String,
+        pub provider_volume_name: Option<String>,
         pub volume_type: String,
         pub size_bytes: Option<i64>,
         pub boot: bool,

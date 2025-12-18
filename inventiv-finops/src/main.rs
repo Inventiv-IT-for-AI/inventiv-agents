@@ -101,7 +101,9 @@ async fn sleep_to_next_minute() {
         .with_second(0)
         .and_then(|d| d.with_nanosecond(0))
         .unwrap_or(now + Duration::seconds(60));
-    let delta = (next - now).to_std().unwrap_or(std::time::Duration::from_secs(60));
+    let delta = (next - now)
+        .to_std()
+        .unwrap_or(std::time::Duration::from_secs(60));
     tokio::time::sleep(delta).await;
 }
 
@@ -200,7 +202,9 @@ async fn run_finops_events_consumer(redis_url: &str, db: &Pool<Postgres>) -> any
         .await;
 
         // 2) React fast for cost start/stop to update the current bucket forecast
-        if evt.event_type == FinopsEventType::InstanceCostStart || evt.event_type == FinopsEventType::InstanceCostStop {
+        if evt.event_type == FinopsEventType::InstanceCostStart
+            || evt.event_type == FinopsEventType::InstanceCostStop
+        {
             let bucket = current_minute_bucket(evt.occurred_at);
             let _ = compute_and_store_forecast(db, bucket).await;
         }
@@ -209,7 +213,10 @@ async fn run_finops_events_consumer(redis_url: &str, db: &Pool<Postgres>) -> any
     Ok(())
 }
 
-async fn compute_and_store_forecast(db: &Pool<Postgres>, bucket: DateTime<Utc>) -> anyhow::Result<()> {
+async fn compute_and_store_forecast(
+    db: &Pool<Postgres>,
+    bucket: DateTime<Utc>,
+) -> anyhow::Result<()> {
     // Active statuses: anything not terminal/failure/archived.
     // We treat terminating as still allocated (still costing) until terminated_at is set.
     // We only count allocated resources (provider_instance_id present).
@@ -447,7 +454,7 @@ async fn upsert_actual_minute_row(
         VALUES ($1, $2, $3, $4)
         ON CONFLICT (bucket_minute, provider_id_key, instance_id_key)
         DO UPDATE SET amount_eur = EXCLUDED.amount_eur
-        "#
+        "#,
     )
     .bind(bucket)
     .bind(provider_id)
@@ -459,7 +466,10 @@ async fn upsert_actual_minute_row(
     Ok(())
 }
 
-async fn compute_and_store_actual_cumulative(db: &Pool<Postgres>, bucket: DateTime<Utc>) -> anyhow::Result<()> {
+async fn compute_and_store_actual_cumulative(
+    db: &Pool<Postgres>,
+    bucket: DateTime<Utc>,
+) -> anyhow::Result<()> {
     // We build cumulative for three levels by:
     // cumulative(bucket) = cumulative(bucket-1min) + actual_minute(bucket)
     let prev_bucket = bucket - Duration::minutes(1);
@@ -470,7 +480,7 @@ async fn compute_and_store_actual_cumulative(db: &Pool<Postgres>, bucket: DateTi
         SELECT cumulative_amount_eur
         FROM finops.cost_actual_cumulative_minute
         WHERE bucket_minute = $1 AND provider_id IS NULL AND instance_id IS NULL
-        "#
+        "#,
     )
     .bind(prev_bucket)
     .fetch_optional(db)
@@ -482,7 +492,7 @@ async fn compute_and_store_actual_cumulative(db: &Pool<Postgres>, bucket: DateTi
         SELECT amount_eur
         FROM finops.cost_actual_minute
         WHERE bucket_minute = $1 AND provider_id IS NULL AND instance_id IS NULL
-        "#
+        "#,
     )
     .bind(bucket)
     .fetch_optional(db)
@@ -498,7 +508,7 @@ async fn compute_and_store_actual_cumulative(db: &Pool<Postgres>, bucket: DateTi
         FROM finops.cost_actual_minute
         WHERE bucket_minute = $1 AND instance_id IS NULL
           AND provider_id IS NOT NULL
-        "#
+        "#,
     )
     .bind(bucket)
     .fetch_all(db)
@@ -511,7 +521,7 @@ async fn compute_and_store_actual_cumulative(db: &Pool<Postgres>, bucket: DateTi
             SELECT cumulative_amount_eur
             FROM finops.cost_actual_cumulative_minute
             WHERE bucket_minute = $1 AND provider_id = $2 AND instance_id IS NULL
-            "#
+            "#,
         )
         .bind(prev_bucket)
         .bind(provider_id)
@@ -528,7 +538,7 @@ async fn compute_and_store_actual_cumulative(db: &Pool<Postgres>, bucket: DateTi
         SELECT provider_id, instance_id, amount_eur
         FROM finops.cost_actual_minute
         WHERE bucket_minute = $1 AND instance_id IS NOT NULL
-        "#
+        "#,
     )
     .bind(bucket)
     .fetch_all(db)
@@ -541,7 +551,7 @@ async fn compute_and_store_actual_cumulative(db: &Pool<Postgres>, bucket: DateTi
             SELECT cumulative_amount_eur
             FROM finops.cost_actual_cumulative_minute
             WHERE bucket_minute = $1 AND provider_id = $2 AND instance_id = $3
-            "#
+            "#,
         )
         .bind(prev_bucket)
         .bind(provider_id)
@@ -571,7 +581,7 @@ async fn upsert_cumulative_row(
         VALUES ($1, $2, $3, $4)
         ON CONFLICT (bucket_minute, provider_id_key, instance_id_key)
         DO UPDATE SET cumulative_amount_eur = EXCLUDED.cumulative_amount_eur
-        "#
+        "#,
     )
     .bind(bucket)
     .bind(provider_id)

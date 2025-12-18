@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { formatDistanceToNow, parseISO } from "date-fns";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,9 +10,11 @@ import { RefreshCcw, Eye } from "lucide-react";
 import { apiUrl } from "@/lib/api";
 import { displayOrDash, formatEur } from "@/lib/utils";
 import type { Instance } from "@/lib/types";
-import { VirtualizedDataTable, type DataTableColumn } from "@/components/shared/VirtualizedDataTable";
+import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
+import { InventivDataTable, type DataTableSortState, type InventivDataTableColumn } from "@/components/shared/InventivDataTable";
 export default function Traces() {
-    const [instances, setInstances] = useState<Instance[]>([]);
+    const [refreshTick, setRefreshTick] = useState(0);
+    const [sort, setSort] = useState<DataTableSortState>(null);
     const [isDetailsOpen, setIsDetailsOpen] = useState(false);
     const [selectedInstance, setSelectedInstance] = useState<Instance | null>(null);
 
@@ -21,51 +23,70 @@ export default function Traces() {
         setIsDetailsOpen(true);
     };
 
-    useEffect(() => {
-        const fetchData = async () => {
-            try {
-                const res = await fetch(apiUrl("instances?archived=true"));
-                if (res.ok) {
-                    const data = await res.json();
-                    setInstances(data);
-                }
-            } catch (err) {
-                console.error("Polling Error:", err);
-            }
-        };
-        fetchData();
-    }, []);
+    type InstancesSearchResponse = {
+        offset: number;
+        limit: number;
+        total_count: number;
+        filtered_count: number;
+        rows: Instance[];
+    };
 
-    const columns = useMemo<DataTableColumn<Instance>[]>(() => {
+    const loadRange = useCallback(
+        async (offset: number, limit: number): Promise<LoadRangeResult<Instance>> => {
+            const params = new URLSearchParams();
+            params.set("archived", "true");
+            params.set("offset", String(offset));
+            params.set("limit", String(limit));
+            if (sort) {
+                const by = ({ provider: "provider", region: "region", zone: "zone", type: "type", cost: "total_cost", status: "status", created: "created_at" } as Record<string, string>)[sort.columnId];
+                if (by) {
+                    params.set("sort_by", by);
+                    params.set("sort_dir", sort.direction);
+                }
+            }
+            const res = await fetch(apiUrl(`instances/search?${params.toString()}`));
+            if (!res.ok) throw new Error(`instances/search failed (${res.status})`);
+            const data = (await res.json()) as InstancesSearchResponse;
+            return { offset: data.offset, items: data.rows, totalCount: data.total_count, filteredCount: data.filtered_count };
+        },
+        [sort]
+    );
+
+    const columns = useMemo<InventivDataTableColumn<Instance>[]>(() => {
         return [
             {
                 id: "id",
                 label: "ID",
                 width: 140,
+                sortable: false,
                 cell: ({ row }) => <span className="font-mono text-xs">{row.id.split("-")[0]}...</span>,
             },
             {
                 id: "provider",
                 label: "Provider",
                 width: 140,
+                sortable: true,
                 cell: ({ row }) => displayOrDash(row.provider_name),
             },
             {
                 id: "region",
                 label: "Region",
                 width: 160,
+                sortable: true,
                 cell: ({ row }) => displayOrDash(row.region),
             },
             {
                 id: "zone",
                 label: "Zone",
                 width: 140,
+                sortable: true,
                 cell: ({ row }) => displayOrDash(row.zone),
             },
             {
                 id: "type",
                 label: "Type",
                 width: 220,
+                sortable: true,
                 cell: ({ row }) => displayOrDash(row.instance_type),
             },
             {
@@ -73,6 +94,7 @@ export default function Traces() {
                 label: "Cost",
                 width: 120,
                 align: "right",
+                sortable: true,
                 cell: ({ row }) => (
                     <span className="font-mono">
                         {row.total_cost != null ? formatEur(row.total_cost, { minFrac: 4, maxFrac: 4 }) : "-"}
@@ -83,12 +105,14 @@ export default function Traces() {
                 id: "status",
                 label: "Status",
                 width: 140,
+                sortable: true,
                 cell: ({ row }) => <Badge variant="secondary">{row.status}</Badge>,
             },
             {
                 id: "created",
                 label: "Created",
                 width: 170,
+                sortable: true,
                 cell: ({ row }) => (
                     <span className="whitespace-nowrap text-muted-foreground">
                         {formatDistanceToNow(parseISO(row.created_at), { addSuffix: true })}
@@ -99,6 +123,7 @@ export default function Traces() {
                 id: "ip",
                 label: "IP Address",
                 width: 160,
+                sortable: false,
                 cell: ({ row }) => <span className="text-muted-foreground font-mono">{displayOrDash(row.ip_address)}</span>,
             },
             {
@@ -107,6 +132,7 @@ export default function Traces() {
                 width: 120,
                 align: "right",
                 disableReorder: true,
+                sortable: false,
                 cell: ({ row }) => (
                     <Button
                         variant="ghost"
@@ -133,7 +159,7 @@ export default function Traces() {
                     <p className="text-muted-foreground">Archived instances history.</p>
                 </div>
                 <div className="flex space-x-2">
-                    <Button variant="outline" size="icon" onClick={() => window.location.reload()}>
+                    <Button variant="outline" size="icon" onClick={() => setRefreshTick((v) => v + 1)}>
                         <RefreshCcw className="h-4 w-4" />
                     </Button>
                 </div>
@@ -145,15 +171,18 @@ export default function Traces() {
                     <CardTitle>Archived Instances</CardTitle>
                 </CardHeader>
                 <CardContent>
-                    <VirtualizedDataTable<Instance>
+                    <InventivDataTable<Instance>
                         listId="traces:archived_instances"
                         title="Archived Instances"
+                        dataKey={JSON.stringify({ refreshTick, sort })}
                         autoHeight={true}
                         height={300}
                         rowHeight={56}
                         columns={columns}
-                        rows={instances}
-                        getRowKey={(r) => r.id}
+                        loadRange={loadRange}
+                        sortState={sort}
+                        onSortChange={setSort}
+                        sortingMode="server"
                         onRowClick={openDetailsModal}
                     />
                 </CardContent>
