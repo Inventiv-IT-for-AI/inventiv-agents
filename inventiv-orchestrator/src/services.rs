@@ -1488,6 +1488,47 @@ pub async fn process_provisioning(
 
             if let Some((gb, perf_iops, delete_on_terminate)) = data_conf {
                 if gb > 0 {
+                    // Track provider-created attached volumes (boot/root) so we can delete them on termination.
+                    // Scaleway GPU instances use Block Storage for the boot volume; if not tracked, it can leak.
+                    if is_scaleway && is_worker_target {
+                        if let Ok(attached) =
+                            provider.list_attached_volumes(&zone, &server_id).await
+                        {
+                            for av in attached {
+                                // Only track block volumes that can be deleted via the Block API.
+                                // (root local volumes like l_ssd are not deletable via block/v1).
+                                if av.volume_type != "sbs_volume" {
+                                    continue;
+                                }
+                                let exists: bool = sqlx::query_scalar(
+                                    "SELECT EXISTS(SELECT 1 FROM instance_volumes WHERE instance_id=$1 AND provider_volume_id=$2)",
+                                )
+                                .bind(instance_uuid)
+                                .bind(&av.provider_volume_id)
+                                .fetch_one(&pool)
+                                .await
+                                .unwrap_or(false);
+                                if exists {
+                                    continue;
+                                }
+                                let row_id = Uuid::new_v4();
+                                let _ = sqlx::query(
+                                    "INSERT INTO instance_volumes (id, instance_id, provider_id, zone_code, provider_volume_id, volume_type, size_bytes, perf_iops, delete_on_terminate, status, attached_at)
+                                     VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,TRUE,'attached',NOW())",
+                                )
+                                .bind(row_id)
+                                .bind(instance_uuid)
+                                .bind(provider_id)
+                                .bind(&zone)
+                                .bind(&av.provider_volume_id)
+                                .bind(&av.volume_type)
+                                .bind(av.size_bytes.unwrap_or(0))
+                                .execute(&pool)
+                                .await;
+                            }
+                        }
+                    }
+
                     let vol_name = format!("inventiv-data-{}", instance_uuid);
                     let create_log = logger::log_event_with_metadata(
                         &pool,

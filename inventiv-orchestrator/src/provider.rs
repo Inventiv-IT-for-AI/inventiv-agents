@@ -81,6 +81,16 @@ pub trait CloudProvider: Send + Sync {
     async fn delete_volume(&self, _zone: &str, _volume_id: &str) -> Result<bool> {
         Ok(false)
     }
+
+    // Optional: list volumes currently attached to a server.
+    // Used to track provider-created boot volumes so we can delete them on termination and avoid leaks.
+    async fn list_attached_volumes(
+        &self,
+        _zone: &str,
+        _server_id: &str,
+    ) -> Result<Vec<inventory::AttachedVolume>> {
+        Ok(vec![])
+    }
 }
 
 pub mod inventory {
@@ -102,5 +112,13 @@ pub mod inventory {
         pub status: String,
         pub ip_address: Option<String>,
         pub created_at: Option<String>,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct AttachedVolume {
+        pub provider_volume_id: String,
+        pub volume_type: String,
+        pub size_bytes: Option<i64>,
+        pub boot: bool,
     }
 }

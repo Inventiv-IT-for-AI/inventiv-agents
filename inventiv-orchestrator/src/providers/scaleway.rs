@@ -811,6 +811,60 @@ impl CloudProvider for ScalewayProvider {
         }
     }
 
+    async fn list_attached_volumes(
+        &self,
+        zone: &str,
+        server_id: &str,
+    ) -> Result<Vec<inventory::AttachedVolume>> {
+        let get_url = format!(
+            "https://api.scaleway.com/instance/v1/zones/{}/servers/{}",
+            zone, server_id
+        );
+        let get_resp = self
+            .client
+            .get(&get_url)
+            .headers(self.headers())
+            .send()
+            .await?;
+        if !get_resp.status().is_success() {
+            let status = get_resp.status();
+            let text = get_resp.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Failed to fetch server volumes: {} - {}",
+                status,
+                text
+            ));
+        }
+
+        let s: serde_json::Value = get_resp.json().await?;
+        let vols = s["server"]["volumes"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let mut out = Vec::new();
+        for (_k, v) in vols {
+            let id = v.get("id").and_then(|x| x.as_str()).unwrap_or_default();
+            if id.is_empty() {
+                continue;
+            }
+            let boot = v.get("boot").and_then(|x| x.as_bool()).unwrap_or(false);
+            let volume_type = v
+                .get("volume_type")
+                .or_else(|| v.get("type"))
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let size_bytes = v.get("size").and_then(|x| x.as_i64());
+            out.push(inventory::AttachedVolume {
+                provider_volume_id: id.to_string(),
+                volume_type,
+                size_bytes,
+                boot,
+            });
+        }
+        Ok(out)
+    }
+
     async fn list_instances(&self, zone: &str) -> Result<Vec<inventory::DiscoveredInstance>> {
         let url = format!(
             "https://api.scaleway.com/instance/v1/zones/{}/servers",
