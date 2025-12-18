@@ -5,7 +5,10 @@ use uuid::Uuid;
 
 use inventiv_common::bus::{FinopsEventEnvelope, FinopsEventType, CHANNEL_FINOPS_EVENTS};
 
-pub async fn publish_finops_event(redis_client: &redis::Client, evt: &FinopsEventEnvelope) -> anyhow::Result<()> {
+pub async fn publish_finops_event(
+    redis_client: &redis::Client,
+    evt: &FinopsEventEnvelope,
+) -> anyhow::Result<()> {
     let mut conn = redis_client
         .get_multiplexed_async_connection()
         .await
@@ -81,4 +84,3 @@ pub async fn emit_instance_cost_stop(
     );
     publish_finops_event(redis_client, &evt).await
 }
-

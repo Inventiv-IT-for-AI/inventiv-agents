@@ -24,7 +24,11 @@ async fn log_state_transition(
 }
 
 /// Transition BOOTING -> READY (idempotent).
-pub async fn booting_to_ready(db: &Pool<Postgres>, instance_id: Uuid, reason: &str) -> Result<bool, sqlx::Error> {
+pub async fn booting_to_ready(
+    db: &Pool<Postgres>,
+    instance_id: Uuid,
+    reason: &str,
+) -> Result<bool, sqlx::Error> {
     let res = sqlx::query(
         "UPDATE instances
          SET status = 'ready',
@@ -44,9 +48,13 @@ pub async fn booting_to_ready(db: &Pool<Postgres>, instance_id: Uuid, reason: &s
             instance_id,
             None,
             Some(serde_json::json!({"reason": reason})),
-        ).await.ok();
+        )
+        .await
+        .ok();
         if let Some(lid) = log_id {
-            logger::log_event_complete(db, lid, "success", 0, None).await.ok();
+            logger::log_event_complete(db, lid, "success", 0, None)
+                .await
+                .ok();
         }
         log_state_transition(db, instance_id, "booting", "ready", reason).await;
         Ok(true)
@@ -93,7 +101,9 @@ pub async fn booting_to_startup_failed(
     .await?;
 
     if let Some(lid) = log_id {
-        logger::log_event_complete(db, lid, "failed", 0, None).await.ok();
+        logger::log_event_complete(db, lid, "failed", 0, None)
+            .await
+            .ok();
     }
 
     if res.rows_affected() > 0 {
@@ -167,7 +177,9 @@ pub async fn mark_provider_deleted(
 
     if let Some(lid) = log_id {
         let duration = start.elapsed().as_millis() as i32;
-        logger::log_event_complete(db, lid, "success", duration, None).await.ok();
+        logger::log_event_complete(db, lid, "success", duration, None)
+            .await
+            .ok();
     }
 
     if res.rows_affected() > 0 {
@@ -179,7 +191,10 @@ pub async fn mark_provider_deleted(
 }
 
 /// Transition TERMINATING -> TERMINATED when deletion is confirmed (idempotent).
-pub async fn terminating_to_terminated(db: &Pool<Postgres>, instance_id: Uuid) -> Result<bool, sqlx::Error> {
+pub async fn terminating_to_terminated(
+    db: &Pool<Postgres>,
+    instance_id: Uuid,
+) -> Result<bool, sqlx::Error> {
     let res = sqlx::query(
         "UPDATE instances
          SET status = 'terminated',
@@ -191,20 +206,24 @@ pub async fn terminating_to_terminated(db: &Pool<Postgres>, instance_id: Uuid) -
     .await?;
 
     if res.rows_affected() > 0 {
-        let log_id = logger::log_event(
-            db,
-            "INSTANCE_TERMINATED",
-            "in_progress",
-            instance_id,
-            None,
-        ).await.ok();
+        let log_id = logger::log_event(db, "INSTANCE_TERMINATED", "in_progress", instance_id, None)
+            .await
+            .ok();
         if let Some(lid) = log_id {
-            logger::log_event_complete(db, lid, "success", 0, None).await.ok();
+            logger::log_event_complete(db, lid, "success", 0, None)
+                .await
+                .ok();
         }
-        log_state_transition(db, instance_id, "terminating", "terminated", "termination_confirmed").await;
+        log_state_transition(
+            db,
+            instance_id,
+            "terminating",
+            "terminated",
+            "termination_confirmed",
+        )
+        .await;
         Ok(true)
     } else {
         Ok(false)
     }
 }
-

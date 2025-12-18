@@ -66,7 +66,9 @@ fn validate_timeout_s(v: i64) -> bool {
     tag = "Settings",
     responses((status = 200, description = "Settings definitions catalog", body = Vec<SettingDefinitionRow>))
 )]
-pub async fn list_settings_definitions(State(state): State<Arc<AppState>>) -> Json<Vec<SettingDefinitionRow>> {
+pub async fn list_settings_definitions(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<SettingDefinitionRow>> {
     let rows = sqlx::query_as::<_, SettingDefinitionRow>(
         r#"
         SELECT key, scope, value_type, min_int, max_int, default_int, default_bool, default_text, description
@@ -107,7 +109,9 @@ pub struct UpsertGlobalSettingRequest {
     tag = "Settings",
     responses((status = 200, description = "Global settings (overrides)", body = Vec<GlobalSettingRow>))
 )]
-pub async fn list_global_settings(State(state): State<Arc<AppState>>) -> Json<Vec<GlobalSettingRow>> {
+pub async fn list_global_settings(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<GlobalSettingRow>> {
     let rows = sqlx::query_as::<_, GlobalSettingRow>(
         r#"
         SELECT
@@ -149,7 +153,11 @@ pub async fn upsert_global_setting(
     }
 
     // Delete override if all values are null.
-    if req.value_int.is_none() && req.value_bool.is_none() && req.value_text.is_none() && req.value_json.is_none() {
+    if req.value_int.is_none()
+        && req.value_bool.is_none()
+        && req.value_text.is_none()
+        && req.value_json.is_none()
+    {
         let _ = sqlx::query("DELETE FROM global_settings WHERE key = $1")
             .bind(&key)
             .execute(&state.db)
@@ -189,7 +197,9 @@ pub async fn upsert_global_setting(
     tag = "Settings",
     responses((status = 200, description = "Provider-scoped parameters", body = Vec<ProviderParamsRow>))
 )]
-pub async fn list_provider_params(State(state): State<Arc<AppState>>) -> Json<Vec<ProviderParamsRow>> {
+pub async fn list_provider_params(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<ProviderParamsRow>> {
     let rows = sqlx::query_as::<_, ProviderParamsRow>(
         r#"
         SELECT
@@ -373,10 +383,12 @@ pub async fn update_provider_params(
         .execute(&mut *tx)
         .await;
     } else {
-        let _ = sqlx::query("DELETE FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_HEALTH_PORT'")
-            .bind(provider_id)
-            .execute(&mut *tx)
-            .await;
+        let _ = sqlx::query(
+            "DELETE FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_HEALTH_PORT'",
+        )
+        .bind(provider_id)
+        .execute(&mut *tx)
+        .await;
     }
 
     // WORKER_VLLM_PORT
@@ -393,10 +405,12 @@ pub async fn update_provider_params(
         .execute(&mut *tx)
         .await;
     } else {
-        let _ = sqlx::query("DELETE FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_VLLM_PORT'")
-            .bind(provider_id)
-            .execute(&mut *tx)
-            .await;
+        let _ = sqlx::query(
+            "DELETE FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_VLLM_PORT'",
+        )
+        .bind(provider_id)
+        .execute(&mut *tx)
+        .await;
     }
 
     // WORKER_DATA_VOLUME_GB_DEFAULT
@@ -433,10 +447,12 @@ pub async fn update_provider_params(
         .execute(&mut *tx)
         .await;
     } else {
-        let _ = sqlx::query("DELETE FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_EXPOSE_PORTS'")
-            .bind(provider_id)
-            .execute(&mut *tx)
-            .await;
+        let _ = sqlx::query(
+            "DELETE FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_EXPOSE_PORTS'",
+        )
+        .bind(provider_id)
+        .execute(&mut *tx)
+        .await;
     }
 
     // WORKER_VLLM_MODE
@@ -454,10 +470,12 @@ pub async fn update_provider_params(
         .execute(&mut *tx)
         .await;
     } else {
-        let _ = sqlx::query("DELETE FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_VLLM_MODE'")
-            .bind(provider_id)
-            .execute(&mut *tx)
-            .await;
+        let _ = sqlx::query(
+            "DELETE FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_VLLM_MODE'",
+        )
+        .bind(provider_id)
+        .execute(&mut *tx)
+        .await;
     }
 
     // WORKER_VLLM_IMAGE
@@ -475,10 +493,12 @@ pub async fn update_provider_params(
         .execute(&mut *tx)
         .await;
     } else {
-        let _ = sqlx::query("DELETE FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_VLLM_IMAGE'")
-            .bind(provider_id)
-            .execute(&mut *tx)
-            .await;
+        let _ = sqlx::query(
+            "DELETE FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_VLLM_IMAGE'",
+        )
+        .bind(provider_id)
+        .execute(&mut *tx)
+        .await;
     }
 
     if tx.commit().await.is_err() {
@@ -487,5 +507,3 @@ pub async fn update_provider_params(
 
     StatusCode::OK
 }
-
-

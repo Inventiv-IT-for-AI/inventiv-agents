@@ -25,10 +25,18 @@ pub fn recommended_data_volume_gb(model_id: &str, default_gb: i64) -> Option<i64
     }
 
     // Very small models (sub-1B) typically fit comfortably.
-    if model.contains("0.5b") || model.contains("0_5b") || model.contains("0.6b") || model.contains("0_6b") {
+    if model.contains("0.5b")
+        || model.contains("0_5b")
+        || model.contains("0.6b")
+        || model.contains("0_6b")
+    {
         return Some(80);
     }
-    if model.contains("1b") || model.contains("1.5b") || model.contains("1_5b") || model.contains("2b") {
+    if model.contains("1b")
+        || model.contains("1.5b")
+        || model.contains("1_5b")
+        || model.contains("2b")
+    {
         return Some(120);
     }
 
@@ -41,7 +49,11 @@ pub fn recommended_data_volume_gb(model_id: &str, default_gb: i64) -> Option<i64
     }
 
     // Larger sizes (safer defaults, especially with vLLM caches).
-    if model.contains("24b") || model.contains("27b") || model.contains("30b") || model.contains("32b") {
+    if model.contains("24b")
+        || model.contains("27b")
+        || model.contains("30b")
+        || model.contains("32b")
+    {
         return Some(500);
     }
     if model.contains("70b") || model.contains("72b") {
@@ -53,5 +65,3 @@ pub fn recommended_data_volume_gb(model_id: &str, default_gb: i64) -> Option<i64
 }
 
 // Note: default_gb is provided by caller (provider settings / env / built-in).
-
-

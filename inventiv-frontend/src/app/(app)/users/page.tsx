@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiUrl } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
+import { InventivDataTable, type DataTableSortState, type InventivDataTableColumn } from "@/components/shared/InventivDataTable";
 
 type User = {
   id: string;
@@ -21,9 +22,10 @@ type User = {
 };
 
 export default function UsersPage() {
-  const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [sort, setSort] = useState<DataTableSortState>(null);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -45,11 +47,8 @@ export default function UsersPage() {
       const res = await fetch(apiUrl("/users"));
       if (!res.ok) {
         setError("Accès refusé (admin requis) ou erreur API");
-        setUsers([]);
         return;
       }
-      const data = (await res.json()) as User[];
-      setUsers(data);
     } catch (e) {
       console.error(e);
       setError("Erreur réseau");
@@ -60,7 +59,7 @@ export default function UsersPage() {
 
   useEffect(() => {
     void fetchUsers();
-  }, []);
+  }, [refreshTick]);
 
   const openCreate = () => {
     setForm({ username: "admin", email: "", password: "", role: "admin", first_name: "", last_name: "" });
@@ -99,7 +98,7 @@ export default function UsersPage() {
       return;
     }
     setCreateOpen(false);
-    await fetchUsers();
+    setRefreshTick((v) => v + 1);
   };
 
   const saveUser = async () => {
@@ -123,7 +122,7 @@ export default function UsersPage() {
     }
     setEditOpen(false);
     setSelected(null);
-    await fetchUsers();
+    setRefreshTick((v) => v + 1);
   };
 
   const deleteUser = async (u: User) => {
@@ -134,8 +133,85 @@ export default function UsersPage() {
       alert(`Erreur suppression user (${res.status}) ${msg}`);
       return;
     }
-    await fetchUsers();
+    setRefreshTick((v) => v + 1);
   };
+
+  type UsersSearchResponse = {
+    offset: number;
+    limit: number;
+    total_count: number;
+    filtered_count: number;
+    rows: User[];
+  };
+
+  const loadRange = useCallback(
+    async (offset: number, limit: number): Promise<LoadRangeResult<User>> => {
+      const params = new URLSearchParams();
+      params.set("offset", String(offset));
+      params.set("limit", String(limit));
+      if (sort) {
+        const by = ({ username: "username", email: "email", role: "role", created_at: "created_at", updated_at: "updated_at" } as Record<string, string>)[
+          sort.columnId
+        ];
+        if (by) {
+          params.set("sort_by", by);
+          params.set("sort_dir", sort.direction);
+        }
+      }
+      const res = await fetch(apiUrl(`/users/search?${params.toString()}`));
+      if (!res.ok) {
+        throw new Error(`users/search failed (${res.status})`);
+      }
+      const data = (await res.json()) as UsersSearchResponse;
+      return {
+        offset: data.offset,
+        items: data.rows,
+        totalCount: data.total_count,
+        filteredCount: data.filtered_count,
+      };
+    },
+    [sort]
+  );
+
+  const columns = useMemo<InventivDataTableColumn<User>[]>(() => {
+    return [
+      { id: "username", label: "Username", width: 200, sortable: true, cell: ({ row }) => <span className="font-mono text-xs">{row.username}</span> },
+      { id: "email", label: "Email", width: 280, sortable: true, cell: ({ row }) => <span className="font-medium">{row.email}</span> },
+      {
+        id: "name",
+        label: "Nom",
+        width: 220,
+        sortable: false,
+        cell: ({ row }) => <span>{`${row.first_name ?? ""} ${row.last_name ?? ""}`.trim() || "-"}</span>,
+      },
+      { id: "role", label: "Rôle", width: 140, sortable: true, cell: ({ row }) => row.role },
+      {
+        id: "created_at",
+        label: "Créé",
+        width: 200,
+        sortable: true,
+        cell: ({ row }) => <span className="font-mono text-xs">{new Date(row.created_at).toISOString().slice(0, 19).replace("T", " ")}</span>,
+      },
+      {
+        id: "actions",
+        label: "Actions",
+        width: 220,
+        align: "right",
+        disableReorder: true,
+        sortable: false,
+        cell: ({ row }) => (
+          <div className="flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+            <Button variant="outline" size="sm" onClick={() => openEdit(row)}>
+              Edit
+            </Button>
+            <Button variant="destructive" size="sm" onClick={() => deleteUser(row)}>
+              Delete
+            </Button>
+          </div>
+        ),
+      },
+    ];
+  }, []);
 
   return (
     <div className="p-8 space-y-6">
@@ -145,7 +221,7 @@ export default function UsersPage() {
           <p className="text-muted-foreground">Créer / modifier / supprimer des users (admin).</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={fetchUsers} disabled={loading}>
+          <Button variant="outline" onClick={() => setRefreshTick((v) => v + 1)} disabled={loading}>
             Refresh
           </Button>
           <Button onClick={openCreate}>Créer un user</Button>
@@ -158,46 +234,20 @@ export default function UsersPage() {
         </CardHeader>
         <CardContent>
           {error ? <div className="text-sm text-red-600 mb-3">{error}</div> : null}
-          {loading ? (
-            <div className="text-sm text-muted-foreground">Chargement…</div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Username</TableHead>
-                  <TableHead>Email</TableHead>
-                  <TableHead>Nom</TableHead>
-                  <TableHead>Rôle</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {users.map((u) => (
-                  <TableRow key={u.id}>
-                    <TableCell className="font-mono text-xs">{u.username}</TableCell>
-                    <TableCell className="font-medium">{u.email}</TableCell>
-                    <TableCell>{`${u.first_name ?? ""} ${u.last_name ?? ""}`.trim() || "-"}</TableCell>
-                    <TableCell>{u.role}</TableCell>
-                    <TableCell className="text-right space-x-2">
-                      <Button variant="outline" size="sm" onClick={() => openEdit(u)}>
-                        Edit
-                      </Button>
-                      <Button variant="destructive" size="sm" onClick={() => deleteUser(u)}>
-                        Delete
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {users.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={5} className="text-sm text-muted-foreground">
-                      Aucun user
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-              </TableBody>
-            </Table>
-          )}
+          <InventivDataTable<User>
+            listId="users:list"
+            title="Users"
+            dataKey={JSON.stringify({ refreshTick, sort })}
+            leftMeta={loading ? <span className="text-sm text-muted-foreground">Loading…</span> : undefined}
+            autoHeight={true}
+            height={520}
+            rowHeight={52}
+            columns={columns}
+            loadRange={loadRange}
+            sortState={sort}
+            onSortChange={setSort}
+            sortingMode="server"
+          />
         </CardContent>
       </Card>
 

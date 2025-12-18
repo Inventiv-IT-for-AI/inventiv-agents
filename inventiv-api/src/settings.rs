@@ -1,16 +1,16 @@
+use crate::AppState;
 use axum::{
-    extract::{State, Path},
     extract::Query,
-    Json,
+    extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
+    Json,
 };
+use inventiv_common::{InstanceType, Provider, Region, Zone};
 use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
 use std::sync::Arc;
 use uuid::Uuid;
-use inventiv_common::{Provider, Region, Zone, InstanceType};
-use crate::AppState;
-use sqlx::FromRow;
 
 // --- DTOs ---
 
@@ -166,7 +166,7 @@ pub struct UpdateInstanceTypeRequest {
 )]
 pub async fn list_regions(State(state): State<Arc<AppState>>) -> Json<Vec<Region>> {
     let regions = sqlx::query_as::<_, Region>(
-        "SELECT id, provider_id, name, code, is_active FROM regions ORDER BY name"
+        "SELECT id, provider_id, name, code, is_active FROM regions ORDER BY name",
     )
     .fetch_all(&state.db)
     .await
@@ -208,8 +208,16 @@ pub async fn create_region(
         Ok(row) => (StatusCode::CREATED, Json(row)).into_response(),
         Err(e) => {
             let msg = e.to_string();
-            let code = if msg.contains("duplicate key") { StatusCode::CONFLICT } else { StatusCode::INTERNAL_SERVER_ERROR };
-            (code, Json(serde_json::json!({"error":"db_error","message": msg}))).into_response()
+            let code = if msg.contains("duplicate key") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (
+                code,
+                Json(serde_json::json!({"error":"db_error","message": msg})),
+            )
+                .into_response()
         }
     }
 }
@@ -292,7 +300,13 @@ pub async fn search_regions(
         .await
         .unwrap_or_default();
 
-    Json(SearchResponse { offset, limit, total_count, filtered_count, rows })
+    Json(SearchResponse {
+        offset,
+        limit,
+        total_count,
+        filtered_count,
+        rows,
+    })
 }
 
 #[utoipa::path(
@@ -315,7 +329,7 @@ pub async fn update_region(
             code = COALESCE($1, code), 
             name = COALESCE($2, name), 
             is_active = COALESCE($3, is_active)
-         WHERE id = $4"
+         WHERE id = $4",
     )
     .bind(req.code)
     .bind(req.name)
@@ -331,14 +345,13 @@ pub async fn update_region(
             } else {
                 StatusCode::NOT_FOUND
             }
-        },
+        }
         Err(e) => {
             eprintln!("Error updating region: {:?}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         }
     }
 }
-
 
 // Zones
 #[utoipa::path(
@@ -351,7 +364,7 @@ pub async fn update_region(
 )]
 pub async fn list_zones(State(state): State<Arc<AppState>>) -> Json<Vec<Zone>> {
     let zones = sqlx::query_as::<_, Zone>(
-        "SELECT id, region_id, name, code, is_active FROM zones ORDER BY name"
+        "SELECT id, region_id, name, code, is_active FROM zones ORDER BY name",
     )
     .fetch_all(&state.db)
     .await
@@ -393,8 +406,16 @@ pub async fn create_zone(
         Ok(row) => (StatusCode::CREATED, Json(row)).into_response(),
         Err(e) => {
             let msg = e.to_string();
-            let code = if msg.contains("duplicate key") { StatusCode::CONFLICT } else { StatusCode::INTERNAL_SERVER_ERROR };
-            (code, Json(serde_json::json!({"error":"db_error","message": msg}))).into_response()
+            let code = if msg.contains("duplicate key") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (
+                code,
+                Json(serde_json::json!({"error":"db_error","message": msg})),
+            )
+                .into_response()
         }
     }
 }
@@ -486,7 +507,13 @@ pub async fn search_zones(
         .await
         .unwrap_or_default();
 
-    Json(SearchResponse { offset, limit, total_count, filtered_count, rows })
+    Json(SearchResponse {
+        offset,
+        limit,
+        total_count,
+        filtered_count,
+        rows,
+    })
 }
 
 #[utoipa::path(
@@ -509,7 +536,7 @@ pub async fn update_zone(
             code = COALESCE($1, code), 
             name = COALESCE($2, name), 
             is_active = COALESCE($3, is_active)
-         WHERE id = $4"
+         WHERE id = $4",
     )
     .bind(req.code)
     .bind(req.name)
@@ -525,7 +552,7 @@ pub async fn update_zone(
             } else {
                 StatusCode::NOT_FOUND
             }
-        },
+        }
         Err(e) => {
             eprintln!("Error updating zone: {:?}", e);
             StatusCode::INTERNAL_SERVER_ERROR
@@ -550,7 +577,7 @@ pub async fn list_instance_types(State(state): State<Arc<AppState>>) -> Json<Vec
             cpu_count, ram_gb, bandwidth_bps,
             is_active, 
             CAST(cost_per_hour AS DOUBLE PRECISION) as "cost_per_hour"
-           FROM instance_types ORDER BY name"#
+           FROM instance_types ORDER BY name"#,
     )
     .fetch_all(&state.db)
     .await
@@ -620,8 +647,16 @@ pub async fn create_instance_type(
         Ok(it) => (StatusCode::CREATED, Json(it)).into_response(),
         Err(e) => {
             let msg = e.to_string();
-            let code = if msg.contains("duplicate key") { StatusCode::CONFLICT } else { StatusCode::INTERNAL_SERVER_ERROR };
-            (code, Json(serde_json::json!({"error":"db_error","message": msg}))).into_response()
+            let code = if msg.contains("duplicate key") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (
+                code,
+                Json(serde_json::json!({"error":"db_error","message": msg})),
+            )
+                .into_response()
         }
     }
 }
@@ -713,7 +748,13 @@ pub async fn search_instance_types(
         .await
         .unwrap_or_default();
 
-    Json(SearchResponse { offset, limit, total_count, filtered_count, rows })
+    Json(SearchResponse {
+        offset,
+        limit,
+        total_count,
+        filtered_count,
+        rows,
+    })
 }
 
 #[utoipa::path(
@@ -738,7 +779,7 @@ pub async fn update_instance_type(
             is_active = COALESCE($3, is_active),
             cost_per_hour = COALESCE($4, cost_per_hour),
             allocation_params = COALESCE($5, allocation_params)
-         WHERE id = $6"
+         WHERE id = $6",
     )
     .bind(req.code)
     .bind(req.name)
@@ -756,7 +797,7 @@ pub async fn update_instance_type(
             } else {
                 StatusCode::NOT_FOUND
             }
-        },
+        }
         Err(e) => {
             eprintln!("Error updating instance type: {:?}", e);
             StatusCode::INTERNAL_SERVER_ERROR
@@ -784,7 +825,7 @@ pub struct UpdateProviderRequest {
 )]
 pub async fn list_providers(State(state): State<Arc<AppState>>) -> Json<Vec<Provider>> {
     let providers = sqlx::query_as::<_, Provider>(
-        "SELECT id, name, code, description, is_active FROM providers ORDER BY name"
+        "SELECT id, name, code, description, is_active FROM providers ORDER BY name",
     )
     .fetch_all(&state.db)
     .await
@@ -826,8 +867,16 @@ pub async fn create_provider(
         Ok(row) => (StatusCode::CREATED, Json(row)).into_response(),
         Err(e) => {
             let msg = e.to_string();
-            let code = if msg.contains("duplicate key") { StatusCode::CONFLICT } else { StatusCode::INTERNAL_SERVER_ERROR };
-            (code, Json(serde_json::json!({"error":"db_error","message": msg}))).into_response()
+            let code = if msg.contains("duplicate key") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (
+                code,
+                Json(serde_json::json!({"error":"db_error","message": msg})),
+            )
+                .into_response()
         }
     }
 }
@@ -906,7 +955,13 @@ pub async fn search_providers(
         .await
         .unwrap_or_default();
 
-    Json(SearchResponse { offset, limit, total_count, filtered_count, rows })
+    Json(SearchResponse {
+        offset,
+        limit,
+        total_count,
+        filtered_count,
+        rows,
+    })
 }
 
 #[utoipa::path(
@@ -930,7 +985,7 @@ pub async fn update_provider(
             code = COALESCE($2, code),
             description = COALESCE($3, description), 
             is_active = COALESCE($4, is_active)
-         WHERE id = $5"
+         WHERE id = $5",
     )
     .bind(req.name)
     .bind(req.code)
@@ -947,7 +1002,7 @@ pub async fn update_provider(
             } else {
                 StatusCode::NOT_FOUND
             }
-        },
+        }
         Err(e) => {
             eprintln!("Error updating provider: {:?}", e);
             StatusCode::INTERNAL_SERVER_ERROR

@@ -377,5 +377,3 @@ pub async fn change_password(
             .into_response(),
     }
 }
-
-

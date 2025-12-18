@@ -11,7 +11,7 @@ import { Activity, CheckCircle, XCircle, Clock, Server, Zap, Cloud, Database, Ar
 import { InstanceTimelineModal } from "@/components/instances/InstanceTimelineModal";
 import type { ActionLog, ActionType } from "@/lib/types";
 import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
-import { VirtualizedDataTable, type DataTableColumn } from "@/components/shared/VirtualizedDataTable";
+import { InventivDataTable, type InventivDataTableColumn, type DataTableSortState } from "@/components/shared/InventivDataTable";
 import { useRealtimeEvents } from "@/hooks/useRealtimeEvents";
 export default function MonitoringPage() {
     useRealtimeEvents();
@@ -24,6 +24,7 @@ export default function MonitoringPage() {
     const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(null);
     const [timelineModalOpen, setTimelineModalOpen] = useState(false);
     const [copiedLogId, setCopiedLogId] = useState<string | null>(null);
+    const [sort, setSort] = useState<DataTableSortState>(null);
 
     const [refreshSeq, setRefreshSeq] = useState(0);
     useEffect(() => {
@@ -33,8 +34,8 @@ export default function MonitoringPage() {
     }, []);
 
     const queryKey = useMemo(
-        () => JSON.stringify({ filterComponent, filterStatus, filterActionType, refreshSeq }),
-        [filterComponent, filterStatus, filterActionType, refreshSeq]
+        () => JSON.stringify({ filterComponent, filterStatus, filterActionType, refreshSeq, sort }),
+        [filterComponent, filterStatus, filterActionType, refreshSeq, sort]
     );
 
     const fetchActionTypes = useCallback(async () => {
@@ -177,6 +178,23 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
             if (filterStatus !== "all") params.set("status", filterStatus);
             if (filterActionType !== "all") params.set("action_type", filterActionType);
             if (offset === 0) params.set("include_stats", "true");
+            if (sort) {
+                const colToSortBy: Record<string, string> = {
+                    time: "created_at",
+                    action: "action_type",
+                    provider: "provider_name",
+                    type: "instance_type",
+                    component: "component",
+                    status: "status",
+                    duration: "duration_ms",
+                    instance: "instance_id",
+                };
+                const sortBy = colToSortBy[sort.columnId];
+                if (sortBy) {
+                    params.set("sort_by", sortBy);
+                    params.set("sort_dir", sort.direction);
+                }
+            }
 
             const res = await fetch(apiUrl(`action_logs/search?${params.toString()}`));
             const data: ActionLogsSearchResponse = await res.json();
@@ -196,15 +214,16 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
                 filteredCount: data.filtered_count,
             };
         },
-        [filterActionType, filterComponent, filterStatus]
+        [filterActionType, filterComponent, filterStatus, sort]
     );
 
-    const columns = useMemo<DataTableColumn<ActionLog>[]>(() => {
+    const columns = useMemo<InventivDataTableColumn<ActionLog>[]>(() => {
         return [
             {
                 id: "time",
                 label: "Temps",
                 width: 140,
+                sortable: true,
                 cell: ({ row }) => (
                     <span className="whitespace-nowrap">
                         {formatDistanceToNow(parseISO(row.created_at), { addSuffix: true })}
@@ -215,24 +234,28 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
                 id: "action",
                 label: "Action",
                 width: 200,
+                sortable: true,
                 cell: ({ row }) => getActionTypeBadge(row.action_type),
             },
             {
                 id: "provider",
                 label: "Provider",
                 width: 140,
+                sortable: true,
                 cell: ({ row }) => <span className="truncate">{row.provider_name ?? "-"}</span>,
             },
             {
                 id: "type",
                 label: "Type",
                 width: 180,
+                sortable: true,
                 cell: ({ row }) => <span className="truncate">{row.instance_type ?? "-"}</span>,
             },
             {
                 id: "component",
                 label: "Composant",
                 width: 140,
+                sortable: true,
                 cell: ({ row }) => (
                     <span className={`font-semibold ${getComponentColor(row.component)}`}>{row.component}</span>
                 ),
@@ -241,6 +264,7 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
                 id: "status",
                 label: "Statut",
                 width: 120,
+                sortable: true,
                 cell: ({ row }) => getStatusBadge(row.status),
             },
             {
@@ -257,12 +281,14 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
                 id: "duration",
                 label: "Durée",
                 width: 110,
+                sortable: true,
                 cell: ({ row }) => <span className="font-mono text-sm">{formatDuration(row.duration_ms)}</span>,
             },
             {
                 id: "instance",
                 label: "Instance",
                 width: 150,
+                sortable: true,
                 cell: ({ row }) =>
                     row.instance_id ? (
                         <span className="font-mono text-xs bg-muted px-2 py-1 rounded">
@@ -291,6 +317,7 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
                 label: "Actions",
                 width: 140,
                 align: "right",
+                sortable: false,
                 cell: ({ row }) => (
                     <button
                         onClick={(e) => copyLogToClipboard(row, e)}
@@ -443,7 +470,7 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
             {/* Action Logs Table */}
             <Card>
                 <CardContent>
-                    <VirtualizedDataTable<ActionLog>
+                    <InventivDataTable<ActionLog>
                         listId="monitoring:action_logs"
                         dataKey={queryKey}
                         title="Action Logs"
@@ -453,6 +480,9 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
                         columns={columns}
                         loadRange={loadRange}
                         onCountsChange={setCounts}
+                        sortState={sort}
+                        onSortChange={setSort}
+                        sortingMode="server"
                         onRowClick={(row) => {
                             if (row.instance_id) {
                                 setSelectedInstanceId(row.instance_id);

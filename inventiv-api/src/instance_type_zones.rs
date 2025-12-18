@@ -1,14 +1,14 @@
+use crate::AppState;
 use axum::{
-    extract::{State, Path},
-    Json,
+    extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
+    Json,
 };
+use inventiv_common::InstanceType;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
-use inventiv_common::InstanceType;
-use crate::AppState;
 
 // --- DTOs for Zone Associations ---
 
@@ -52,22 +52,24 @@ pub async fn list_instance_type_zones(
            FROM instance_type_zones itz
            JOIN zones z ON itz.zone_id = z.id
            WHERE itz.instance_type_id = $1
-           ORDER BY z.name"#
+           ORDER BY z.name"#,
     )
     .bind(instance_type_id)
     .fetch_all(&state.db)
     .await
     .unwrap_or(vec![])
     .into_iter()
-    .map(|(instance_type_id, zone_id, is_available, zone_name, zone_code)| {
-        InstanceTypeZoneAssociation {
-            instance_type_id,
-            zone_id,
-            is_available,
-            zone_name,
-            zone_code,
-        }
-    })
+    .map(
+        |(instance_type_id, zone_id, is_available, zone_name, zone_code)| {
+            InstanceTypeZoneAssociation {
+                instance_type_id,
+                zone_id,
+                is_available,
+                zone_name,
+                zone_code,
+            }
+        },
+    )
     .collect();
 
     Json(associations)
@@ -94,11 +96,12 @@ pub async fn associate_zones_to_instance_type(
 ) -> impl IntoResponse {
     // Domain safety: instance types are provider-scoped.
     // Reject any association where zones are not from the same provider as the instance type.
-    let it_provider: Option<Uuid> = sqlx::query_scalar("SELECT provider_id FROM instance_types WHERE id = $1")
-        .bind(instance_type_id)
-        .fetch_optional(&state.db)
-        .await
-        .unwrap_or(None);
+    let it_provider: Option<Uuid> =
+        sqlx::query_scalar("SELECT provider_id FROM instance_types WHERE id = $1")
+            .bind(instance_type_id)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None);
 
     let Some(it_provider) = it_provider else {
         return (StatusCode::NOT_FOUND, "Instance type not found".to_string());
@@ -124,7 +127,8 @@ pub async fn associate_zones_to_instance_type(
         if ok_count != req.zone_ids.len() as i64 {
             return (
                 StatusCode::BAD_REQUEST,
-                "Invalid zone_ids: zones must belong to the same provider as the instance type".to_string(),
+                "Invalid zone_ids: zones must belong to the same provider as the instance type"
+                    .to_string(),
             );
         }
     }
@@ -136,8 +140,14 @@ pub async fn associate_zones_to_instance_type(
         .await;
 
     if delete_result.is_err() {
-        eprintln!("Error deleting existing associations: {:?}", delete_result.err());
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to update associations".to_string());
+        eprintln!(
+            "Error deleting existing associations: {:?}",
+            delete_result.err()
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to update associations".to_string(),
+        );
     }
 
     // Insert new associations
@@ -151,10 +161,15 @@ pub async fn associate_zones_to_instance_type(
         .await;
 
         if insert_new.is_err() {
-            eprintln!("Error inserting instance_type_zones association: {:?}", insert_new.err());
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to update associations".to_string());
+            eprintln!(
+                "Error inserting instance_type_zones association: {:?}",
+                insert_new.err()
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to update associations".to_string(),
+            );
         }
-
     }
 
     (StatusCode::OK, "OK".to_string())
@@ -210,7 +225,7 @@ pub async fn list_instance_types_for_zone(
              AND p.is_active = true
              AND ($2::uuid IS NULL OR it.provider_id = $2::uuid)
              AND itz.is_available = true
-           ORDER BY it.name"#
+           ORDER BY it.name"#,
     )
     .bind(zone_id)
     .bind(provider_filter)

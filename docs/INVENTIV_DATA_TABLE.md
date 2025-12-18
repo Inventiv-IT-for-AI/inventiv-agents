@@ -26,6 +26,7 @@ import { InventivDataTable, type InventivDataTableColumn } from "@/components/sh
   - Une colonne est “triable” si vous lui donnez `sortable: true` et **au moins** un de :
     - `getSortValue(row)` (le plus simple)
     - `sortFn(a, b)` (comparateur custom)
+  - Toute la **cellule header** est cliquable pour trier (sauf pendant un resize ou un drag&drop de colonne).
 
 ## Exemple 1 — Données locales (`rows`) + tri client
 
@@ -107,7 +108,7 @@ Bonnes pratiques :
 - `defaultSortState`: tri initial (si composant non contrôlé)
 - `sortState` + `onSortChange`: mode **contrôlé** (recommandé en server-side)
 - `sortCycle`: cycle au clic, par défaut `["asc", "desc", "none"]`
-- `persistSort`: persiste l’état de tri dans `localStorage` (scopé par `listId`)
+- `persistSort`: persiste l’état de tri dans `localStorage` (scopé par `listId`). **Par défaut: activé**.
 
 ## Checklist intégration
 

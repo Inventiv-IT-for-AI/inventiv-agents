@@ -1,11 +1,12 @@
 use axum::{
+    extract::Query,
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     Extension, Json,
 };
 use serde::{Deserialize, Serialize};
-use sqlx::{Pool, Postgres};
+use sqlx::{Pool, Postgres, QueryBuilder};
 use std::sync::Arc;
 
 use crate::{auth, AppState};
@@ -35,6 +36,32 @@ pub struct CreateApiKeyResponse {
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdateApiKeyRequest {
     pub name: String,
+}
+
+#[derive(Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+pub struct ApiKeysSearchQuery {
+    pub offset: Option<i64>,
+    pub limit: Option<i64>,
+    /// Sort field allowlist: name|key_prefix|created_at|last_used_at|revoked_at
+    pub sort_by: Option<String>,
+    /// "asc" | "desc"
+    pub sort_dir: Option<String>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct ApiKeysSearchResponse {
+    pub offset: i64,
+    pub limit: i64,
+    pub total_count: i64,
+    pub filtered_count: i64,
+    pub rows: Vec<ApiKeyRow>,
+}
+
+fn dir_sql(dir: Option<&str>) -> &'static str {
+    match dir.unwrap_or("desc").to_ascii_lowercase().as_str() {
+        "asc" => "ASC",
+        _ => "DESC",
+    }
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -115,6 +142,73 @@ pub async fn list_api_keys(
 }
 
 #[utoipa::path(
+    get,
+    path = "/api_keys/search",
+    tag = "ApiKeys",
+    params(ApiKeysSearchQuery),
+    responses((status = 200, description = "Search API keys (current user)", body = ApiKeysSearchResponse))
+)]
+pub async fn search_api_keys(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<auth::AuthUser>,
+    Query(params): Query<ApiKeysSearchQuery>,
+) -> Json<ApiKeysSearchResponse> {
+    let offset = params.offset.unwrap_or(0).max(0);
+    let limit = params.limit.unwrap_or(200).clamp(1, 500);
+
+    let total_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM api_keys WHERE user_id = $1")
+        .bind(user.user_id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0);
+
+    // No extra filters for now (same as total).
+    let filtered_count = total_count;
+
+    let order_by = match params.sort_by.as_deref() {
+        Some("key_prefix") => "key_prefix",
+        Some("created_at") => "created_at",
+        Some("last_used_at") => "last_used_at",
+        Some("revoked_at") => "revoked_at",
+        _ => "created_at",
+    };
+    let dir = dir_sql(params.sort_dir.as_deref());
+
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+        r#"
+        SELECT id, name, key_prefix, created_at, last_used_at, revoked_at
+        FROM api_keys
+        WHERE user_id = 
+        "#,
+    );
+    qb.push_bind(user.user_id);
+    qb.push(" ORDER BY ");
+    qb.push(order_by);
+    qb.push(" ");
+    qb.push(dir);
+    qb.push(" NULLS LAST, id ");
+    qb.push(dir);
+    qb.push(" LIMIT ");
+    qb.push_bind(limit);
+    qb.push(" OFFSET ");
+    qb.push_bind(offset);
+
+    let rows: Vec<ApiKeyRow> = qb
+        .build_query_as()
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default();
+
+    Json(ApiKeysSearchResponse {
+        offset,
+        limit,
+        total_count,
+        filtered_count,
+        rows,
+    })
+}
+
+#[utoipa::path(
     post,
     path = "/api_keys",
     request_body = CreateApiKeyRequest,
@@ -143,7 +237,11 @@ pub async fn create_api_key(
 
     let (key, prefix) = generate_api_key();
     match insert_api_key(&state.db, user.user_id, name, &key, &prefix).await {
-        Ok(row) => Json(CreateApiKeyResponse { key: row, api_key: key }).into_response(),
+        Ok(row) => Json(CreateApiKeyResponse {
+            key: row,
+            api_key: key,
+        })
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error":"db_error","message": e.to_string()})),
@@ -188,7 +286,11 @@ pub async fn update_api_key(
 
     match res {
         Ok(r) if r.rows_affected() > 0 => StatusCode::OK.into_response(),
-        Ok(_) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"not_found"}))).into_response(),
+        Ok(_) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error":"not_found"})),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error":"db_error","message": e.to_string()})),
@@ -221,7 +323,11 @@ pub async fn revoke_api_key(
 
     match res {
         Ok(r) if r.rows_affected() > 0 => StatusCode::OK.into_response(),
-        Ok(_) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"not_found"}))).into_response(),
+        Ok(_) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error":"not_found"})),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error":"db_error","message": e.to_string()})),
@@ -229,5 +335,3 @@ pub async fn revoke_api_key(
             .into_response(),
     }
 }
-
-

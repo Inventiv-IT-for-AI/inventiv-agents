@@ -1,16 +1,16 @@
 use axum::{
     body::Body,
+    extract::State,
     http::{header, HeaderMap, HeaderValue, Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
-    extract::State,
     Json,
 };
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::time::{SystemTime, UNIX_EPOCH};
 use sqlx::{Pool, Postgres};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug)]
 pub struct AuthUser {
@@ -151,7 +151,12 @@ pub fn session_cookie_value(token: &str) -> HeaderValue {
     // Secure should be enabled in prod behind HTTPS; in dev it would block cookies on http://.
     let secure = std::env::var("COOKIE_SECURE")
         .ok()
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false);
 
     let mut s = format!(
@@ -163,13 +168,19 @@ pub fn session_cookie_value(token: &str) -> HeaderValue {
     if secure {
         s.push_str("; Secure");
     }
-    HeaderValue::from_str(&s).unwrap_or_else(|_| HeaderValue::from_static("inventiv_session=; Path=/"))
+    HeaderValue::from_str(&s)
+        .unwrap_or_else(|_| HeaderValue::from_static("inventiv_session=; Path=/"))
 }
 
 pub fn clear_session_cookie_value() -> HeaderValue {
     let secure = std::env::var("COOKIE_SECURE")
         .ok()
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false);
     let mut s = format!(
         "{}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
@@ -178,7 +189,8 @@ pub fn clear_session_cookie_value() -> HeaderValue {
     if secure {
         s.push_str("; Secure");
     }
-    HeaderValue::from_str(&s).unwrap_or_else(|_| HeaderValue::from_static("inventiv_session=; Path=/; Max-Age=0"))
+    HeaderValue::from_str(&s)
+        .unwrap_or_else(|_| HeaderValue::from_static("inventiv_session=; Path=/; Max-Age=0"))
 }
 
 pub fn current_user_from_headers(headers: &HeaderMap) -> anyhow::Result<AuthUser> {
@@ -228,7 +240,12 @@ async fn verify_api_key_db(db: &Pool<Postgres>, token: &str) -> Option<ApiKeyPri
         .execute(db)
         .await;
 
-    Some(ApiKeyPrincipal { api_key_id, user_id, key_prefix, name })
+    Some(ApiKeyPrincipal {
+        api_key_id,
+        user_id,
+        key_prefix,
+        name,
+    })
 }
 
 /// Middleware: allow either browser session (cookie/JWT) OR OpenAI API key (Bearer or X-API-Key).
@@ -283,5 +300,3 @@ pub fn require_admin(user: &AuthUser) -> Result<(), (StatusCode, Json<serde_json
         ))
     }
 }
-
-
