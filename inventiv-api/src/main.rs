@@ -428,6 +428,10 @@ async fn list_runtime_models(State(state): State<Arc<AppState>>) -> Json<Vec<Run
 struct GpuActivityParams {
     /// How far back to query (seconds). Default 300.
     window_s: Option<i64>,
+    /// Optional filter (single instance).
+    instance_id: Option<uuid::Uuid>,
+    /// "second" | "minute" | "hour" | "day"
+    granularity: Option<String>,
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -438,6 +442,9 @@ struct GpuSampleRow {
     gpu_utilization: Option<f64>,
     vram_used_mb: Option<f64>,
     vram_total_mb: Option<f64>,
+    temp_c: Option<f64>,
+    power_w: Option<f64>,
+    power_limit_w: Option<f64>,
     instance_name: Option<String>,
     provider_name: Option<String>,
     gpu_count: Option<i32>,
@@ -448,6 +455,9 @@ struct GpuActivitySample {
     ts: String,
     gpu_pct: Option<f64>,
     vram_pct: Option<f64>,
+    temp_c: Option<f64>,
+    power_w: Option<f64>,
+    power_limit_w: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -483,30 +493,129 @@ async fn list_gpu_activity(
     Query(params): Query<GpuActivityParams>,
 ) -> impl IntoResponse {
     let window_s = params.window_s.unwrap_or(300).clamp(30, 3600);
+    let gran = params
+        .granularity
+        .as_deref()
+        .unwrap_or("second")
+        .trim()
+        .to_ascii_lowercase();
+    let instance_filter = params.instance_id;
 
-    let rows: Vec<GpuSampleRow> = sqlx::query_as::<Postgres, GpuSampleRow>(
-        r#"
-        SELECT
-          gs.time,
-          gs.instance_id,
-          gs.gpu_index,
-          gs.gpu_utilization,
-          gs.vram_used_mb,
-          gs.vram_total_mb,
-          i.provider_instance_id::text as instance_name,
-          p.name as provider_name,
-          i.gpu_count as gpu_count
-        FROM gpu_samples gs
-        JOIN instances i ON i.id = gs.instance_id
-        LEFT JOIN providers p ON p.id = i.provider_id
-        WHERE gs.time > NOW() - make_interval(secs => $1)
-        ORDER BY gs.instance_id, gs.gpu_index, gs.time ASC
-        "#,
-    )
-    .bind(window_s)
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_default();
+    let rows: Vec<GpuSampleRow> = match gran.as_str() {
+        "minute" => sqlx::query_as::<Postgres, GpuSampleRow>(
+            r#"
+                SELECT
+                  gs.bucket as time,
+                  gs.instance_id,
+                  gs.gpu_index,
+                  gs.gpu_utilization,
+                  gs.vram_used_mb,
+                  gs.vram_total_mb,
+                  gs.temp_c,
+                  gs.power_w,
+                  gs.power_limit_w,
+                  i.provider_instance_id::text as instance_name,
+                  p.name as provider_name,
+                  i.gpu_count as gpu_count
+                FROM gpu_samples_1m gs
+                JOIN instances i ON i.id = gs.instance_id
+                LEFT JOIN providers p ON p.id = i.provider_id
+                WHERE gs.bucket > NOW() - make_interval(secs => $1)
+                  AND ($2::uuid IS NULL OR gs.instance_id = $2)
+                ORDER BY gs.instance_id, gs.gpu_index, gs.bucket ASC
+                "#,
+        )
+        .bind(window_s)
+        .bind(instance_filter)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default(),
+        "hour" => sqlx::query_as::<Postgres, GpuSampleRow>(
+            r#"
+                SELECT
+                  gs.bucket as time,
+                  gs.instance_id,
+                  gs.gpu_index,
+                  gs.gpu_utilization,
+                  gs.vram_used_mb,
+                  gs.vram_total_mb,
+                  gs.temp_c,
+                  gs.power_w,
+                  gs.power_limit_w,
+                  i.provider_instance_id::text as instance_name,
+                  p.name as provider_name,
+                  i.gpu_count as gpu_count
+                FROM gpu_samples_1h gs
+                JOIN instances i ON i.id = gs.instance_id
+                LEFT JOIN providers p ON p.id = i.provider_id
+                WHERE gs.bucket > NOW() - make_interval(secs => $1)
+                  AND ($2::uuid IS NULL OR gs.instance_id = $2)
+                ORDER BY gs.instance_id, gs.gpu_index, gs.bucket ASC
+                "#,
+        )
+        .bind(window_s)
+        .bind(instance_filter)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default(),
+        "day" => sqlx::query_as::<Postgres, GpuSampleRow>(
+            r#"
+                SELECT
+                  gs.bucket as time,
+                  gs.instance_id,
+                  gs.gpu_index,
+                  gs.gpu_utilization,
+                  gs.vram_used_mb,
+                  gs.vram_total_mb,
+                  gs.temp_c,
+                  gs.power_w,
+                  gs.power_limit_w,
+                  i.provider_instance_id::text as instance_name,
+                  p.name as provider_name,
+                  i.gpu_count as gpu_count
+                FROM gpu_samples_1d gs
+                JOIN instances i ON i.id = gs.instance_id
+                LEFT JOIN providers p ON p.id = i.provider_id
+                WHERE gs.bucket > NOW() - make_interval(secs => $1)
+                  AND ($2::uuid IS NULL OR gs.instance_id = $2)
+                ORDER BY gs.instance_id, gs.gpu_index, gs.bucket ASC
+                "#,
+        )
+        .bind(window_s)
+        .bind(instance_filter)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default(),
+        // second (default): raw table (still can be sparse depending on heartbeat interval)
+        _ => sqlx::query_as::<Postgres, GpuSampleRow>(
+            r#"
+                SELECT
+                  gs.time,
+                  gs.instance_id,
+                  gs.gpu_index,
+                  gs.gpu_utilization,
+                  gs.vram_used_mb,
+                  gs.vram_total_mb,
+                  gs.temp_c,
+                  gs.power_w,
+                  gs.power_limit_w,
+                  i.provider_instance_id::text as instance_name,
+                  p.name as provider_name,
+                  i.gpu_count as gpu_count
+                FROM gpu_samples gs
+                JOIN instances i ON i.id = gs.instance_id
+                LEFT JOIN providers p ON p.id = i.provider_id
+                WHERE gs.time > NOW() - make_interval(secs => $1)
+                  AND ($2::uuid IS NULL OR gs.instance_id = $2)
+                ORDER BY gs.instance_id, gs.gpu_index, gs.time ASC
+                "#,
+        )
+        .bind(window_s)
+        .bind(instance_filter)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default(),
+    };
 
     use std::collections::BTreeMap;
     let mut map: BTreeMap<
@@ -528,6 +637,9 @@ async fn list_gpu_activity(
             ts: r.time.to_rfc3339(),
             gpu_pct: r.gpu_utilization,
             vram_pct,
+            temp_c: r.temp_c,
+            power_w: r.power_w,
+            power_limit_w: r.power_limit_w,
         };
         let entry = map.entry(r.instance_id).or_insert((
             r.instance_name.clone(),

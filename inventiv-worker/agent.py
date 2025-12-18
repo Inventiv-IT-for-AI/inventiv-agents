@@ -95,7 +95,7 @@ def _try_nvidia_smi():
         out = subprocess.check_output(
             [
                 "nvidia-smi",
-                "--query-gpu=index,utilization.gpu,memory.used,memory.total",
+                "--query-gpu=index,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit",
                 "--format=csv,noheader,nounits",
             ],
             stderr=subprocess.DEVNULL,
@@ -105,18 +105,24 @@ def _try_nvidia_smi():
         gpus = []
         for line in out.strip().splitlines():
             parts = [p.strip() for p in line.split(",")]
-            if len(parts) != 4:
+            if len(parts) != 7:
                 continue
             idx = int(parts[0])
             util = float(parts[1])
             mem_used = float(parts[2])
             mem_total = float(parts[3])
+            temp_c = float(parts[4]) if parts[4] not in ("", "N/A") else None
+            power_w = float(parts[5]) if parts[5] not in ("", "N/A") else None
+            power_limit_w = float(parts[6]) if parts[6] not in ("", "N/A") else None
             gpus.append(
                 {
                     "index": idx,
                     "gpu_utilization": util,
                     "gpu_mem_used_mb": mem_used,
                     "gpu_mem_total_mb": mem_total,
+                    "gpu_temp_c": temp_c,
+                    "gpu_power_w": power_w,
+                    "gpu_power_limit_w": power_limit_w,
                 }
             )
         if not gpus:
@@ -125,10 +131,16 @@ def _try_nvidia_smi():
         avg_util = sum(x["gpu_utilization"] for x in gpus) / float(len(gpus))
         total_used = sum(x["gpu_mem_used_mb"] for x in gpus)
         total_total = sum(x["gpu_mem_total_mb"] for x in gpus)
+        temps = [x["gpu_temp_c"] for x in gpus if isinstance(x.get("gpu_temp_c"), (int, float))]
+        powers = [x["gpu_power_w"] for x in gpus if isinstance(x.get("gpu_power_w"), (int, float))]
+        power_limits = [x["gpu_power_limit_w"] for x in gpus if isinstance(x.get("gpu_power_limit_w"), (int, float))]
         return {
             "gpu_utilization": avg_util,
             "gpu_mem_used_mb": total_used,
             "gpu_mem_total_mb": total_total,
+            "gpu_temp_c": (sum(temps) / float(len(temps))) if temps else None,
+            "gpu_power_w": (sum(powers) / float(len(powers))) if powers else None,
+            "gpu_power_limit_w": (sum(power_limits) / float(len(power_limits))) if power_limits else None,
             "gpus": gpus,
         }
     except Exception:

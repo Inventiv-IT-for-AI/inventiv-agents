@@ -585,10 +585,13 @@ async fn worker_heartbeat(
                 let util = g.get("gpu_utilization").and_then(|v| v.as_f64());
                 let used = g.get("gpu_mem_used_mb").and_then(|v| v.as_f64());
                 let total = g.get("gpu_mem_total_mb").and_then(|v| v.as_f64());
+                let temp = g.get("gpu_temp_c").and_then(|v| v.as_f64());
+                let power = g.get("gpu_power_w").and_then(|v| v.as_f64());
+                let power_limit = g.get("gpu_power_limit_w").and_then(|v| v.as_f64());
                 let _ = sqlx::query(
                     r#"
-                    INSERT INTO gpu_samples (instance_id, gpu_index, gpu_utilization, vram_used_mb, vram_total_mb)
-                    VALUES ($1, $2, $3, $4, $5)
+                    INSERT INTO gpu_samples (instance_id, gpu_index, gpu_utilization, vram_used_mb, vram_total_mb, temp_c, power_w, power_limit_w)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     "#,
                 )
                 .bind(payload.instance_id)
@@ -596,30 +599,39 @@ async fn worker_heartbeat(
                 .bind(util)
                 .bind(used)
                 .bind(total)
+                .bind(temp)
+                .bind(power)
+                .bind(power_limit)
                 .execute(&state.db)
                 .await;
             }
         } else {
             // Fallback aggregate
             let total = meta.get("gpu_mem_total_mb").and_then(|v| v.as_f64());
+            let temp = meta.get("gpu_temp_c").and_then(|v| v.as_f64());
+            let power = meta.get("gpu_power_w").and_then(|v| v.as_f64());
+            let power_limit = meta.get("gpu_power_limit_w").and_then(|v| v.as_f64());
             let _ = sqlx::query(
                 r#"
-                INSERT INTO gpu_samples (instance_id, gpu_index, gpu_utilization, vram_used_mb, vram_total_mb)
-                VALUES ($1, 0, $2, $3, $4)
+                INSERT INTO gpu_samples (instance_id, gpu_index, gpu_utilization, vram_used_mb, vram_total_mb, temp_c, power_w, power_limit_w)
+                VALUES ($1, 0, $2, $3, $4, $5, $6, $7)
                 "#,
             )
             .bind(payload.instance_id)
             .bind(payload.gpu_utilization)
             .bind(payload.gpu_mem_used_mb)
             .bind(total)
+            .bind(temp)
+            .bind(power)
+            .bind(power_limit)
             .execute(&state.db)
             .await;
         }
     } else {
         let _ = sqlx::query(
             r#"
-            INSERT INTO gpu_samples (instance_id, gpu_index, gpu_utilization, vram_used_mb, vram_total_mb)
-            VALUES ($1, 0, $2, $3, NULL)
+            INSERT INTO gpu_samples (instance_id, gpu_index, gpu_utilization, vram_used_mb, vram_total_mb, temp_c, power_w, power_limit_w)
+            VALUES ($1, 0, $2, $3, NULL, NULL, NULL, NULL)
             "#,
         )
         .bind(payload.instance_id)

@@ -151,6 +151,9 @@ export type GpuActivitySample = {
     ts: string;
     gpu_pct: number | null;
     vram_pct: number | null;
+    temp_c?: number | null;
+    power_w?: number | null;
+    power_limit_w?: number | null;
 };
 
 export type GpuActivityGpuSeries = {
