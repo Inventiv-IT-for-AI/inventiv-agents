@@ -1,0 +1,18 @@
+{
+  "name": "inventiv-agents-monorepo",
+  "private": true,
+  "workspaces": [
+    "inventiv-frontend",
+    "inventiv-ui/ia-widgets",
+    "inventiv-ui/ia-designsys"
+  ],
+  "scripts": {
+    "dev:ui": "npm -w inventiv-frontend run dev",
+    "build:ui": "npm -w inventiv-frontend run build",
+    "lint:ui": "npm -w inventiv-frontend run lint",
+    "ui:version:sync": "node scripts/sync_ui_versions.mjs",
+    "ui:version:check": "node scripts/check_ui_versions.mjs"
+  }
+}
+
+

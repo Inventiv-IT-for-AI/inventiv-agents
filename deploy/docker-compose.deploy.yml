@@ -103,8 +103,8 @@ services:
   frontend:
     image: ${IMAGE_REPO:-inventiv-agents}/inventiv-frontend:${IMAGE_TAG:-dev}
     build:
-      context: ../inventiv-frontend
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: inventiv-frontend/Dockerfile
     restart: unless-stopped
     environment:
       # Next rewrites use API_INTERNAL_URL first; keep traffic on the docker network.

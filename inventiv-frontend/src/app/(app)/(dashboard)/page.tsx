@@ -243,7 +243,7 @@ export default function DashboardPage() {
               <div className="pt-4 space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="text-sm font-medium">Spend breakdown</div>
-                  <Tabs value={finops.window} onValueChange={(v) => finops.setWindow(v)}>
+                  <Tabs value={finops.window} onValueChange={(v: string) => finops.setWindow(v)}>
                     <TabsList>
                       <TabsTrigger value="minute">1m</TabsTrigger>
                       <TabsTrigger value="hour">1h</TabsTrigger>

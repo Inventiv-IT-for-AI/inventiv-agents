@@ -226,8 +226,8 @@ services:
   frontend:
     image: ${IMAGE_REPO:-inventiv-agents}/inventiv-frontend:${IMAGE_TAG:-dev}
     build:
-      context: ../inventiv-frontend
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: inventiv-frontend/Dockerfile
     restart: unless-stopped
     environment:
       - API_INTERNAL_URL=http://api:8003

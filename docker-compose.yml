@@ -59,8 +59,10 @@ services:
   frontend:
     image: node:20-alpine
     profiles: ["ui"]
-    working_dir: /app
-    command: ["sh", "-lc", "npm install && npm run dev -- --hostname 0.0.0.0 --port 3000"]
+    working_dir: /repo
+    # Monorepo workspaces: install once at repo root; run Next from the frontend workspace.
+    # Use webpack dev server for reliable watch/HMR across workspaces.
+    command: ["sh", "-lc", "npm install --no-audit --no-fund && if [ ! -e node_modules/ia-designsys ] || [ ! -e node_modules/ia-widgets ]; then echo '🔧 Missing workspace links (ia-designsys/ia-widgets) in /repo/node_modules → forcing reinstall'; npm install --no-audit --no-fund --force; fi && if [ -e inventiv-frontend/node_modules/ia-widgets ] || [ -e inventiv-frontend/node_modules/ia-designsys ]; then echo '🧹 Removing shadowed workspace copies in inventiv-frontend/node_modules (would hide monorepo packages)'; rm -rf inventiv-frontend/node_modules/ia-widgets inventiv-frontend/node_modules/ia-designsys; fi && echo \"ℹ️  ia-widgets resolves to: $(node -e 'process.chdir(\"inventiv-frontend\"); console.log(require.resolve(\"ia-widgets\"))')\" && npm -w inventiv-frontend run dev -- --webpack --hostname 0.0.0.0 --port 3000"]
     environment:
       # Frontend server-side proxy target (docker network)
       - API_INTERNAL_URL=http://api:8003
@@ -69,7 +71,8 @@ services:
       - WATCHPACK_POLLING=true
       - NODE_ENV=development
     volumes:
-      - ./inventiv-frontend:/app
+      - .:/repo
+      - ui_node_modules:/repo/node_modules
     ports:
       - "${UI_HOST_PORT:-3000}:3000"
     depends_on:
@@ -169,3 +172,4 @@ services:
 volumes:
   redis_data:
   db_data:
+  ui_node_modules:

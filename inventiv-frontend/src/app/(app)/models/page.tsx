@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { apiUrl } from "@/lib/api";
 import type { RuntimeModel } from "@/lib/types";
 import { Card, CardContent } from "@/components/ui/card";
-import { VirtualizedDataTable, type DataTableColumn } from "@/components/shared/VirtualizedDataTable";
+import { IADataTable, type IADataTableColumn } from "ia-widgets";
 import { useRealtimeEvents } from "@/hooks/useRealtimeEvents";
 import { Button } from "@/components/ui/button";
 
@@ -27,22 +27,25 @@ export default function ModelsPage() {
 
     useEffect(() => {
         const onRefresh = () => setRefreshTick((t) => t + 1);
-        window.addEventListener("refresh-instances", onRefresh as any);
-        return () => window.removeEventListener("refresh-instances", onRefresh as any);
+        const listener: EventListener = () => onRefresh();
+        window.addEventListener("refresh-instances", listener);
+        return () => window.removeEventListener("refresh-instances", listener);
     }, []);
 
-    const columns: DataTableColumn<RuntimeModel>[] = useMemo(
+    const columns: IADataTableColumn<RuntimeModel>[] = useMemo(
         () => [
             {
                 id: "model_id",
                 label: "Model",
                 width: 420,
+                sortable: false,
                 cell: ({ row }) => <span className="font-mono text-xs">{row.model_id}</span>,
             },
             {
                 id: "available",
                 label: "Available",
                 width: 120,
+                sortable: false,
                 cell: ({ row }) =>
                     row.instances_available > 0 ? (
                         <span className="text-xs px-2 py-1 rounded bg-green-200 text-green-800">yes</span>
@@ -54,42 +57,49 @@ export default function ModelsPage() {
                 id: "instances",
                 label: "Instances",
                 width: 120,
+                sortable: false,
                 cell: ({ row }) => <span className="tabular-nums">{row.instances_available}</span>,
             },
             {
                 id: "gpus",
                 label: "GPUs",
                 width: 100,
+                sortable: false,
                 cell: ({ row }) => <span className="tabular-nums">{row.gpus_available}</span>,
             },
             {
                 id: "vram",
                 label: "VRAM (GB)",
                 width: 130,
+                sortable: false,
                 cell: ({ row }) => <span className="tabular-nums">{row.vram_total_gb}</span>,
             },
             {
                 id: "req_total",
                 label: "Requests",
                 width: 130,
+                sortable: false,
                 cell: ({ row }) => <span className="tabular-nums">{row.total_requests}</span>,
             },
             {
                 id: "req_failed",
                 label: "Failed",
                 width: 110,
+                sortable: false,
                 cell: ({ row }) => <span className="tabular-nums">{row.failed_requests}</span>,
             },
             {
                 id: "last_seen",
                 label: "Last seen",
                 width: 190,
+                sortable: false,
                 cell: ({ row }) => <span className="text-sm text-muted-foreground">{new Date(row.last_seen_at).toLocaleString()}</span>,
             },
             {
                 id: "first_seen",
                 label: "First seen",
                 width: 190,
+                sortable: false,
                 cell: ({ row }) => <span className="text-sm text-muted-foreground">{new Date(row.first_seen_at).toLocaleString()}</span>,
             },
         ],
@@ -112,7 +122,7 @@ export default function ModelsPage() {
 
             <Card>
                 <CardContent>
-                    <VirtualizedDataTable<RuntimeModel>
+                    <IADataTable<RuntimeModel>
                         listId="models:runtime"
                         title="Runtime Models"
                         dataKey={String(refreshTick)}

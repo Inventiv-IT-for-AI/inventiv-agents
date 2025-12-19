@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Check, X, Loader2 } from "lucide-react";
 import { apiUrl } from "@/lib/api";
 import type { Zone, InstanceType } from "@/lib/types";
+import { IAAlert, IAAlertDescription, IAAlertTitle } from "ia-designsys";
 
 type InstanceTypeZoneAssociation = {
   instance_type_id: string;
@@ -37,12 +38,14 @@ export function ManageZonesModal({
   const [linkedZoneIds, setLinkedZoneIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open || !instanceType) return;
 
     const fetchData = async () => {
       setLoading(true);
+      setErrorMsg(null);
       try {
         // Fetch zones for the same provider only (domain: instance types are provider-scoped)
         const qs = new URLSearchParams();
@@ -95,11 +98,11 @@ export function ManageZonesModal({
         setLinkedZoneIds(next);
       } else {
         const errorText = await res.text();
-        alert(`Failed to ${isLinked ? "unlink" : "link"} zone: ${errorText}`);
+        setErrorMsg(`Impossible de ${isLinked ? "retirer" : "ajouter"} la zone: ${errorText || `HTTP ${res.status}`}`);
       }
     } catch (err) {
       console.error("Failed to toggle zone", err);
-      alert("Error updating zone association");
+      setErrorMsg("Erreur lors de la mise à jour de l’association zone/type.");
     } finally {
       setActionInProgress(null);
     }
@@ -123,6 +126,12 @@ export function ManageZonesModal({
           </div>
         ) : (
           <div className="py-4">
+            {errorMsg ? (
+              <IAAlert variant="destructive" className="mb-4">
+                <IAAlertTitle>Action impossible</IAAlertTitle>
+                <IAAlertDescription>{errorMsg}</IAAlertDescription>
+              </IAAlert>
+            ) : null}
             <p className="text-sm text-muted-foreground mb-4">
               Sélectionnez les zones où ce type d’instance est disponible. Les utilisateurs ne pourront créer
               une instance de ce type que dans les zones associées.

@@ -69,8 +69,9 @@ async function proxy(req: NextRequest, ctx: { params: Promise<{ path?: string[] 
         method,
         headers: filterHeaders(req),
         body,
-        // Next.js 15+ requires duplex option when sending a body
-        ...(body ? { duplex: "half" as RequestDuplex } : {}),
+        // Next.js 15+ requires duplex option when sending a body.
+        // `RequestDuplex` is not available in all TS lib.dom versions, so keep this cast minimal.
+        ...(body ? ({ duplex: "half" } as unknown as { duplex: "half" }) : {}),
         // Never cache proxied API calls.
         cache: "no-store",
         redirect: "manual",

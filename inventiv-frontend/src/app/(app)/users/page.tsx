@@ -1,14 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from "react";
 import { apiUrl } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
-import { InventivDataTable, type DataTableSortState, type InventivDataTableColumn } from "@/components/shared/InventivDataTable";
+import { IADataTable, type DataTableSortState, type IADataTableColumn, type LoadRangeResult } from "ia-widgets";
+import { IAAlert, IAAlertDescription, IAAlertTitle } from "ia-designsys";
 
 type User = {
   id: string;
@@ -94,7 +94,7 @@ export default function UsersPage() {
     });
     if (!res.ok) {
       const msg = await res.text().catch(() => "");
-      alert(`Erreur création user (${res.status}) ${msg}`);
+      setError(`Erreur création user (${res.status}) ${msg}`);
       return;
     }
     setCreateOpen(false);
@@ -117,7 +117,7 @@ export default function UsersPage() {
     });
     if (!res.ok) {
       const msg = await res.text().catch(() => "");
-      alert(`Erreur update user (${res.status}) ${msg}`);
+      setError(`Erreur update user (${res.status}) ${msg}`);
       return;
     }
     setEditOpen(false);
@@ -130,7 +130,7 @@ export default function UsersPage() {
     const res = await fetch(apiUrl(`/users/${u.id}`), { method: "DELETE" });
     if (!res.ok && res.status !== 204) {
       const msg = await res.text().catch(() => "");
-      alert(`Erreur suppression user (${res.status}) ${msg}`);
+      setError(`Erreur suppression user (${res.status}) ${msg}`);
       return;
     }
     setRefreshTick((v) => v + 1);
@@ -173,7 +173,7 @@ export default function UsersPage() {
     [sort]
   );
 
-  const columns = useMemo<InventivDataTableColumn<User>[]>(() => {
+  const columns = useMemo<IADataTableColumn<User>[]>(() => {
     return [
       { id: "username", label: "Username", width: 200, sortable: true, cell: ({ row }) => <span className="font-mono text-xs">{row.username}</span> },
       { id: "email", label: "Email", width: 280, sortable: true, cell: ({ row }) => <span className="font-medium">{row.email}</span> },
@@ -233,8 +233,13 @@ export default function UsersPage() {
           <CardTitle>Liste</CardTitle>
         </CardHeader>
         <CardContent>
-          {error ? <div className="text-sm text-red-600 mb-3">{error}</div> : null}
-          <InventivDataTable<User>
+          {error ? (
+            <IAAlert variant="destructive" className="mb-3">
+              <IAAlertTitle>Erreur</IAAlertTitle>
+              <IAAlertDescription>{error}</IAAlertDescription>
+            </IAAlert>
+          ) : null}
+          <IADataTable<User>
             listId="users:list"
             title="Users"
             dataKey={JSON.stringify({ refreshTick, sort })}
@@ -260,27 +265,27 @@ export default function UsersPage() {
           <div className="grid gap-3 py-2">
             <div className="grid gap-2">
               <Label>Username</Label>
-              <Input value={form.username} onChange={(e) => setForm((s) => ({ ...s, username: e.target.value }))} />
+              <Input value={form.username} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, username: e.target.value }))} />
             </div>
             <div className="grid gap-2">
               <Label>Email</Label>
-              <Input value={form.email} onChange={(e) => setForm((s) => ({ ...s, email: e.target.value }))} />
+              <Input value={form.email} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, email: e.target.value }))} />
             </div>
             <div className="grid gap-2">
               <Label>Mot de passe</Label>
-              <Input type="password" value={form.password} onChange={(e) => setForm((s) => ({ ...s, password: e.target.value }))} />
+              <Input type="password" value={form.password} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, password: e.target.value }))} />
             </div>
             <div className="grid gap-2">
               <Label>Rôle</Label>
-              <Input value={form.role} onChange={(e) => setForm((s) => ({ ...s, role: e.target.value }))} />
+              <Input value={form.role} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, role: e.target.value }))} />
             </div>
             <div className="grid gap-2">
               <Label>Prénom</Label>
-              <Input value={form.first_name} onChange={(e) => setForm((s) => ({ ...s, first_name: e.target.value }))} />
+              <Input value={form.first_name} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, first_name: e.target.value }))} />
             </div>
             <div className="grid gap-2">
               <Label>Nom</Label>
-              <Input value={form.last_name} onChange={(e) => setForm((s) => ({ ...s, last_name: e.target.value }))} />
+              <Input value={form.last_name} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, last_name: e.target.value }))} />
             </div>
           </div>
           <DialogFooter className="sm:justify-between">
@@ -293,7 +298,7 @@ export default function UsersPage() {
       </Dialog>
 
       {/* Edit dialog */}
-      <Dialog open={editOpen} onOpenChange={(o) => { setEditOpen(o); if (!o) setSelected(null); }}>
+      <Dialog open={editOpen} onOpenChange={(o: boolean) => { setEditOpen(o); if (!o) setSelected(null); }}>
         <DialogContent showCloseButton={false}>
           <DialogHeader>
             <DialogTitle>Modifier user</DialogTitle>
@@ -301,27 +306,27 @@ export default function UsersPage() {
           <div className="grid gap-3 py-2">
             <div className="grid gap-2">
               <Label>Username</Label>
-              <Input value={form.username} onChange={(e) => setForm((s) => ({ ...s, username: e.target.value }))} />
+              <Input value={form.username} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, username: e.target.value }))} />
             </div>
             <div className="grid gap-2">
               <Label>Email</Label>
-              <Input value={form.email} onChange={(e) => setForm((s) => ({ ...s, email: e.target.value }))} />
+              <Input value={form.email} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, email: e.target.value }))} />
             </div>
             <div className="grid gap-2">
               <Label>Nouveau mot de passe (optionnel)</Label>
-              <Input type="password" value={form.password} onChange={(e) => setForm((s) => ({ ...s, password: e.target.value }))} />
+              <Input type="password" value={form.password} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, password: e.target.value }))} />
             </div>
             <div className="grid gap-2">
               <Label>Rôle</Label>
-              <Input value={form.role} onChange={(e) => setForm((s) => ({ ...s, role: e.target.value }))} />
+              <Input value={form.role} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, role: e.target.value }))} />
             </div>
             <div className="grid gap-2">
               <Label>Prénom</Label>
-              <Input value={form.first_name} onChange={(e) => setForm((s) => ({ ...s, first_name: e.target.value }))} />
+              <Input value={form.first_name} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, first_name: e.target.value }))} />
             </div>
             <div className="grid gap-2">
               <Label>Nom</Label>
-              <Input value={form.last_name} onChange={(e) => setForm((s) => ({ ...s, last_name: e.target.value }))} />
+              <Input value={form.last_name} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, last_name: e.target.value }))} />
             </div>
           </div>
           <DialogFooter className="sm:justify-between">

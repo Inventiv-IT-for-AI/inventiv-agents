@@ -146,6 +146,52 @@ export type ApiKey = {
 };
 
 // -----------------------------
+// Organizations (multi-tenant MVP)
+// -----------------------------
+
+export type Organization = {
+    id: string;
+    name: string;
+    slug: string;
+    created_at: string;
+    role?: string | null;
+};
+
+// -----------------------------
+// Workbench (persisted runs)
+// -----------------------------
+
+export type WorkbenchRun = {
+    id: string;
+    created_at: string;
+    started_at: string;
+    completed_at?: string | null;
+    created_by_user_id?: string | null;
+    created_via_api_key_id?: string | null;
+    model_id: string;
+    mode: string;
+    status: "in_progress" | "success" | "failed" | "cancelled" | string;
+    ttft_ms?: number | null;
+    duration_ms?: number | null;
+    error_message?: string | null;
+    metadata?: Record<string, unknown> | null;
+};
+
+export type WorkbenchMessage = {
+    id: string;
+    run_id: string;
+    message_index: number;
+    role: "system" | "user" | "assistant" | string;
+    content: string;
+    created_at: string;
+};
+
+export type WorkbenchRunWithMessages = {
+    run: WorkbenchRun;
+    messages: WorkbenchMessage[];
+};
+
+// -----------------------------
 // Runtime Models (in service / seen on workers)
 // -----------------------------
 

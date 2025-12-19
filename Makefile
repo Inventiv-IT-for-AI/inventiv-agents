@@ -59,6 +59,14 @@ check-stg-env:
 check-prod-env:
 	$(call require_env_file,$(PRD_ENV_FILE),env/prod.env.example)
 
+.PHONY: ui-version-sync ui-version-check
+# UI package versioning (no publish): keep ia-designsys/ia-widgets aligned with VERSION
+ui-version-sync:
+	node scripts/sync_ui_versions.mjs
+
+ui-version-check:
+	node scripts/check_ui_versions.mjs
+
 # Compose wrappers (keep commands consistent everywhere)
 COMPOSE_LOCAL = $(COMPOSE) -f $(LOCAL_COMPOSE_FILE) --env-file $(DEV_ENV_FILE)
 COMPOSE_DEPLOY = $(COMPOSE) -f $(DEPLOY_COMPOSE_FILE) --env-file $(DEV_ENV_FILE)
@@ -73,6 +81,7 @@ PRD_REMOTE_SSH ?=
 	images-build-version images-push-version images-build-latest images-push-latest \
 	images-publish-stg images-publish-prod \
 	ghcr-token-local ghcr-login \
+	ui-version-sync ui-version-check \
 	up down ps logs ui dev-create dev-create-edge dev-start dev-start-edge dev-stop dev-delete dev-ps dev-logs dev-restart-orchestrator dev-cert \
 	edge-create edge-start edge-stop edge-delete edge-ps edge-logs edge-cert \
 	stg-provision stg-destroy stg-bootstrap stg-secrets-sync stg-rebuild stg-create stg-update stg-start stg-stop stg-delete stg-status stg-logs stg-cert stg-renew stg-ghcr-token \
@@ -236,24 +245,51 @@ ui:
 	@UI_HOST_PORT=$(UI_HOST_PORT) PORT_OFFSET=$(PORT_OFFSET) \
 	  $(COMPOSE_LOCAL) --profile ui up -d --remove-orphans frontend
 
+.PHONY: ui-down
+ui-down:
+	@$(MAKE) check-dev-env
+	@echo "🛑 Stopping UI (Docker)  [PORT_OFFSET=$(PORT_OFFSET)]"
+	@UI_HOST_PORT=$(UI_HOST_PORT) PORT_OFFSET=$(PORT_OFFSET) \
+	  $(COMPOSE_LOCAL) --profile ui stop frontend >/dev/null 2>&1 || true
+	@echo "✅ UI (Docker) stopped"
+
 # Optional: run UI locally on host (kept for convenience / debugging).
 # Note: requires the API to be exposed on the host (not the default anymore).
 .PHONY: ui-local
 ui-local:
 	@$(MAKE) check-dev-env
 	@set -e; \
-	if [ ! -d "inventiv-frontend" ]; then \
-	  echo "❌ inventiv-frontend/ not found" >&2; exit 2; \
+	if [ ! -f "package.json" ]; then \
+	  echo "❌ package.json not found at repo root (run from repo root)" >&2; exit 2; \
 	fi; \
-	if [ ! -d "inventiv-frontend/node_modules" ]; then \
-	  echo "⚠️  inventiv-frontend/node_modules missing. Run:" >&2; \
-	  echo "   cd inventiv-frontend && npm install" >&2; \
+	echo "🖥️  UI (host) on http://localhost:$(UI_HOST_PORT)  [PORT_OFFSET=$(PORT_OFFSET)]"; \
+	echo "ℹ️  This uses npm workspaces. Installing at repo root..."; \
+	npm install --no-audit --no-fund; \
+	API_HOST_PORT=$$(echo $$((8003 + $(PORT_OFFSET)))); \
+	echo "ℹ️  Ensure API is reachable on http://localhost:$${API_HOST_PORT} (tip: make api-expose PORT_OFFSET=$(PORT_OFFSET))"; \
+	API_INTERNAL_URL="http://localhost:$${API_HOST_PORT}" \
+	  npm -w inventiv-frontend run dev -- --webpack --port $(UI_HOST_PORT)
+
+.PHONY: ui-local-down
+ui-local-down:
+	@$(MAKE) check-dev-env
+	@set -e; \
+	PORT="$(UI_HOST_PORT)"; \
+	echo "🛑 Stopping UI (host) on port $${PORT}  [PORT_OFFSET=$(PORT_OFFSET)]"; \
+	PIDS="$$(lsof -ti tcp:$${PORT} -sTCP:LISTEN 2>/dev/null || true)"; \
+	if [ -z "$${PIDS}" ]; then \
+	  echo "ℹ️  No process listening on port $${PORT}"; \
+	  exit 0; \
 	fi; \
-	if [ ! -f "inventiv-frontend/.env.local" ]; then \
-	  echo "NEXT_PUBLIC_API_URL=http://localhost:8003" > inventiv-frontend/.env.local; \
-	  echo "✅ Created inventiv-frontend/.env.local (NEXT_PUBLIC_API_URL=http://localhost:8003)"; \
+	echo "🔪 Killing PID(s): $${PIDS}"; \
+	kill $${PIDS} 2>/dev/null || true; \
+	sleep 0.2; \
+	PIDS2="$$(lsof -ti tcp:$${PORT} -sTCP:LISTEN 2>/dev/null || true)"; \
+	if [ -n "$${PIDS2}" ]; then \
+	  echo "⚠️  Still listening, force kill: $${PIDS2}"; \
+	  kill -9 $${PIDS2} 2>/dev/null || true; \
 	fi; \
-	cd inventiv-frontend && npm run dev -- --port $(UI_HOST_PORT)
+	echo "✅ UI (host) stopped (or was not running)"
 
 # Expose API on host loopback for local tunnels (cloudflared), without changing docker-compose.yml.
 # It starts a tiny socat container bound to 127.0.0.1:(8003+PORT_OFFSET) that forwards to api:8003 on the compose network.

@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint"
   },
@@ -20,6 +20,8 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
+    "ia-designsys": "workspace:*",
+    "ia-widgets": "workspace:*",
     "lucide-react": "^0.560.0",
     "next": "16.0.10",
     "react": "19.2.1",

@@ -1,16 +1,28 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Rubik, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const inventivSans = Rubik({
+  variable: "--font-rubik",
   subsets: ["latin"],
+  weight: ["300", "400", "500", "700", "900"],
 });
 
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
 });
+
+/*
+ * Note: we keep Geist Mono for code/ids/tables, but we align the main UI font with inventiv-it.fr (Rubik).
+ */
+
+/* Legacy (kept disabled)
+const geistSans = Geist({
+  variable: "--font-geist-sans",
+  subsets: ["latin"],
+});
+*/
 
 export const metadata: Metadata = {
   title: "Inventiv Agents",
@@ -25,7 +37,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`${inventivSans.variable} ${geistMono.variable} antialiased`}
       >
         {children}
       </body>

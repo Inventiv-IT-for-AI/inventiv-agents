@@ -1,17 +1,19 @@
 "use client";
 
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, type ChangeEvent } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { CheckCircle, Search, Microchip } from "lucide-react";
+import { Search, Microchip } from "lucide-react";
 import { apiUrl } from "@/lib/api";
 import { Provider, Region, Zone, InstanceType, LlmModel } from "@/lib/types";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatEur } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { IARequestAccepted } from "ia-widgets";
+import { IAAlert, IAAlertDescription, IAAlertTitle } from "ia-designsys";
 
 type CreateInstanceModalProps = {
     open: boolean;
@@ -31,6 +33,7 @@ export function CreateInstanceModal({
     allZones,
 }: CreateInstanceModalProps) {
     const [deployStep, setDeployStep] = useState<"form" | "submitting" | "success">("form");
+    const [errorMsg, setErrorMsg] = useState<string | null>(null);
     type Combo = {
         key: string; // `${zoneId}:${typeId}`
         provider: Provider | null;
@@ -209,12 +212,13 @@ export function CreateInstanceModal({
     }, [open, selectedProviderCode, selectedProviderId, selectedRegionId, selectedZoneId, zones, providers, regions, models.length, selectedModelId, typesByZoneRef]);
 
     const handleDeploy = async () => {
+        setErrorMsg(null);
         if (!selectedCombo) {
-            alert("Please select all required fields");
+            setErrorMsg("Merci de sélectionner un Provider/Region/Zone + un type d’instance.");
             return;
         }
         if (!selectedModelId) {
-            alert("Please select a model");
+            setErrorMsg("Merci de sélectionner un modèle.");
             return;
         }
 
@@ -245,18 +249,19 @@ export function CreateInstanceModal({
                 }, 2000);
             } else {
                 const msg = data?.message || data?.status || "Deployment failed!";
-                alert(msg);
-                handleClose();
+                setDeployStep("form");
+                setErrorMsg(String(msg));
             }
         } catch (e) {
             console.error(e);
-            alert("Error deploying instance.");
-            handleClose();
+            setDeployStep("form");
+            setErrorMsg("Erreur lors de la création de l’instance.");
         }
     };
 
     const handleClose = () => {
         setDeployStep("form");
+        setErrorMsg(null);
         setSelectedProviderCode("all");
         setSelectedRegionId("all");
         setSelectedZoneId("all");
@@ -276,12 +281,15 @@ export function CreateInstanceModal({
                 </DialogHeader>
 
                 {deployStep === "success" ? (
-                    <div className="flex flex-col items-center justify-center py-6 space-y-4 text-green-600 animate-in fade-in zoom-in duration-300">
-                        <CheckCircle className="h-16 w-16" />
-                        <span className="text-xl font-bold">Demande de création prise en compte</span>
-                    </div>
+                    <IARequestAccepted title="Demande de création prise en compte" tone="success" />
                 ) : (
                     <div className="grid gap-6 py-4">
+                        {errorMsg ? (
+                            <IAAlert variant="destructive">
+                                <IAAlertTitle>Impossible de créer l’instance</IAAlertTitle>
+                                <IAAlertDescription>{errorMsg}</IAAlertDescription>
+                            </IAAlert>
+                        ) : null}
                         {/* Filters + Types cards */}
                         <div className="grid gap-3">
                             <div className="flex flex-col gap-2">
@@ -291,7 +299,7 @@ export function CreateInstanceModal({
                                         className="pl-9"
                                         placeholder="Rechercher (ex: H100, L40S, RENDER...)"
                                         value={typeQuery}
-                                        onChange={(e) => setTypeQuery(e.target.value)}
+                                        onChange={(e: ChangeEvent<HTMLInputElement>) => setTypeQuery(e.target.value)}
                                         disabled={deployStep === "submitting"}
                                     />
                                 </div>

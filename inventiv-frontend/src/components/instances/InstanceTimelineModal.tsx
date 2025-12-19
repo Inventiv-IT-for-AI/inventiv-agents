@@ -6,10 +6,9 @@ import { Button } from "@/components/ui/button";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiUrl } from "@/lib/api";
 import type { ActionLog, ActionType, Instance } from "@/lib/types";
-import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
-import { CopyButton } from "@/components/shared/CopyButton";
+import type { LoadRangeResult } from "ia-widgets";
+import { IACopyButton, IADataTable, type IADataTableColumn } from "ia-widgets";
 import { displayOrDash } from "@/lib/utils";
-import { VirtualizedDataTable, type DataTableColumn } from "@/components/shared/VirtualizedDataTable";
 import { useRealtimeEvents } from "@/hooks/useRealtimeEvents";
 
 interface InstanceTimelineModalProps {
@@ -154,7 +153,8 @@ export function InstanceTimelineModal({
     // Prefer metadata.vllm_mode from the latest WORKER_SSH_INSTALL action.
     for (const log of recentLogs) {
       if (log.action_type === "WORKER_SSH_INSTALL") {
-        const m = (log.metadata as any)?.vllm_mode;
+        const meta = (log.metadata ?? null) as Record<string, unknown> | null;
+        const m = meta?.vllm_mode;
         if (typeof m === "string" && m.trim()) return m.trim();
       }
     }
@@ -214,7 +214,7 @@ export function InstanceTimelineModal({
     [instanceId]
   );
 
-  const columns = useMemo<DataTableColumn<ActionLog>[]>(() => {
+  const columns = useMemo<IADataTableColumn<ActionLog>[]>(() => {
     return [
       {
         id: "time",
@@ -357,7 +357,7 @@ export function InstanceTimelineModal({
                 </div>
                 <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground font-mono break-all">
                   <span>{instanceId}</span>
-                  <CopyButton text={instanceId} />
+                  <IACopyButton text={instanceId} />
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -440,7 +440,7 @@ export function InstanceTimelineModal({
                 <span className="text-muted-foreground">:</span>
                 <span className="font-medium font-mono flex items-center gap-2 min-w-0 truncate">
                   {displayOrDash(instance?.ip_address)}
-                  {instance?.ip_address ? <CopyButton text={instance.ip_address} /> : null}
+                  {instance?.ip_address ? <IACopyButton text={instance.ip_address} /> : null}
                 </span>
               </div>
               <div className="flex items-baseline gap-2 min-w-0 col-span-2 lg:col-span-2">
@@ -512,7 +512,7 @@ export function InstanceTimelineModal({
 
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] flex-1 min-h-0">
             <div className="min-w-0">
-              <VirtualizedDataTable<ActionLog>
+              <IADataTable<ActionLog>
                 // Use a stable listId so column prefs persist across instances (localStorage key is derived from listId).
                 listId="monitoring:instance_actions"
                 dataKey={queryKey}

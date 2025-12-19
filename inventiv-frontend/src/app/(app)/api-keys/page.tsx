@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type ChangeEvent } from "react";
 import { apiUrl } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -8,10 +8,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Plus, Pencil, Trash2 } from "lucide-react";
-import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
-import { InventivDataTable, type DataTableSortState, type InventivDataTableColumn } from "@/components/shared/InventivDataTable";
+import { IAConfirmModal, IADataTable, IACopyButton, type DataTableSortState, type IADataTableColumn, type LoadRangeResult } from "ia-widgets";
 import type { ApiKey } from "@/lib/types";
-import { CopyButton } from "@/components/shared/CopyButton";
 
 export default function ApiKeysPage() {
     const [refreshTick, setRefreshTick] = useState(0);
@@ -27,12 +25,11 @@ export default function ApiKeysPage() {
     const [editingApiKey, setEditingApiKey] = useState<ApiKey | null>(null);
     const [apiKeyEditName, setApiKeyEditName] = useState("");
 
-    useEffect(() => {
-        // keep spinner semantics for leftMeta
-        setApiKeysLoading(true);
-        const t = window.setTimeout(() => setApiKeysLoading(false), 150);
-        return () => window.clearTimeout(t);
-    }, [refreshTick, sort]);
+    const [revokeOpen, setRevokeOpen] = useState(false);
+    const [apiKeyToRevoke, setApiKeyToRevoke] = useState<ApiKey | null>(null);
+
+    // NOTE: don't set state synchronously in an effect (eslint react-hooks/set-state-in-effect).
+    // We drive loading from the actual fetch lifecycle in `loadRange`.
 
     const createApiKey = async () => {
         const name = apiKeyName.trim();
@@ -49,9 +46,9 @@ export default function ApiKeysPage() {
         setRefreshTick((s) => s + 1);
     };
 
-    const revokeApiKey = async (id: string) => {
-        await fetch(apiUrl(`api_keys/${id}`), { method: "DELETE" });
-        setRefreshTick((s) => s + 1);
+    const askRevoke = (k: ApiKey) => {
+        setApiKeyToRevoke(k);
+        setRevokeOpen(true);
     };
 
     const openRename = (k: ApiKey) => {
@@ -85,6 +82,7 @@ export default function ApiKeysPage() {
 
     const loadRange = useCallback(
         async (offset: number, limit: number): Promise<LoadRangeResult<ApiKey>> => {
+            setApiKeysLoading(true);
             const params = new URLSearchParams();
             params.set("offset", String(offset));
             params.set("limit", String(limit));
@@ -95,20 +93,24 @@ export default function ApiKeysPage() {
                     params.set("sort_dir", sort.direction);
                 }
             }
-            const res = await fetch(apiUrl(`api_keys/search?${params.toString()}`));
-            if (!res.ok) throw new Error(`api_keys/search failed (${res.status})`);
-            const data = (await res.json()) as ApiKeysSearchResponse;
-            return {
-                offset: data.offset,
-                items: data.rows,
-                totalCount: data.total_count,
-                filteredCount: data.filtered_count,
-            };
+            try {
+                const res = await fetch(apiUrl(`api_keys/search?${params.toString()}`));
+                if (!res.ok) throw new Error(`api_keys/search failed (${res.status})`);
+                const data = (await res.json()) as ApiKeysSearchResponse;
+                return {
+                    offset: data.offset,
+                    items: data.rows,
+                    totalCount: data.total_count,
+                    filteredCount: data.filtered_count,
+                };
+            } finally {
+                setApiKeysLoading(false);
+            }
         },
         [sort]
     );
 
-    const apiKeyColumns = useMemo<InventivDataTableColumn<ApiKey>[]>(() => {
+    const apiKeyColumns = useMemo<IADataTableColumn<ApiKey>[]>(() => {
         return [
             { id: "name", label: "Name", width: 260, sortable: true, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
             { id: "prefix", label: "Prefix", width: 160, sortable: true, cell: ({ row }) => <span className="font-mono text-xs">{row.key_prefix}</span> },
@@ -144,7 +146,7 @@ export default function ApiKeysPage() {
                         <Pencil className="h-4 w-4 mr-2" />
                         Modifier
                     </Button>
-                    <Button variant="destructive" size="sm" onClick={() => revokeApiKey(row.id)} disabled={!!row.revoked_at}>
+                    <Button variant="destructive" size="sm" onClick={() => askRevoke(row)} disabled={!!row.revoked_at}>
                         <Trash2 className="h-4 w-4 mr-2" />
                         Revoke
                     </Button>
@@ -152,7 +154,7 @@ export default function ApiKeysPage() {
             ),
         },
         ];
-    }, [apiKeyEditOpen, createdApiKey, apiKeyCreateOpen, editingApiKey]);
+    }, []);
 
     return (
         <div className="p-6 space-y-4">
@@ -169,7 +171,7 @@ export default function ApiKeysPage() {
 
             <Card>
                 <CardContent>
-                    <InventivDataTable<ApiKey>
+                    <IADataTable<ApiKey>
                         listId="api_keys:list"
                         title="API Keys"
                         dataKey={JSON.stringify({ refreshTick, sort })}
@@ -187,7 +189,7 @@ export default function ApiKeysPage() {
             </Card>
 
             {/* Create API Key dialog (shows secret once) */}
-            <Dialog open={apiKeyCreateOpen} onOpenChange={(open) => { setApiKeyCreateOpen(open); if (!open) { setCreatedApiKey(null); setApiKeyName(""); } }}>
+            <Dialog open={apiKeyCreateOpen} onOpenChange={(open: boolean) => { setApiKeyCreateOpen(open); if (!open) { setCreatedApiKey(null); setApiKeyName(""); } }}>
                 <DialogContent showCloseButton={false} className="sm:max-w-[560px]">
                     <DialogHeader>
                         <DialogTitle>Ajouter une API Key</DialogTitle>
@@ -199,7 +201,7 @@ export default function ApiKeysPage() {
                                 <Input
                                     id="api_key_name"
                                     value={apiKeyName}
-                                    onChange={(e) => setApiKeyName(e.target.value)}
+                                    onChange={(e: ChangeEvent<HTMLInputElement>) => setApiKeyName(e.target.value)}
                                     className="col-span-3"
                                     placeholder="ex: prod-backend, n8n, langchain..."
                                 />
@@ -211,7 +213,7 @@ export default function ApiKeysPage() {
                                 </p>
                                 <div className="flex items-center gap-2">
                                     <Input value={createdApiKey} readOnly className="font-mono text-xs" />
-                                    <CopyButton text={createdApiKey} />
+                                    <IACopyButton text={createdApiKey} />
                                 </div>
                             </div>
                         )}
@@ -230,7 +232,7 @@ export default function ApiKeysPage() {
             </Dialog>
 
             {/* Rename API Key dialog */}
-            <Dialog open={apiKeyEditOpen} onOpenChange={(open) => { setApiKeyEditOpen(open); if (!open) { setEditingApiKey(null); setApiKeyEditName(""); } }}>
+            <Dialog open={apiKeyEditOpen} onOpenChange={(open: boolean) => { setApiKeyEditOpen(open); if (!open) { setEditingApiKey(null); setApiKeyEditName(""); } }}>
                 <DialogContent showCloseButton={false} className="sm:max-w-[560px]">
                     <DialogHeader>
                         <DialogTitle>Modifier l’API Key</DialogTitle>
@@ -241,7 +243,7 @@ export default function ApiKeysPage() {
                             <Input
                                 id="api_key_edit_name"
                                 value={apiKeyEditName}
-                                onChange={(e) => setApiKeyEditName(e.target.value)}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => setApiKeyEditName(e.target.value)}
                                 className="col-span-3"
                             />
                         </div>
@@ -252,6 +254,43 @@ export default function ApiKeysPage() {
                     </DialogFooter>
                 </DialogContent>
             </Dialog>
+
+            <IAConfirmModal
+                open={revokeOpen}
+                onOpenChange={(open) => {
+                    if (!open) {
+                        setRevokeOpen(false);
+                        setApiKeyToRevoke(null);
+                    }
+                }}
+                title="Révoquer l’API Key"
+                description="Cette action invalide la clé et est irréversible."
+                details={
+                    <div className="space-y-1">
+                        <div>
+                            Nom: <span className="font-medium text-foreground">{apiKeyToRevoke?.name ?? "-"}</span>
+                        </div>
+                        <div>
+                            Prefix: <span className="font-mono text-foreground text-xs">{apiKeyToRevoke?.key_prefix ?? "-"}</span>
+                        </div>
+                        <div>
+                            ID: <span className="font-mono text-foreground text-xs">{apiKeyToRevoke?.id ?? "-"}</span>
+                        </div>
+                    </div>
+                }
+                confirmLabel="Révoquer"
+                confirmingLabel="Révocation..."
+                confirmVariant="destructive"
+                successTitle="Demande de révocation prise en compte"
+                successTone="danger"
+                onConfirm={async () => {
+                    if (!apiKeyToRevoke?.id) return;
+                    const res = await fetch(apiUrl(`api_keys/${apiKeyToRevoke.id}`), { method: "DELETE" });
+                    if (!res.ok) throw new Error("revoke failed");
+                    setRefreshTick((s) => s + 1);
+                }}
+                autoCloseMs={1500}
+            />
         </div>
     );
 }

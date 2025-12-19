@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ChangeEvent } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { RefreshCcw } from "lucide-react";
@@ -10,12 +10,13 @@ import { SparklineDual } from "@/components/shared/SparklineDual";
 import { displayOrDash } from "@/lib/utils";
 
 export default function GpuActivityPage() {
+  type WindowKey = "5m" | "1h" | "24h" | "7d" | "30d";
   const [data, setData] = useState<GpuActivityResponse | null>(null);
   const [instances, setInstances] = useState<Instance[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
-  const [windowKey, setWindowKey] = useState<"5m" | "1h" | "24h" | "7d" | "30d">("5m");
+  const [windowKey, setWindowKey] = useState<WindowKey>("5m");
   const [instanceId, setInstanceId] = useState<string>("all");
 
   const query = useMemo(() => {
@@ -74,8 +75,10 @@ export default function GpuActivityPage() {
         }
         const json = (await res.json()) as GpuActivityResponse;
         if (!cancelled) setData(json);
-      } catch (e: any) {
-        if (!cancelled) setErr(String(e?.message || e));
+      } catch (e: unknown) {
+        const msg =
+          e instanceof Error ? e.message : typeof e === "string" ? e : e && typeof e === "object" ? JSON.stringify(e) : String(e);
+        if (!cancelled) setErr(msg);
       } finally {
         if (!cancelled) setIsLoading(false);
       }
@@ -84,7 +87,7 @@ export default function GpuActivityPage() {
     return () => {
       cancelled = true;
     };
-  }, [tick]);
+  }, [tick, query]);
 
   const tiles = useMemo(() => {
     const out: Array<{
@@ -130,7 +133,7 @@ export default function GpuActivityPage() {
           <select
             className="h-9 rounded-md border border-input bg-background px-3 text-sm"
             value={instanceId}
-            onChange={(e) => setInstanceId(e.target.value)}
+            onChange={(e: ChangeEvent<HTMLSelectElement>) => setInstanceId(e.target.value)}
           >
             <option value="all">All instances</option>
             {instances.map((i) => (
@@ -142,7 +145,12 @@ export default function GpuActivityPage() {
           <select
             className="h-9 rounded-md border border-input bg-background px-3 text-sm"
             value={windowKey}
-            onChange={(e) => setWindowKey(e.target.value as any)}
+            onChange={(e: ChangeEvent<HTMLSelectElement>) => {
+              const v = e.target.value;
+              const isWindowKey = (x: string): x is WindowKey =>
+                x === "5m" || x === "1h" || x === "24h" || x === "7d" || x === "30d";
+              if (isWindowKey(v)) setWindowKey(v);
+            }}
           >
             <option value="5m">5 min (sec)</option>
             <option value="1h">1 h (min)</option>

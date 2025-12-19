@@ -1,24 +1,26 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+export const dynamic = "force-dynamic";
+
+import { Suspense, useEffect, useMemo, useState, type ChangeEvent } from "react";
 import { useRouter } from "next/navigation";
 import { useSearchParams } from "next/navigation";
 import { apiUrl } from "@/lib/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Pencil, Settings2, Plus, Info } from "lucide-react";
+import { Pencil, Settings2, Info } from "lucide-react";
 import { ManageZonesModal } from "@/components/settings/ManageZonesModal";
-import type { Provider, ProviderParams, GlobalSetting, Region, Zone, InstanceType, LlmModel } from "@/lib/types";
-import { InventivDataTable, type InventivDataTableColumn, type DataTableSortState } from "@/components/shared/InventivDataTable";
-import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
+import type { Provider, ProviderParams, Region, Zone, InstanceType, LlmModel } from "@/lib/types";
+import { type IADataTableColumn, type DataTableSortState, type LoadRangeResult } from "ia-widgets";
 import { formatEur } from "@/lib/utils";
-import { ActiveToggle } from "@/components/shared/ActiveToggle";
-import { CopyButton } from "@/components/shared/CopyButton";
+import { AIToggle } from "ia-widgets";
+import { ProvidersTab, RegionsTab, ZonesTab, InstanceTypesTab, ModelsTab, GlobalParamsTab } from "@/components/settings/tabs";
+import { IAAlert, IAAlertDescription, IAAlertTitle } from "ia-designsys";
+import { WorkspaceBanner } from "@/components/shared/WorkspaceBanner";
 
 function InfoHint({ text }: { text: string }) {
     const [open, setOpen] = useState(false);
@@ -61,7 +63,7 @@ function InfoHint({ text }: { text: string }) {
         </span>
     );
 }
-export default function SettingsPage() {
+function SettingsPageInner() {
     const router = useRouter();
     const [me, setMe] = useState<{ role: string } | null>(null);
     const isAdmin = me?.role === "admin";
@@ -102,9 +104,9 @@ export default function SettingsPage() {
         return (key: string, fallback: string) => (settingsDefs[key]?.desc?.trim() ? String(settingsDefs[key]?.desc) : fallback);
     }, [settingsDefs]);
 
-    const [globalSettings, setGlobalSettings] = useState<GlobalSetting[]>([]);
     const [globalSettingsLoading, setGlobalSettingsLoading] = useState(false);
     const [globalStaleSeconds, setGlobalStaleSeconds] = useState<string>("");
+    const [saveNotice, setSaveNotice] = useState<{ variant: "default" | "destructive"; title: string; description?: string } | null>(null);
 
     const searchParams = useSearchParams();
     useEffect(() => {
@@ -118,38 +120,32 @@ export default function SettingsPage() {
             });
 
         const tab = (searchParams.get("tab") || "").toLowerCase();
-        if (tab === "providers" || tab === "regions" || tab === "zones" || tab === "types" || tab === "models" || tab === "global_params") {
-            setActiveTab(tab as any);
-        }
+        const isTab = (
+            v: string
+        ): v is "providers" | "regions" | "zones" | "types" | "models" | "global_params" =>
+            v === "providers" || v === "regions" || v === "zones" || v === "types" || v === "models" || v === "global_params";
+        if (isTab(tab)) setActiveTab(tab);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    if (me && !isAdmin) {
-        return (
-            <div className="p-6">
-                <div className="text-2xl font-semibold">Settings</div>
-                <div className="mt-2 text-sm text-muted-foreground">
-                    Access denied. Settings are available to admin users only.
-                </div>
-            </div>
-        );
-    }
-
     useEffect(() => {
+        if (!isAdmin) return;
         // Load settings definitions once (used for placeholders + min/max + defaults).
         fetch(apiUrl("settings/definitions"))
             .then((r) => (r.ok ? r.json() : []))
             .then((rows) => {
                 const map: Record<string, { min?: number; max?: number; defInt?: number; defBool?: boolean; defText?: string; desc?: string }> = {};
-                for (const row of rows as any[]) {
-                    if (!row?.key) continue;
-                    map[String(row.key)] = {
-                        min: row.min_int ?? undefined,
-                        max: row.max_int ?? undefined,
-                        defInt: row.default_int ?? undefined,
-                        defBool: row.default_bool ?? undefined,
-                        defText: row.default_text ?? undefined,
-                        desc: row.description ?? undefined,
+                for (const r of Array.isArray(rows) ? rows : []) {
+                    const row = (r ?? null) as Record<string, unknown> | null;
+                    const key = row?.key;
+                    if (typeof key !== "string" || !key) continue;
+                    map[key] = {
+                        min: typeof row.min_int === "number" ? row.min_int : undefined,
+                        max: typeof row.max_int === "number" ? row.max_int : undefined,
+                        defInt: typeof row.default_int === "number" ? row.default_int : undefined,
+                        defBool: typeof row.default_bool === "boolean" ? row.default_bool : undefined,
+                        defText: typeof row.default_text === "string" ? row.default_text : undefined,
+                        desc: typeof row.description === "string" ? row.description : undefined,
                     };
                 }
                 setSettingsDefs(map);
@@ -159,6 +155,7 @@ export default function SettingsPage() {
     }, []);
 
     useEffect(() => {
+        if (!isAdmin) return;
         if (activeTab !== "providers") return;
         fetch(apiUrl("providers/params"))
             .then((r) => (r.ok ? r.json() : []))
@@ -174,6 +171,7 @@ export default function SettingsPage() {
     }, [activeTab, refreshTick.providers]);
 
     useEffect(() => {
+        if (!isAdmin) return;
         // Preload providers/regions lists for create forms (small catalogs).
         const load = async () => {
             const [pRes, rRes] = await Promise.all([fetch(apiUrl("providers")), fetch(apiUrl("regions"))]);
@@ -233,7 +231,10 @@ export default function SettingsPage() {
             code: (type === "model" ? "" : (entity as Provider | Region | Zone | InstanceType).code) ?? "",
             name: entity.name || "",
             description: type === 'provider' ? (((entity as Provider).description ?? "") || "") : "",
-            is_active: (entity as any).is_active ?? false,
+            is_active: (() => {
+                const v = (entity as unknown as { is_active?: unknown }).is_active;
+                return typeof v === "boolean" ? v : false;
+            })(),
             worker_instance_startup_timeout_s: pParams?.worker_instance_startup_timeout_s != null ? String(pParams.worker_instance_startup_timeout_s) : "",
             instance_startup_timeout_s: pParams?.instance_startup_timeout_s != null ? String(pParams.instance_startup_timeout_s) : "",
             worker_ssh_bootstrap_timeout_s: pParams?.worker_ssh_bootstrap_timeout_s != null ? String(pParams.worker_ssh_bootstrap_timeout_s) : "",
@@ -241,7 +242,10 @@ export default function SettingsPage() {
             worker_vllm_port: pParams?.worker_vllm_port != null ? String(pParams.worker_vllm_port) : "",
             worker_data_volume_gb_default: pParams?.worker_data_volume_gb_default != null ? String(pParams.worker_data_volume_gb_default) : "",
             worker_expose_ports: pParams?.worker_expose_ports == null ? "default" : (pParams.worker_expose_ports ? "true" : "false"),
-            worker_vllm_mode: (pParams?.worker_vllm_mode == null ? "default" : (pParams.worker_vllm_mode as any)),
+            worker_vllm_mode:
+                pParams?.worker_vllm_mode == null
+                    ? "default"
+                    : ((pParams.worker_vllm_mode as unknown) as "default" | "mono" | "multi"),
             worker_vllm_image: pParams?.worker_vllm_image != null ? String(pParams.worker_vllm_image) : "",
             cost_per_hour:
                 type === 'type' && (entity as InstanceType).cost_per_hour != null
@@ -297,6 +301,7 @@ export default function SettingsPage() {
     };
 
     const handleSave = async () => {
+        setSaveNotice(null);
         if (!entityType) return;
 
         const isModel = entityType === "model";
@@ -304,7 +309,8 @@ export default function SettingsPage() {
         if (isCreate && !isModel && entityType !== "provider" && entityType !== "region" && entityType !== "zone" && entityType !== "type") return;
 
         const base = entityType === "type" ? "instance_types" : `${entityType}s`;
-        const url = isCreate ? apiUrl(base) : apiUrl(`${base}/${(editingEntity as any).id}`);
+        const entityId = (editingEntity as unknown as { id?: unknown } | null)?.id;
+        const url = isCreate ? apiUrl(base) : apiUrl(`${base}/${String(entityId ?? "")}`);
 
         const payload: Record<string, unknown> = { is_active: formData.is_active };
 
@@ -356,7 +362,9 @@ export default function SettingsPage() {
             if (res.ok) {
                 // Enrich provider CRUD: persist provider-scoped params in the same flow.
                 if (entityType === "provider") {
-                    const providerId: string | null = isCreate ? ((await res.json()) as Provider).id : (editingEntity as any)?.id;
+                    const providerId: string | null = isCreate
+                        ? ((await res.json()) as Provider).id
+                        : (((editingEntity as unknown as { id?: unknown } | null)?.id as string | undefined) ?? null);
                     if (providerId) {
                         const toNum = (s: string) => (s.trim() === "" ? null : Number(s.trim()));
                         const pPayload: Record<string, unknown> = {
@@ -377,7 +385,11 @@ export default function SettingsPage() {
                             body: JSON.stringify(pPayload),
                         });
                         if (!pRes.ok) {
-                            alert("Provider saved, but provider params update failed.");
+                            setSaveNotice({
+                                variant: "default",
+                                title: "Provider enregistré",
+                                description: "Mais la mise à jour des paramètres provider a échoué.",
+                            });
                         }
                     }
                 }
@@ -385,10 +397,11 @@ export default function SettingsPage() {
                 const k = refreshKeyFor(entityType);
                 setRefreshTick((s) => ({ ...s, [k]: s[k] + 1 }));
             } else {
-                alert("Failed to save");
+                setSaveNotice({ variant: "destructive", title: "Échec de l’enregistrement", description: "Merci de réessayer." });
             }
         } catch (err) {
             console.error("Save failed", err);
+            setSaveNotice({ variant: "destructive", title: "Erreur", description: "Erreur lors de l’enregistrement." });
         }
     };
 
@@ -427,7 +440,7 @@ export default function SettingsPage() {
 
     // Provider params are edited within Provider CRUD (create/edit modal + provider list columns).
 
-    const providerColumns: InventivDataTableColumn<Provider>[] = [
+    const providerColumns: IADataTableColumn<Provider>[] = [
         { id: "name", label: "Name", width: 220, sortable: true, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
         { id: "code", label: "Code", width: 160, sortable: true, cell: ({ row }) => <span className="font-mono text-xs">{row.code}</span> },
         {
@@ -518,9 +531,9 @@ export default function SettingsPage() {
             sortable: true,
             cell: ({ row }) => (
                 <div className="flex items-center justify-center">
-                    <ActiveToggle
+                    <AIToggle
                         checked={!!row.is_active}
-                        onCheckedChange={(v) => void toggleActive(row.id, "provider", v)}
+                        onCheckedChange={(v: boolean) => void toggleActive(row.id, "provider", v)}
                         aria-label={`Toggle provider ${row.name}`}
                     />
                 </div>
@@ -553,7 +566,7 @@ export default function SettingsPage() {
         region_code?: string | null;
     };
 
-    const regionColumns: InventivDataTableColumn<RegionRow>[] = [
+    const regionColumns: IADataTableColumn<RegionRow>[] = [
         {
             id: "provider",
             label: "Provider",
@@ -576,9 +589,9 @@ export default function SettingsPage() {
             sortable: true,
             cell: ({ row }) => (
                 <div className="flex items-center justify-center">
-                    <ActiveToggle
+                    <AIToggle
                         checked={!!row.is_active}
-                        onCheckedChange={(v) => void toggleActive(row.id, "region", v)}
+                        onCheckedChange={(v: boolean) => void toggleActive(row.id, "region", v)}
                         aria-label={`Toggle region ${row.name}`}
                     />
                 </div>
@@ -601,7 +614,7 @@ export default function SettingsPage() {
         },
     ];
 
-    const zoneColumns: InventivDataTableColumn<ZoneRow>[] = [
+    const zoneColumns: IADataTableColumn<ZoneRow>[] = [
         {
             id: "provider",
             label: "Provider",
@@ -635,9 +648,9 @@ export default function SettingsPage() {
             sortable: true,
             cell: ({ row }) => (
                 <div className="flex items-center justify-center">
-                    <ActiveToggle
+                    <AIToggle
                         checked={!!row.is_active}
-                        onCheckedChange={(v) => void toggleActive(row.id, "zone", v)}
+                        onCheckedChange={(v: boolean) => void toggleActive(row.id, "zone", v)}
                         aria-label={`Toggle zone ${row.name}`}
                     />
                 </div>
@@ -662,7 +675,7 @@ export default function SettingsPage() {
 
     type InstanceTypeRow = InstanceType & { provider_name?: string; provider_code?: string | null };
 
-    const typeColumns: InventivDataTableColumn<InstanceTypeRow>[] = [
+    const typeColumns: IADataTableColumn<InstanceTypeRow>[] = [
         {
             id: "provider",
             label: "Provider",
@@ -696,9 +709,9 @@ export default function SettingsPage() {
             sortable: true,
             cell: ({ row }) => (
                 <div className="flex items-center justify-center">
-                    <ActiveToggle
+                    <AIToggle
                         checked={!!row.is_active}
-                        onCheckedChange={(v) => void toggleActive(row.id, "type", v)}
+                        onCheckedChange={(v: boolean) => void toggleActive(row.id, "type", v)}
                         aria-label={`Toggle instance type ${row.name}`}
                     />
                 </div>
@@ -778,8 +791,10 @@ export default function SettingsPage() {
         fetch(apiUrl("settings/global"))
             .then((r) => (r.ok ? r.json() : []))
             .then((rows) => {
-                setGlobalSettings(rows as GlobalSetting[]);
-                const stale = (rows as any[]).find((x) => x?.key === "OPENAI_WORKER_STALE_SECONDS");
+                const stale = (Array.isArray(rows) ? rows : []).find((x) => {
+                    const r = (x ?? null) as Record<string, unknown> | null;
+                    return r?.key === "OPENAI_WORKER_STALE_SECONDS";
+                }) as { value_int?: number } | undefined;
                 if (stale && stale.value_int != null) setGlobalStaleSeconds(String(stale.value_int));
                 else setGlobalStaleSeconds("");
             })
@@ -788,7 +803,7 @@ export default function SettingsPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeTab, refreshTick.global_params]);
 
-    const modelColumns: InventivDataTableColumn<ModelRow>[] = [
+    const modelColumns: IADataTableColumn<ModelRow>[] = [
         { id: "name", label: "Name", width: 260, sortable: true, cell: ({ row }) => <span className="font-medium">{row.name}</span> },
         { id: "model_id", label: "HF Model ID", width: 360, sortable: true, cell: ({ row }) => <span className="font-mono text-xs">{row.model_id}</span> },
         { id: "required_vram_gb", label: "VRAM (GB)", width: 120, align: "right", sortable: true, cell: ({ row }) => <span className="tabular-nums">{row.required_vram_gb}</span> },
@@ -801,9 +816,9 @@ export default function SettingsPage() {
             sortable: true,
             cell: ({ row }) => (
                 <div className="flex items-center justify-center">
-                    <ActiveToggle
+                    <AIToggle
                         checked={!!row.is_active}
-                        onCheckedChange={(v) => void toggleModelActive(row.id, v)}
+                        onCheckedChange={(v: boolean) => void toggleModelActive(row.id, v)}
                         aria-label={`Toggle model ${row.name}`}
                     />
                 </div>
@@ -886,6 +901,17 @@ export default function SettingsPage() {
 
     // API Keys moved to /api-keys
 
+    if (me && !isAdmin) {
+        return (
+            <div className="p-6">
+                <div className="text-2xl font-semibold">Settings</div>
+                <div className="mt-2 text-sm text-muted-foreground">
+                    Access denied. Settings are available to admin users only.
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className="p-8 space-y-8">
             <div>
@@ -893,7 +919,16 @@ export default function SettingsPage() {
                 <p className="text-muted-foreground">Manage catalog and configuration.</p>
             </div>
 
-            <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)} className="w-full">
+            <WorkspaceBanner />
+
+            {saveNotice ? (
+                <IAAlert variant={saveNotice.variant}>
+                    <IAAlertTitle>{saveNotice.title}</IAAlertTitle>
+                    {saveNotice.description ? <IAAlertDescription>{saveNotice.description}</IAAlertDescription> : null}
+                </IAAlert>
+            ) : null}
+
+                <Tabs value={activeTab} onValueChange={(v: string) => setActiveTab(v as typeof activeTab)} className="w-full">
                 <TabsList>
                     <TabsTrigger value="providers">Providers</TabsTrigger>
                     <TabsTrigger value="regions">Regions</TabsTrigger>
@@ -905,194 +940,74 @@ export default function SettingsPage() {
 
                 {/* PROVIDERS */}
                 <TabsContent value="providers">
-                    <Card>
-                        <CardContent>
-                            <InventivDataTable<Provider>
-                                listId="settings:providers"
-                                title="Providers"
-                                dataKey={JSON.stringify({ refresh: refreshTick.providers, sort: providersSort })}
-                                rightHeader={
-                                    <div className="flex gap-2">
-                                        <Button size="sm" onClick={() => openCreate("provider")}>
-                                            <Plus className="h-4 w-4 mr-2" />
-                                            Ajouter
-                                        </Button>
-                                    </div>
-                                }
-                                autoHeight={true}
-                                height={300}
-                                rowHeight={52}
-                                columns={providerColumns}
-                                loadRange={loadProviders}
-                                sortState={providersSort}
-                                onSortChange={setProvidersSort}
-                                sortingMode="server"
-                            />
-                        </CardContent>
-                    </Card>
+                    <ProvidersTab<Provider>
+                        refreshTick={refreshTick.providers}
+                        sort={providersSort}
+                        setSort={setProvidersSort}
+                        columns={providerColumns}
+                        loadRange={loadProviders}
+                        onCreate={() => openCreate("provider")}
+                    />
                 </TabsContent>
 
                 {/* REGIONS */}
                 <TabsContent value="regions">
-                    <Card>
-                        <CardContent>
-                            <InventivDataTable<Region>
-                                listId="settings:regions"
-                                title="Regions"
-                                dataKey={JSON.stringify({ refresh: refreshTick.regions, sort: regionsSort })}
-                                rightHeader={
-                                    <div className="flex gap-2">
-                                        <Button size="sm" onClick={() => openCreate("region")}>
-                                            <Plus className="h-4 w-4 mr-2" />
-                                            Ajouter
-                                        </Button>
-                                    </div>
-                                }
-                                autoHeight={true}
-                                height={300}
-                                rowHeight={52}
-                                columns={regionColumns}
-                                loadRange={loadRegions}
-                                sortState={regionsSort}
-                                onSortChange={setRegionsSort}
-                                sortingMode="server"
-                            />
-                        </CardContent>
-                    </Card>
+                    <RegionsTab<RegionRow>
+                        refreshTick={refreshTick.regions}
+                        sort={regionsSort}
+                        setSort={setRegionsSort}
+                        columns={regionColumns}
+                        loadRange={loadRegions}
+                        onCreate={() => openCreate("region")}
+                    />
                 </TabsContent>
 
                 {/* ZONES */}
                 <TabsContent value="zones">
-                    <Card>
-                        <CardContent>
-                            <InventivDataTable<Zone>
-                                listId="settings:zones"
-                                title="Zones"
-                                dataKey={JSON.stringify({ refresh: refreshTick.zones, sort: zonesSort })}
-                                rightHeader={
-                                    <div className="flex gap-2">
-                                        <Button size="sm" onClick={() => openCreate("zone")}>
-                                            <Plus className="h-4 w-4 mr-2" />
-                                            Ajouter
-                                        </Button>
-                                    </div>
-                                }
-                                autoHeight={true}
-                                height={300}
-                                rowHeight={52}
-                                columns={zoneColumns}
-                                loadRange={loadZones}
-                                sortState={zonesSort}
-                                onSortChange={setZonesSort}
-                                sortingMode="server"
-                            />
-                        </CardContent>
-                    </Card>
+                    <ZonesTab<ZoneRow>
+                        refreshTick={refreshTick.zones}
+                        sort={zonesSort}
+                        setSort={setZonesSort}
+                        columns={zoneColumns}
+                        loadRange={loadZones}
+                        onCreate={() => openCreate("zone")}
+                    />
                 </TabsContent>
 
                 {/* INSTANCE TYPES */}
                 <TabsContent value="types">
-                    <Card>
-                        <CardContent>
-                            <InventivDataTable<InstanceType>
-                                listId="settings:types"
-                                title="Instance Types"
-                                dataKey={JSON.stringify({ refresh: refreshTick.types, sort: typesSort })}
-                                rightHeader={
-                                    <div className="flex gap-2">
-                                        <Button size="sm" onClick={() => openCreate("type")}>
-                                            <Plus className="h-4 w-4 mr-2" />
-                                            Ajouter
-                                        </Button>
-                                    </div>
-                                }
-                                autoHeight={true}
-                                height={300}
-                                rowHeight={52}
-                                columns={typeColumns}
-                                loadRange={loadTypes}
-                                sortState={typesSort}
-                                onSortChange={setTypesSort}
-                                sortingMode="server"
-                            />
-                        </CardContent>
-                    </Card>
+                    <InstanceTypesTab<InstanceTypeRow>
+                        refreshTick={refreshTick.types}
+                        sort={typesSort}
+                        setSort={setTypesSort}
+                        columns={typeColumns}
+                        loadRange={loadTypes}
+                        onCreate={() => openCreate("type")}
+                    />
                 </TabsContent>
 
                 {/* MODELS */}
                 <TabsContent value="models">
-                    <Card>
-                        <CardContent>
-                            <InventivDataTable<ModelRow>
-                                listId="settings:models"
-                                title="Models"
-                                dataKey={JSON.stringify({ refresh: refreshTick.models, sort: modelsSort })}
-                                rightHeader={
-                                    <div className="flex gap-2">
-                                        <Button size="sm" onClick={openCreateModel} disabled={modelsLoading}>
-                                            <Plus className="h-4 w-4 mr-2" />
-                                            Ajouter
-                                        </Button>
-                                    </div>
-                                }
-                                autoHeight={true}
-                                height={300}
-                                rowHeight={52}
-                                columns={modelColumns}
-                                rows={models}
-                                sortState={modelsSort}
-                                onSortChange={setModelsSort}
-                                sortingMode="server"
-                            />
-                        </CardContent>
-                    </Card>
+                    <ModelsTab<ModelRow>
+                        refreshTick={refreshTick.models}
+                        sort={modelsSort}
+                        setSort={setModelsSort}
+                        columns={modelColumns}
+                        rows={models}
+                        loading={modelsLoading}
+                        onCreate={openCreateModel}
+                    />
                 </TabsContent>
 
                 {/* GLOBAL PARAMS */}
                 <TabsContent value="global_params">
-                    <Card>
-                        <CardContent className="space-y-4">
-                            <div className="flex items-center justify-between gap-4">
-                                <div>
-                                    <div className="font-medium">OPENAI_WORKER_STALE_SECONDS</div>
-                                    <div className="text-sm text-muted-foreground">
-                                        Staleness window used for `/v1/models` and worker selection.
-                                    </div>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <Input
-                                        value={globalStaleSeconds}
-                                        onChange={(e) => setGlobalStaleSeconds(e.target.value)}
-                                        placeholder={settingsDefs["OPENAI_WORKER_STALE_SECONDS"]?.defInt != null ? `default (${settingsDefs["OPENAI_WORKER_STALE_SECONDS"]?.defInt}s)` : "default"}
-                                        className="w-48"
-                                    />
-                                    <Button
-                                        size="sm"
-                                        onClick={async () => {
-                                            const v = globalStaleSeconds.trim() === "" ? null : Number(globalStaleSeconds.trim());
-                                            const def = settingsDefs["OPENAI_WORKER_STALE_SECONDS"];
-                                            const min = def?.min ?? 10;
-                                            const max = def?.max ?? 86400;
-                                            if (v != null && (!Number.isFinite(v) || v < min || v > max)) return;
-                                            const res = await fetch(apiUrl("settings/global"), {
-                                                method: "PUT",
-                                                headers: { "Content-Type": "application/json" },
-                                                body: JSON.stringify({ key: "OPENAI_WORKER_STALE_SECONDS", value_int: v }),
-                                            });
-                                            if (!res.ok) return;
-                                            setRefreshTick((t) => ({ ...t, global_params: t.global_params + 1 }));
-                                        }}
-                                        disabled={globalSettingsLoading}
-                                    >
-                                        Enregistrer
-                                    </Button>
-                                </div>
-                            </div>
-                            <div className="text-xs text-muted-foreground">
-                                Range: {(settingsDefs["OPENAI_WORKER_STALE_SECONDS"]?.min ?? 10)}..{(settingsDefs["OPENAI_WORKER_STALE_SECONDS"]?.max ?? 86400)}s. Leave empty for default.
-                            </div>
-                        </CardContent>
-                    </Card>
+                    <GlobalParamsTab
+                        globalStaleSeconds={globalStaleSeconds}
+                        setGlobalStaleSeconds={setGlobalStaleSeconds}
+                        globalSettingsLoading={globalSettingsLoading}
+                        settingsDefs={settingsDefs}
+                        onSaved={() => setRefreshTick((t) => ({ ...t, global_params: t.global_params + 1 }))}
+                    />
                 </TabsContent>
 
                 {/* API Keys moved to /api-keys */}
@@ -1104,7 +1019,7 @@ export default function SettingsPage() {
 
             <Dialog
                 open={isEditOpen}
-                onOpenChange={(open) => {
+                onOpenChange={(open: boolean) => {
                     setIsEditOpen(open);
                     if (!open) {
                         setEditingEntity(null);
@@ -1133,19 +1048,19 @@ export default function SettingsPage() {
                     <div className="grid gap-4 py-4">
                         <div className="grid grid-cols-4 items-center gap-4">
                             <Label htmlFor="name" className="text-right">Nom</Label>
-                            <Input id="name" value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} className="col-span-3" />
+                            <Input id="name" value={formData.name} onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, name: e.target.value })} className="col-span-3" />
                         </div>
                         {entityType !== "model" && (
                             <div className="grid grid-cols-4 items-center gap-4">
                                 <Label htmlFor="code" className="text-right">Code</Label>
-                                <Input id="code" value={formData.code} onChange={(e) => setFormData({ ...formData, code: e.target.value })} className="col-span-3" />
+                                <Input id="code" value={formData.code} onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, code: e.target.value })} className="col-span-3" />
                             </div>
                         )}
                         {entityType === "region" && (
                             <div className="grid grid-cols-4 items-center gap-4">
                                 <Label className="text-right">Provider</Label>
                                 <div className="col-span-3">
-                                    <Select value={formData.provider_id} onValueChange={(v) => setFormData({ ...formData, provider_id: v })}>
+                                    <Select value={formData.provider_id} onValueChange={(v: string) => setFormData({ ...formData, provider_id: v })}>
                                         <SelectTrigger>
                                             <SelectValue placeholder="Select provider" />
                                         </SelectTrigger>
@@ -1164,7 +1079,7 @@ export default function SettingsPage() {
                             <div className="grid grid-cols-4 items-center gap-4">
                                 <Label className="text-right">Region</Label>
                                 <div className="col-span-3">
-                                    <Select value={formData.region_id} onValueChange={(v) => setFormData({ ...formData, region_id: v })}>
+                                    <Select value={formData.region_id} onValueChange={(v: string) => setFormData({ ...formData, region_id: v })}>
                                         <SelectTrigger>
                                             <SelectValue placeholder="Select region" />
                                         </SelectTrigger>
@@ -1186,7 +1101,7 @@ export default function SettingsPage() {
                                     <Input
                                         id="description"
                                         value={formData.description}
-                                        onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                                        onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, description: e.target.value })}
                                         className="col-span-3"
                                     />
                                 </div>
@@ -1205,7 +1120,7 @@ export default function SettingsPage() {
                                     </Label>
                                     <Input
                                         value={formData.worker_instance_startup_timeout_s}
-                                        onChange={(e) => setFormData({ ...formData, worker_instance_startup_timeout_s: e.target.value })}
+                                        onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, worker_instance_startup_timeout_s: e.target.value })}
                                         placeholder={settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"]?.defInt != null ? `default (${settingsDefs["WORKER_INSTANCE_STARTUP_TIMEOUT_S"]?.defInt}s)` : "default"}
                                         className="col-span-3"
                                     />
@@ -1220,7 +1135,7 @@ export default function SettingsPage() {
                                     </Label>
                                     <Input
                                         value={formData.instance_startup_timeout_s}
-                                        onChange={(e) => setFormData({ ...formData, instance_startup_timeout_s: e.target.value })}
+                                        onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, instance_startup_timeout_s: e.target.value })}
                                         placeholder={settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"]?.defInt != null ? `default (${settingsDefs["INSTANCE_STARTUP_TIMEOUT_S"]?.defInt}s)` : "default"}
                                         className="col-span-3"
                                     />
@@ -1235,7 +1150,7 @@ export default function SettingsPage() {
                                     </Label>
                                     <Input
                                         value={formData.worker_ssh_bootstrap_timeout_s}
-                                        onChange={(e) => setFormData({ ...formData, worker_ssh_bootstrap_timeout_s: e.target.value })}
+                                        onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, worker_ssh_bootstrap_timeout_s: e.target.value })}
                                         placeholder={settingsDefs["WORKER_SSH_BOOTSTRAP_TIMEOUT_S"]?.defInt != null ? `default (${settingsDefs["WORKER_SSH_BOOTSTRAP_TIMEOUT_S"]?.defInt}s)` : "default"}
                                         className="col-span-3"
                                     />
@@ -1250,7 +1165,7 @@ export default function SettingsPage() {
                                     </Label>
                                     <Input
                                         value={formData.worker_health_port}
-                                        onChange={(e) => setFormData({ ...formData, worker_health_port: e.target.value })}
+                                        onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, worker_health_port: e.target.value })}
                                         placeholder={settingsDefs["WORKER_HEALTH_PORT"]?.defInt != null ? `default (${settingsDefs["WORKER_HEALTH_PORT"]?.defInt})` : "default"}
                                         className="col-span-3"
                                     />
@@ -1265,7 +1180,7 @@ export default function SettingsPage() {
                                     </Label>
                                     <Input
                                         value={formData.worker_vllm_port}
-                                        onChange={(e) => setFormData({ ...formData, worker_vllm_port: e.target.value })}
+                                        onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, worker_vllm_port: e.target.value })}
                                         placeholder={settingsDefs["WORKER_VLLM_PORT"]?.defInt != null ? `default (${settingsDefs["WORKER_VLLM_PORT"]?.defInt})` : "default"}
                                         className="col-span-3"
                                     />
@@ -1280,7 +1195,7 @@ export default function SettingsPage() {
                                     </Label>
                                     <Input
                                         value={formData.worker_data_volume_gb_default}
-                                        onChange={(e) => setFormData({ ...formData, worker_data_volume_gb_default: e.target.value })}
+                                        onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, worker_data_volume_gb_default: e.target.value })}
                                         placeholder={settingsDefs["WORKER_DATA_VOLUME_GB_DEFAULT"]?.defInt != null ? `default (${settingsDefs["WORKER_DATA_VOLUME_GB_DEFAULT"]?.defInt}GB)` : "default"}
                                         className="col-span-3"
                                     />
@@ -1303,7 +1218,7 @@ export default function SettingsPage() {
                                         >
                                             Default
                                         </Button>
-                                        <ActiveToggle
+                                        <AIToggle
                                             checked={
                                                 formData.worker_expose_ports === "default"
                                                     ? (settingsDefs["WORKER_EXPOSE_PORTS"]?.defBool ?? true)
@@ -1328,7 +1243,9 @@ export default function SettingsPage() {
                                     <div className="col-span-3">
                                         <Select
                                             value={formData.worker_vllm_mode}
-                                            onValueChange={(v) => setFormData({ ...formData, worker_vllm_mode: v as any })}
+                                            onValueChange={(v: string) =>
+                                                setFormData({ ...formData, worker_vllm_mode: v as "default" | "mono" | "multi" })
+                                            }
                                         >
                                             <SelectTrigger>
                                                 <SelectValue placeholder="default" />
@@ -1351,7 +1268,7 @@ export default function SettingsPage() {
                                     </Label>
                                     <Input
                                         value={formData.worker_vllm_image}
-                                        onChange={(e) => setFormData({ ...formData, worker_vllm_image: e.target.value })}
+                                        onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, worker_vllm_image: e.target.value })}
                                         placeholder={settingsDefs["WORKER_VLLM_IMAGE"]?.defText != null ? `default (${settingsDefs["WORKER_VLLM_IMAGE"]?.defText})` : "default"}
                                         className="col-span-3 font-mono text-xs"
                                     />
@@ -1363,7 +1280,7 @@ export default function SettingsPage() {
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label className="text-right">Provider</Label>
                                     <div className="col-span-3">
-                                        <Select value={formData.provider_id} onValueChange={(v) => setFormData({ ...formData, provider_id: v })}>
+                                        <Select value={formData.provider_id} onValueChange={(v: string) => setFormData({ ...formData, provider_id: v })}>
                                             <SelectTrigger>
                                                 <SelectValue placeholder="Select provider" />
                                             </SelectTrigger>
@@ -1379,27 +1296,27 @@ export default function SettingsPage() {
                                 </div>
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label htmlFor="gpu_count" className="text-right">GPU count</Label>
-                                    <Input id="gpu_count" value={formData.gpu_count} onChange={(e) => setFormData({ ...formData, gpu_count: e.target.value })} className="col-span-3" />
+                                    <Input id="gpu_count" value={formData.gpu_count} onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, gpu_count: e.target.value })} className="col-span-3" />
                                 </div>
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label htmlFor="vram_per_gpu_gb" className="text-right">VRAM/GPU</Label>
-                                    <Input id="vram_per_gpu_gb" value={formData.vram_per_gpu_gb} onChange={(e) => setFormData({ ...formData, vram_per_gpu_gb: e.target.value })} className="col-span-3" />
+                                    <Input id="vram_per_gpu_gb" value={formData.vram_per_gpu_gb} onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, vram_per_gpu_gb: e.target.value })} className="col-span-3" />
                                 </div>
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label htmlFor="cpu_count" className="text-right">vCPU</Label>
-                                    <Input id="cpu_count" value={formData.cpu_count} onChange={(e) => setFormData({ ...formData, cpu_count: e.target.value })} className="col-span-3" />
+                                    <Input id="cpu_count" value={formData.cpu_count} onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, cpu_count: e.target.value })} className="col-span-3" />
                                 </div>
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label htmlFor="ram_gb" className="text-right">RAM (GB)</Label>
-                                    <Input id="ram_gb" value={formData.ram_gb} onChange={(e) => setFormData({ ...formData, ram_gb: e.target.value })} className="col-span-3" />
+                                    <Input id="ram_gb" value={formData.ram_gb} onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, ram_gb: e.target.value })} className="col-span-3" />
                                 </div>
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label htmlFor="bandwidth_bps" className="text-right">Bandwidth (bps)</Label>
-                                    <Input id="bandwidth_bps" value={formData.bandwidth_bps} onChange={(e) => setFormData({ ...formData, bandwidth_bps: e.target.value })} className="col-span-3" />
+                                    <Input id="bandwidth_bps" value={formData.bandwidth_bps} onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, bandwidth_bps: e.target.value })} className="col-span-3" />
                                 </div>
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label htmlFor="cost" className="text-right">Coût ($/h)</Label>
-                                    <Input id="cost" type="number" step="0.0001" value={formData.cost_per_hour} onChange={(e) => setFormData({ ...formData, cost_per_hour: e.target.value })} className="col-span-3" />
+                                    <Input id="cost" type="number" step="0.0001" value={formData.cost_per_hour} onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, cost_per_hour: e.target.value })} className="col-span-3" />
                                 </div>
                             </>
                         )}
@@ -1407,25 +1324,25 @@ export default function SettingsPage() {
                             <>
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label htmlFor="model_id" className="text-right">HF model_id</Label>
-                                    <Input id="model_id" value={formData.model_id} onChange={(e) => setFormData({ ...formData, model_id: e.target.value })} className="col-span-3" />
+                                    <Input id="model_id" value={formData.model_id} onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, model_id: e.target.value })} className="col-span-3" />
                                 </div>
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label htmlFor="required_vram_gb" className="text-right">VRAM (GB)</Label>
-                                    <Input id="required_vram_gb" value={formData.required_vram_gb} onChange={(e) => setFormData({ ...formData, required_vram_gb: e.target.value })} className="col-span-3" />
+                                    <Input id="required_vram_gb" value={formData.required_vram_gb} onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, required_vram_gb: e.target.value })} className="col-span-3" />
                                 </div>
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label htmlFor="context_length" className="text-right">Context</Label>
-                                    <Input id="context_length" value={formData.context_length} onChange={(e) => setFormData({ ...formData, context_length: e.target.value })} className="col-span-3" />
+                                    <Input id="context_length" value={formData.context_length} onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, context_length: e.target.value })} className="col-span-3" />
                                 </div>
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label htmlFor="data_volume_gb" className="text-right">Disk GB</Label>
-                                    <Input id="data_volume_gb" value={formData.data_volume_gb} onChange={(e) => setFormData({ ...formData, data_volume_gb: e.target.value })} className="col-span-3" />
+                                    <Input id="data_volume_gb" value={formData.data_volume_gb} onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, data_volume_gb: e.target.value })} className="col-span-3" />
                                 </div>
                             </>
                         )}
                         <div className="grid grid-cols-4 items-center gap-4">
                             <Label htmlFor="active" className="text-right">Actif</Label>
-                            <ActiveToggle checked={formData.is_active} onCheckedChange={(c) => setFormData({ ...formData, is_active: c })} aria-label="Toggle active" />
+                            <AIToggle checked={formData.is_active} onCheckedChange={(c) => setFormData({ ...formData, is_active: c })} aria-label="Toggle active" />
                         </div>
                     </div>
                     <DialogFooter className="sm:justify-between">
@@ -1454,6 +1371,14 @@ export default function SettingsPage() {
                 instanceType={selectedInstanceType}
             />
         </div>
+    );
+}
+
+export default function SettingsPage() {
+    return (
+        <Suspense fallback={<div className="p-8 text-sm text-muted-foreground">Loading…</div>}>
+            <SettingsPageInner />
+        </Suspense>
     );
 }
 

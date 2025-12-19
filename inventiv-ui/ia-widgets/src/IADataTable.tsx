@@ -2,17 +2,11 @@
 
 import * as React from "react";
 import { ArrowDown, ArrowUp, ArrowUpDown, GripVertical, Settings2 } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { VirtualizedRemoteList, type LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
-import { useAvailableHeight } from "@/hooks/useAvailableHeight";
+import { cn } from "./utils/cn";
+import { Button } from "./ui/button";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
+import { VirtualizedRemoteList, type LoadRangeResult } from "./VirtualizedRemoteList";
+import { useAvailableHeight } from "./useAvailableHeight";
 
 type ColumnId = string;
 
@@ -25,7 +19,7 @@ export type DataTableSortState = {
 
 type SortCycleStep = "asc" | "desc" | "none";
 
-export type InventivDataTableColumn<Row> = {
+export type IADataTableColumn<Row> = {
   id: ColumnId;
   label: string;
   width?: number; // px
@@ -38,7 +32,7 @@ export type InventivDataTableColumn<Row> = {
   align?: "left" | "center" | "right";
   headerClassName?: string;
   cellClassName?: string;
-  header?: React.ReactNode | ((col: InventivDataTableColumn<Row>) => React.ReactNode);
+  header?: React.ReactNode | ((col: IADataTableColumn<Row>) => React.ReactNode);
   cell: (args: { row: Row; rowIndex: number }) => React.ReactNode;
 
   /**
@@ -62,6 +56,7 @@ type PersistedPrefs = {
 };
 
 function storageKey(listId: string) {
+  // Keep legacy key to preserve existing prefs across rename.
   return `idt:prefs:${listId}`;
 }
 
@@ -182,7 +177,7 @@ function stableSort<Row>(rows: Row[], compare: (a: Row, b: Row) => number): Row[
   return decorated.map((d) => d.row);
 }
 
-export type InventivDataTableProps<Row> = {
+export type IADataTableProps<Row> = {
   listId: string;
   /** Optional key to force list reload (clears virtualization cache) when data changes */
   dataKey?: string;
@@ -213,7 +208,7 @@ export type InventivDataTableProps<Row> = {
   /** Show a leading row number column (#). Default: true */
   showRowNumbers?: boolean;
 
-  columns: InventivDataTableColumn<Row>[];
+  columns: IADataTableColumn<Row>[];
   /** Use either `loadRange` (remote) or `rows` (local) */
   loadRange?: (offset: number, limit: number) => Promise<LoadRangeResult<Row>>;
   rows?: Row[];
@@ -241,7 +236,7 @@ export type InventivDataTableProps<Row> = {
   className?: string;
 };
 
-export function InventivDataTable<Row>({
+export function IADataTable<Row>({
   listId,
   dataKey,
   reloadToken,
@@ -269,7 +264,7 @@ export function InventivDataTable<Row>({
   persistSort = true,
   sortingMode,
   className,
-}: InventivDataTableProps<Row>) {
+}: IADataTableProps<Row>) {
   const containerRef = React.useRef<HTMLDivElement>(null);
 
   // Calculer la hauteur automatiquement si autoHeight est activé
@@ -284,7 +279,7 @@ export function InventivDataTable<Row>({
   // Utiliser la hauteur calculée si autoHeight est activé, sinon utiliser la hauteur fournie
   const effectiveHeight = autoHeight ? calculatedHeight : (height ?? 300);
 
-  const rowNumCol = React.useMemo((): InventivDataTableColumn<Row> => {
+  const rowNumCol = React.useMemo((): IADataTableColumn<Row> => {
     return {
       id: "__rownum__",
       label: "#",
@@ -316,7 +311,7 @@ export function InventivDataTable<Row>({
   }, [effectiveColumns]);
 
   const baseColumnsById = React.useMemo(() => {
-    const m = new Map<string, InventivDataTableColumn<Row>>();
+    const m = new Map<string, IADataTableColumn<Row>>();
     for (const c of effectiveColumns) m.set(c.id, c);
     return m;
   }, [effectiveColumns]);
@@ -325,6 +320,40 @@ export function InventivDataTable<Row>({
   const [tableCounts, setTableCounts] = React.useState<{ total: number; filtered: number }>({ total: 0, filtered: 0 });
   const [prefsLoaded, setPrefsLoaded] = React.useState(false);
   const [isResizing, setIsResizing] = React.useState(false);
+
+  const hoverResizeActiveRef = React.useRef(false);
+  const hoverResizePrevCursorRef = React.useRef<string>("");
+
+  // UX: during an active resize drag, force the global cursor + disable text selection.
+  // This makes the "resize mode" obvious even if the pointer leaves the small handle zone.
+  React.useEffect(() => {
+    if (!isResizing) return;
+    const body = document.body;
+    const prevCursor = body.style.cursor;
+    const prevUserSelect = body.style.userSelect;
+    body.style.cursor = "col-resize";
+    body.style.userSelect = "none";
+    return () => {
+      body.style.cursor = prevCursor;
+      body.style.userSelect = prevUserSelect;
+    };
+  }, [isResizing]);
+
+  const onResizeHotspotEnter = React.useCallback(() => {
+    // Force the cursor even when hovering inside a draggable header.
+    if (isResizing) return;
+    if (hoverResizeActiveRef.current) return;
+    hoverResizeActiveRef.current = true;
+    hoverResizePrevCursorRef.current = document.body.style.cursor;
+    document.body.style.cursor = "col-resize";
+  }, [isResizing]);
+
+  const onResizeHotspotLeave = React.useCallback(() => {
+    if (isResizing) return;
+    if (!hoverResizeActiveRef.current) return;
+    hoverResizeActiveRef.current = false;
+    document.body.style.cursor = hoverResizePrevCursorRef.current;
+  }, [isResizing]);
 
   const [order, setOrder] = React.useState<ColumnId[]>(() => effectiveColumns.map((c) => c.id));
   const [hidden, setHidden] = React.useState<Set<ColumnId>>(
@@ -518,7 +547,7 @@ export function InventivDataTable<Row>({
   }, [effectiveSort, hidden, isResizing, listId, order, persistSort, prefsLoaded, widths]);
 
   const visibleOrderedColumns = React.useMemo(() => {
-    const result: InventivDataTableColumn<Row>[] = [];
+    const result: IADataTableColumn<Row>[] = [];
     for (const id of order) {
       const col = baseColumnsById.get(id);
       if (!col) continue;
@@ -528,7 +557,10 @@ export function InventivDataTable<Row>({
     return result;
   }, [baseColumnsById, hidden, order]);
 
-  const gapPx = 8; // Tailwind gap-2
+  // New strategy: insert a dedicated 5px "separator column" between each data column.
+  // This separator is the ONLY resize handle.
+  const resizeSepPx = 5;
+  const gapPx = resizeSepPx;
   const contentWidth = React.useMemo(() => {
     const totalCols = visibleOrderedColumns.length;
     const widthsSum = visibleOrderedColumns.reduce((acc, c) => acc + (widths[c.id] ?? 160), 0);
@@ -538,8 +570,14 @@ export function InventivDataTable<Row>({
   }, [visibleOrderedColumns, widths]);
 
   const gridTemplateColumns = React.useMemo(() => {
-    return visibleOrderedColumns.map((c) => `${widths[c.id] ?? 160}px`).join(" ");
-  }, [visibleOrderedColumns, widths]);
+    const parts: string[] = [];
+    for (let i = 0; i < visibleOrderedColumns.length; i++) {
+      const c = visibleOrderedColumns[i]!;
+      parts.push(`${widths[c.id] ?? 160}px`);
+      if (i < visibleOrderedColumns.length - 1) parts.push(`${resizeSepPx}px`);
+    }
+    return parts.join(" ");
+  }, [resizeSepPx, visibleOrderedColumns, widths]);
 
   const toggleColumn = React.useCallback((id: ColumnId) => {
     setHidden((prev) => {
@@ -576,7 +614,7 @@ export function InventivDataTable<Row>({
     startWidth: number;
   } | null>(null);
 
-  const onResizePointerDown = (e: React.PointerEvent, col: InventivDataTableColumn<Row>) => {
+  const onResizePointerDown = (e: React.PointerEvent, col: IADataTableColumn<Row>) => {
     if (col.disableResize) return;
     const currentWidth = widths[col.id] ?? 160;
     resizeState.current = { colId: col.id, startX: e.clientX, startWidth: currentWidth };
@@ -604,15 +642,169 @@ export function InventivDataTable<Row>({
   // Drag & drop reorder (HTML5)
   const dragIdRef = React.useRef<ColumnId | null>(null);
   const [draggingId, setDraggingId] = React.useState<ColumnId | null>(null);
-  const [dropHint, setDropHint] = React.useState<{ targetId: ColumnId; position: "before" | "after" } | null>(
-    null
-  );
+  const [dropHint, setDropHint] = React.useState<{ targetId: ColumnId; position: "before" | "after" } | null>(null);
   const didDragRef = React.useRef(false);
-  const onDragStart = (e: React.DragEvent, col: InventivDataTableColumn<Row>) => {
+  const headerCellRefs = React.useRef(new Map<ColumnId, HTMLDivElement | null>());
+  const headerRowRef = React.useRef<HTMLDivElement | null>(null);
+  const dropOverlayElRef = React.useRef<HTMLDivElement | null>(null);
+  const draggingHeaderElRef = React.useRef<HTMLDivElement | null>(null);
+  const setHeaderCellRef = React.useCallback((id: ColumnId, el: HTMLDivElement | null) => {
+    headerCellRefs.current.set(id, el);
+  }, []);
+
+  const computeDropOverlay = React.useCallback(
+    (hint: { targetId: ColumnId; position: "before" | "after" } | null): { left: number; width: number } | null => {
+      const fromId = dragIdRef.current;
+      if (!fromId || !hint) return null;
+      const rowEl = headerRowRef.current;
+      if (!rowEl) return null;
+
+      const rowRect = rowEl.getBoundingClientRect();
+      const idx = visibleOrderedColumns.findIndex((c) => c.id === hint.targetId);
+      if (idx < 0) return null;
+
+      // With explicit 5px separator columns, align to the CENTER of the separator column.
+      let boundaryX: number;
+      if (hint.position === "before") {
+        if (idx === 0) {
+          const firstEl = headerCellRefs.current.get(hint.targetId) ?? null;
+          if (!firstEl) return null;
+          boundaryX = firstEl.getBoundingClientRect().left;
+        } else {
+          const prevId = visibleOrderedColumns[idx - 1]?.id;
+          const prevEl = prevId ? (headerCellRefs.current.get(prevId) ?? null) : null;
+          if (!prevEl) return null;
+          boundaryX = prevEl.getBoundingClientRect().right + gapPx / 2;
+        }
+      } else {
+        const targetEl = headerCellRefs.current.get(hint.targetId) ?? null;
+        if (!targetEl) return null;
+        // after target => separator after it (or right edge if last col)
+        if (idx >= visibleOrderedColumns.length - 1) boundaryX = targetEl.getBoundingClientRect().right;
+        else boundaryX = targetEl.getBoundingClientRect().right + gapPx / 2;
+      }
+
+      const localX = boundaryX - rowRect.left;
+
+      // Widened "slot" so the landing position reads as a real insertion gap.
+      const bandW = 18;
+      if (!Number.isFinite(localX) || !Number.isFinite(rowRect.width)) return null;
+      const unclampedLeft = localX - bandW / 2;
+      const maxLeft = Math.max(0, rowRect.width - bandW);
+      const left = clamp(unclampedLeft, 0, maxLeft);
+      return { left, width: bandW };
+    },
+    [gapPx, visibleOrderedColumns]
+  );
+
+  const hideDropOverlay = React.useCallback(() => {
+    const el = dropOverlayElRef.current;
+    if (!el) return;
+    el.style.opacity = "0";
+  }, []);
+
+  const showDropOverlay = React.useCallback(
+    (hint: { targetId: ColumnId; position: "before" | "after" } | null) => {
+      const el = dropOverlayElRef.current;
+      const overlay = computeDropOverlay(hint);
+      if (!el || !overlay) {
+        hideDropOverlay();
+        return;
+      }
+      el.style.left = `${overlay.left}px`;
+      el.style.width = `${overlay.width}px`;
+      el.style.opacity = "1";
+    },
+    [computeDropOverlay, hideDropOverlay]
+  );
+
+  const computeNearestDropHint = React.useCallback(
+    (clientX: number): { targetId: ColumnId; position: "before" | "after" } | null => {
+      const fromId = dragIdRef.current;
+      if (!fromId) return null;
+      const fromCol = baseColumnsById.get(fromId);
+      if (!fromCol || fromCol.disableReorder) return null;
+
+      // Compute nearest *gap between columns* (aligned with separator columns).
+      // Represent gaps as "before col[i]" at prev.right + gapPx/2, plus "after last".
+      let best: { targetId: ColumnId; position: "before" | "after"; dist: number } | null = null;
+
+      const n = visibleOrderedColumns.length;
+      if (n === 0) return null;
+
+      // Before first: use firstRect.left
+      const firstId = visibleOrderedColumns[0]!.id;
+      const firstEl = headerCellRefs.current.get(firstId) ?? null;
+      if (firstEl) {
+        const x = firstEl.getBoundingClientRect().left;
+        if (fromId !== firstId) {
+          const d = Math.abs(clientX - x);
+          best = { targetId: firstId, position: "before", dist: d };
+        }
+      }
+
+      // Between: use prevRect.right, targetId is the right-hand column (drop before it)
+      for (let i = 1; i < n; i++) {
+        const prevId = visibleOrderedColumns[i - 1]!.id;
+        const targetId = visibleOrderedColumns[i]!.id;
+        const prevEl = headerCellRefs.current.get(prevId) ?? null;
+        if (!prevEl) continue;
+        if (fromId === targetId) continue; // no-op hint
+        const x = prevEl.getBoundingClientRect().right + gapPx / 2;
+        const d = Math.abs(clientX - x);
+        if (!best || d < best.dist) best = { targetId, position: "before", dist: d };
+      }
+
+      // After last: use lastRect.right (drop after it)
+      const lastId = visibleOrderedColumns[n - 1]!.id;
+      const lastEl = headerCellRefs.current.get(lastId) ?? null;
+      if (lastEl && fromId !== lastId) {
+        const x = lastEl.getBoundingClientRect().right;
+        const d = Math.abs(clientX - x);
+        if (!best || d < best.dist) best = { targetId: lastId, position: "after", dist: d };
+      }
+
+      if (!best) return null;
+      return { targetId: best.targetId, position: best.position };
+    },
+    [baseColumnsById, gapPx, visibleOrderedColumns]
+  );
+
+  const applyReorder = React.useCallback(
+    (fromId: ColumnId, hint: { targetId: ColumnId; position: "before" | "after" } | null) => {
+      if (!hint) return;
+      const { targetId, position } = hint;
+      if (!fromId || fromId === targetId) return;
+
+      setOrder((prev) => {
+        const next = prev.slice();
+        const fromIdx = next.indexOf(fromId);
+        const toIdx = next.indexOf(targetId);
+        if (fromIdx < 0 || toIdx < 0) return prev;
+
+        next.splice(fromIdx, 1);
+        const insertAt = position === "after" ? toIdx + 1 : toIdx;
+        // If removing shifts the insertion index, adjust
+        const adjustedInsertAt = fromIdx < insertAt ? insertAt - 1 : insertAt;
+        next.splice(adjustedInsertAt, 0, fromId);
+        return next;
+      });
+    },
+    []
+  );
+
+  const onDragStart = (e: React.DragEvent, col: IADataTableColumn<Row>) => {
+    if (isResizing) return;
     if (col.disableReorder) return;
     dragIdRef.current = col.id;
     setDraggingId(col.id);
     didDragRef.current = true;
+    // Visual feedback during native HTML5 drag can be flaky if it relies on React state re-renders.
+    // Apply the "dragging" style directly on the source header cell.
+    const el = e.currentTarget as HTMLDivElement;
+    draggingHeaderElRef.current = el;
+    el.classList.add("bg-secondary/60", "ring-1", "ring-inset", "ring-brand-secondary/30");
+    hideDropOverlay();
     e.dataTransfer.effectAllowed = "move";
     try {
       e.dataTransfer.setData("text/plain", col.id);
@@ -621,21 +813,24 @@ export function InventivDataTable<Row>({
     }
   };
 
-  const onDragOver = (e: React.DragEvent, col: InventivDataTableColumn<Row>) => {
+  const onDragOver = (e: React.DragEvent, col: IADataTableColumn<Row>) => {
     if (col.disableReorder) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
     const fromId = draggingId;
     if (!fromId || fromId === col.id) {
       setDropHint(null);
+      hideDropOverlay();
       return;
     }
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const position = e.clientX < rect.left + rect.width / 2 ? "before" : "after";
-    setDropHint({ targetId: col.id, position });
+    const position: "before" | "after" = e.clientX < rect.left + rect.width / 2 ? "before" : "after";
+    const hint = { targetId: col.id, position };
+    setDropHint(hint);
+    showDropOverlay(hint);
   };
 
-  const onDrop = (e: React.DragEvent, col: InventivDataTableColumn<Row>) => {
+  const onDrop = (e: React.DragEvent, col: IADataTableColumn<Row>) => {
     e.preventDefault();
     const fromId = dragIdRef.current ?? (() => {
       try {
@@ -649,29 +844,17 @@ export function InventivDataTable<Row>({
     const hint = dropHint;
     setDropHint(null);
     if (!fromId || fromId === col.id) return;
-
-    setOrder((prev) => {
-      const next = prev.slice();
-      const fromIdx = next.indexOf(fromId);
-      const toIdx = next.indexOf(col.id);
-      if (fromIdx < 0 || toIdx < 0) return prev;
-      next.splice(fromIdx, 1);
-      const insertAt = hint?.targetId === col.id && hint.position === "after" ? toIdx + 1 : toIdx;
-      // If removing shifts the insertion index, adjust
-      const adjustedInsertAt = fromIdx < insertAt ? insertAt - 1 : insertAt;
-      next.splice(adjustedInsertAt, 0, fromId);
-      return next;
-    });
+    applyReorder(fromId, hint ?? { targetId: col.id, position: "before" });
   };
 
-  const columnCanSort = React.useCallback((col: InventivDataTableColumn<Row>) => {
+  const columnCanSort = React.useCallback((col: IADataTableColumn<Row>) => {
     if (col.id === "__rownum__") return false;
     if (col.sortable === false) return false;
     return col.sortFn !== undefined || col.getSortValue !== undefined || col.sortable === true;
   }, []);
 
   const onHeaderSortClick = React.useCallback(
-    (col: InventivDataTableColumn<Row>) => {
+    (col: IADataTableColumn<Row>) => {
       if (inferredSortingMode === "none") return;
       if (isResizing) return;
       if (draggingId) return;
@@ -713,94 +896,177 @@ export function InventivDataTable<Row>({
 
   const headerNode = (
     <div
-      className="border-b bg-background"
-      style={{ paddingLeft: 12, paddingRight: 12, paddingTop: 8, paddingBottom: 8 }}
-      onPointerMove={onResizePointerMove}
-      onPointerUp={onResizePointerUp}
-      onPointerCancel={onResizePointerUp}
+      className="border-b bg-background px-3 py-2"
     >
-      <div className="grid gap-2 text-xs font-semibold text-muted-foreground select-none" style={{ gridTemplateColumns }}>
-        {visibleOrderedColumns.map((col) => {
+      <div
+        ref={headerRowRef}
+        className="relative grid text-xs font-semibold text-muted-foreground select-none"
+        style={{ gridTemplateColumns }}
+        onDragOver={(e) => {
+          if (!draggingId) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          const nextHint = computeNearestDropHint(e.clientX);
+          if (!nextHint) {
+            setDropHint(null);
+            hideDropOverlay();
+            return;
+          }
+          setDropHint((prev) => {
+            if (prev?.targetId === nextHint.targetId && prev.position === nextHint.position) return prev;
+            return nextHint;
+          });
+          showDropOverlay(nextHint);
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          const fromId = dragIdRef.current ?? (() => {
+            try {
+              return e.dataTransfer.getData("text/plain") as ColumnId;
+            } catch {
+              return null;
+            }
+          })();
+          const hint = dropHint ?? computeNearestDropHint(e.clientX);
+          dragIdRef.current = null;
+          setDraggingId(null);
+          setDropHint(null);
+          hideDropOverlay();
+          if (!fromId || !hint) return;
+          applyReorder(fromId, hint);
+        }}
+        onDragLeave={(e) => {
+          // Important: during HTML5 drag, some browsers report `relatedTarget = null`
+          // even when moving between children, which would clear the indicator constantly.
+          // Instead, only clear when the pointer is actually outside the header row bounds.
+          const row = headerRowRef.current;
+          if (!row) return;
+          const r = row.getBoundingClientRect();
+          const x = e.clientX;
+          const y = e.clientY;
+          const inside = x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+          if (inside) return;
+          setDropHint(null);
+          hideDropOverlay();
+        }}
+      >
+        {/* Drop slot overlay (global within header row).
+            Updated via direct style changes during HTML5 drag to avoid missing renders on some browsers. */}
+        <div
+          ref={dropOverlayElRef}
+          className="pointer-events-none absolute inset-y-[-6px] z-50 opacity-0 transition-opacity"
+          style={{ left: 0, width: 0 }}
+        >
+          {/* Obvious insertion slot */}
+          <div className="absolute inset-0 rounded-sm bg-brand-secondary/10 ring-1 ring-brand-secondary/25" />
+          {/* Soft edges to make the slot feel like a widened gap */}
+          <div className="absolute inset-y-0 left-0 w-px bg-border/60" />
+          <div className="absolute inset-y-0 right-0 w-px bg-border/60" />
+          {/* Center accent line */}
+          <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-[2px] bg-brand-secondary animate-pulse rounded-full" />
+        </div>
+
+        {visibleOrderedColumns.map((col, idx) => {
           const align = col.align === "right" ? "text-right" : col.align === "center" ? "text-center" : "text-left";
           const headerContent = typeof col.header === "function" ? col.header(col) : (col.header ?? col.label);
           const isDropTarget = dropHint?.targetId === col.id && draggingId && draggingId !== col.id;
-          const dropPos = isDropTarget ? dropHint?.position : null;
           const canSort = inferredSortingMode !== "none" && columnCanSort(col);
+          const canReorder = !col.disableReorder;
+          const isDraggingThis = draggingId === col.id;
 
           return (
-            <div
-              key={col.id}
-              className={cn(
-                "group relative min-w-0 flex items-center gap-2 rounded-sm px-1 -mx-1",
-                align,
-                col.headerClassName,
-                isDropTarget ? "bg-sky-50" : "",
-                canSort ? "cursor-pointer hover:text-foreground transition-colors" : ""
-              )}
-              draggable={!col.disableReorder}
-              onDragStart={(e) => onDragStart(e, col)}
-              onDragOver={(e) => onDragOver(e, col)}
-              onDrop={(e) => onDrop(e, col)}
-              onClick={() => onHeaderSortClick(col)}
-              onKeyDown={(e) => {
-                if (!canSort) return;
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  onHeaderSortClick(col);
+            <React.Fragment key={col.id}>
+              <div
+                ref={(el) => setHeaderCellRef(col.id, el)}
+                className={cn(
+                  "group relative min-w-0 flex items-center gap-2 px-2 py-1.5",
+                  align,
+                  col.headerClassName,
+                  isDropTarget ? "bg-secondary/60" : "",
+                  // Note: the actual dragging visual is applied via DOM classList in onDragStart,
+                  // because React state updates can be throttled during HTML5 drag.
+                  isDraggingThis ? "bg-secondary/60 ring-1 ring-inset ring-brand-secondary/30" : "",
+                  (canSort || canReorder) ? "hover:text-foreground transition-colors" : "",
+                  canReorder ? "cursor-grab active:cursor-grabbing" : (canSort ? "cursor-pointer" : "")
+                )}
+                draggable={canReorder}
+                onDragStart={(e) => onDragStart(e, col)}
+                onDragEnd={() => {
+                  dragIdRef.current = null;
+                  setDraggingId(null);
+                  setDropHint(null);
+                  hideDropOverlay();
+                  const el = draggingHeaderElRef.current;
+                  if (el) el.classList.remove("bg-secondary/60", "ring-1", "ring-inset", "ring-brand-secondary/30");
+                  draggingHeaderElRef.current = null;
+                  window.setTimeout(() => {
+                    didDragRef.current = false;
+                  }, 0);
+                }}
+                onDragOver={(e) => onDragOver(e, col)}
+                onDrop={(e) => onDrop(e, col)}
+                onClick={() => onHeaderSortClick(col)}
+                onKeyDown={(e) => {
+                  if (!canSort) return;
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onHeaderSortClick(col);
+                  }
+                }}
+                tabIndex={canSort ? 0 : -1}
+                role={canSort ? "button" : undefined}
+                aria-label={canSort ? `Trier par ${col.label}` : undefined}
+                title={
+                  canSort && canReorder
+                    ? "Glisser pour réordonner • Cliquer pour trier"
+                    : canReorder
+                      ? "Glisser pour réordonner"
+                      : canSort
+                        ? "Cliquer pour trier"
+                        : undefined
                 }
-              }}
-              tabIndex={canSort ? 0 : -1}
-              role={canSort ? "button" : undefined}
-              aria-label={canSort ? `Trier par ${col.label}` : undefined}
-              onDragEnd={() => {
-                dragIdRef.current = null;
-                setDraggingId(null);
-                setDropHint(null);
-                window.setTimeout(() => {
-                  didDragRef.current = false;
-                }, 0);
-              }}
-              onDragLeave={() => {
-                // If leaving the current target, clear hint
-                if (dropHint?.targetId === col.id) setDropHint(null);
-              }}
-              title={col.disableReorder ? undefined : "Glisser pour réordonner"}
-            >
-              {!col.disableReorder ? <GripVertical className="h-3.5 w-3.5 text-muted-foreground/70" /> : null}
+              >
+                {canReorder ? <GripVertical className="h-3.5 w-3.5 text-muted-foreground/70" /> : null}
 
-              <span className={cn("min-w-0 flex items-center gap-1", col.align === "right" ? "ml-auto" : "")}>
-                <span className="truncate">{headerContent}</span>
-                <span className={cn("shrink-0 text-muted-foreground", canSort ? "" : "hidden")}>
-                  {sortIcon(col.id, canSort)}
+                <span className={cn("min-w-0 flex items-center gap-1", col.align === "right" ? "ml-auto" : "")}>
+                  <span className="truncate">{headerContent}</span>
+                  <span className={cn("shrink-0 text-muted-foreground", canSort ? "" : "hidden")}>
+                    {sortIcon(col.id, canSort)}
+                  </span>
                 </span>
-              </span>
+              </div>
 
-              {/* Drop indicator (animated) */}
-              {isDropTarget && dropPos ? (
+              {/* Dedicated 5px resize separator column */}
+              {idx < visibleOrderedColumns.length - 1 ? (
                 <div
-                  className={cn(
-                    "pointer-events-none absolute top-[-6px] bottom-[-6px] w-[2px] bg-sky-500 animate-pulse rounded-full",
-                    dropPos === "before" ? "left-0" : "right-0"
-                  )}
-                />
-              ) : null}
-
-              {!col.disableResize ? (
-                <div
-                  className="absolute right-0 top-0 h-full w-4 cursor-col-resize flex items-center justify-center"
+                  className="relative h-full cursor-col-resize touch-none select-none z-50"
+                  onMouseEnter={onResizeHotspotEnter}
+                  onMouseLeave={onResizeHotspotLeave}
+                  onPointerEnter={onResizeHotspotEnter}
+                  onPointerLeave={onResizeHotspotLeave}
                   onPointerDown={(e) => onResizePointerDown(e, col)}
+                  onPointerMove={onResizePointerMove}
+                  onPointerUp={onResizePointerUp}
+                  onPointerCancel={onResizePointerUp}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
                   draggable={false}
                   onDragStart={(e) => {
-                    // Prevent HTML5 drag from hijacking resize gestures.
                     e.preventDefault();
                     e.stopPropagation();
                   }}
                   title="Redimensionner"
                 >
-                  <div className="h-6 w-[3px] rounded-full bg-gray-200 opacity-90 group-hover:bg-gray-400 group-hover:opacity-100 transition-colors" />
+                  <div className="absolute top-2 bottom-2 left-1/2 -translate-x-1/2 w-px bg-border/60 hover:bg-brand-secondary transition-colors" />
                 </div>
               ) : null}
-            </div>
+            </React.Fragment>
           );
         })}
       </div>
@@ -887,7 +1153,7 @@ export function InventivDataTable<Row>({
                 key={key}
                 style={style}
                 className={cn(
-                  "grid gap-2 px-3 items-center border-b text-sm",
+                  "grid px-3 items-center border-b text-sm",
                   index % 2 === 0 ? "bg-background" : "bg-muted/10",
                   row && onRowClick ? "cursor-pointer hover:bg-muted/30" : ""
                 )}
@@ -895,14 +1161,21 @@ export function InventivDataTable<Row>({
               >
                 <div style={{ display: "contents" }}>
                   <div style={{ display: "contents" }}>
-                    <div className="grid gap-2 min-w-0" style={{ gridTemplateColumns }}>
-                      {visibleOrderedColumns.map((col) => {
+                    <div className="grid min-w-0" style={{ gridTemplateColumns }}>
+                      {visibleOrderedColumns.map((col, cidx) => {
                         const align =
                           col.align === "right" ? "text-right" : col.align === "center" ? "text-center" : "text-left";
                         return (
-                          <div key={`${col.id}:${key}`} className={cn("min-w-0", align, col.cellClassName)}>
-                            {isLoaded && row ? col.cell({ row, rowIndex: index }) : "…"}
-                          </div>
+                          <React.Fragment key={`${col.id}:${key}`}>
+                            <div className={cn("min-w-0 px-2", align, col.cellClassName)}>
+                              {isLoaded && row ? col.cell({ row, rowIndex: index }) : "…"}
+                            </div>
+                            {cidx < visibleOrderedColumns.length - 1 ? (
+                              <div className="relative">
+                                <div className="absolute top-2 bottom-2 left-1/2 -translate-x-1/2 w-px bg-border/40" />
+                              </div>
+                            ) : null}
+                          </React.Fragment>
                         );
                       })}
                     </div>

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import * as ScrollAreaPrimitive from "@radix-ui/react-scroll-area";
-import { cn } from "@/lib/utils";
+import { cn } from "./utils/cn";
 
 export type VirtualRange = { startIndex: number; endIndex: number };
 
@@ -71,6 +71,7 @@ export function VirtualizedRemoteList<T>({
   onRangeChange,
 }: VirtualizedRemoteListProps<T>) {
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
+  const headerRef = React.useRef<HTMLDivElement | null>(null);
   const inflightPages = React.useRef<Set<number>>(new Set());
   const onCountsChangeRef = React.useRef<typeof onCountsChange>(onCountsChange);
   const onRangeChangeRef = React.useRef<typeof onRangeChange>(onRangeChange);
@@ -88,6 +89,7 @@ export function VirtualizedRemoteList<T>({
     total: 0,
     filtered: 0,
   });
+  const [measuredHeaderHeight, setMeasuredHeaderHeight] = React.useState<number>(header ? headerHeight : 0);
   const [, forceRender] = React.useState(0);
   const cache = React.useRef<Map<number, T>>(new Map());
 
@@ -101,14 +103,12 @@ export function VirtualizedRemoteList<T>({
         const offset = pageIndex * pageSize;
         const res = await loadRange(offset, pageSize);
 
-        // counts can change due to live traffic; keep it monotonic-ish but accept backend truth
         setCounts((prev) => {
           if (prev.total === res.totalCount && prev.filtered === res.filteredCount) return prev;
           return { total: res.totalCount, filtered: res.filteredCount };
         });
         onCountsChangeRef.current?.({ total: res.totalCount, filtered: res.filteredCount, meta: res.meta });
 
-        // populate cache
         for (let i = 0; i < res.items.length; i++) {
           cache.current.set(res.offset + i, res.items[i]);
         }
@@ -128,20 +128,45 @@ export function VirtualizedRemoteList<T>({
     forceRender((v) => v + 1);
     setScrollTop(0);
     if (viewportRef.current) viewportRef.current.scrollTop = 0;
-
-    // Prime first page
     void requestPage(0);
   }, [queryKey, requestPage]);
+
+  // Refresh in place when reloadToken changes
+  React.useEffect(() => {
+    if (reloadToken === undefined) return;
+    const firstPage = Math.floor(Math.max(0, Math.floor(scrollTop / rowHeight) - overscan) / pageSize);
+    const lastPage = Math.floor(
+      Math.min(Math.max(0, totalRows - 1), Math.floor((scrollTop + height) / rowHeight) + overscan) / pageSize
+    );
+    for (let p = firstPage; p <= lastPage; p++) void requestPage(p);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadToken]);
 
   const onScroll = React.useCallback((e: React.UIEvent<HTMLDivElement>) => {
     setScrollTop(e.currentTarget.scrollTop);
   }, []);
 
-  const effectiveHeaderHeight = header ? headerHeight : 0;
+  // Measure header height (more robust than relying on a hardcoded value).
+  React.useEffect(() => {
+    if (!header) {
+      setMeasuredHeaderHeight(0);
+      return;
+    }
+    const el = headerRef.current;
+    if (!el) return;
+    const measure = () => setMeasuredHeaderHeight(el.getBoundingClientRect().height || headerHeight || 0);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => measure());
+    ro.observe(el);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [header]);
+
+  const effectiveHeaderHeight = header ? (measuredHeaderHeight || headerHeight || 0) : 0;
   const effectiveViewportHeight = Math.max(0, height - effectiveHeaderHeight);
   const effectiveScrollTop = Math.max(0, scrollTop - effectiveHeaderHeight);
 
-  // Calculate visible range
   const startIndex = Math.max(0, Math.floor(effectiveScrollTop / rowHeight) - overscan);
   const endIndex = Math.min(
     Math.max(0, totalRows - 1),
@@ -151,104 +176,64 @@ export function VirtualizedRemoteList<T>({
   React.useEffect(() => {
     if (totalRows <= 0) return;
     onRangeChangeRef.current?.({ startIndex, endIndex });
-
-    // Request pages intersecting the visible range
     const firstPage = Math.floor(startIndex / pageSize);
     const lastPage = Math.floor(endIndex / pageSize);
     for (let p = firstPage; p <= lastPage; p++) void requestPage(p);
   }, [startIndex, endIndex, totalRows, pageSize, requestPage]);
 
-  // Soft reload (in place): refetch visible pages without resetting scroll/caches.
-  React.useEffect(() => {
-    if (reloadToken === undefined) return;
-    inflightPages.current.clear();
+  const innerHeight = Math.max(0, totalRows * rowHeight + effectiveHeaderHeight);
 
-    // Always refresh first page to refresh counts/meta.
-    void requestPage(0);
+  const items: React.ReactNode[] = [];
+  for (let i = startIndex; i <= endIndex; i++) {
+    const item = cache.current.get(i);
+    items.push(
+      renderRow({
+        index: i,
+        item,
+        isLoaded: item !== undefined,
+        style: { position: "absolute", top: i * rowHeight, height: rowHeight, left: 0, right: 0 },
+      })
+    );
+  }
 
-    if (totalRows <= 0) return;
-    const firstPage = Math.floor(startIndex / pageSize);
-    const lastPage = Math.floor(endIndex / pageSize);
-    for (let p = firstPage; p <= lastPage; p++) void requestPage(p);
-  }, [reloadToken, endIndex, pageSize, requestPage, startIndex, totalRows]);
-
-  const totalHeight = effectiveHeaderHeight + totalRows * rowHeight;
-  const rowsToRender: number[] = [];
-  for (let i = startIndex; i <= endIndex; i++) rowsToRender.push(i);
-
-  const widthStyle: React.CSSProperties | undefined =
-    contentWidth !== undefined
-      ? { width: typeof contentWidth === "number" ? `${contentWidth}px` : contentWidth }
-      : undefined;
-
-  const wantsHorizontal = showHorizontalScrollbar ?? contentWidth !== undefined;
+  const outerWidth = typeof contentWidth === "number" ? `${contentWidth}px` : (contentWidth ?? "100%");
+  const wrapperStyle: React.CSSProperties = {
+    position: "relative",
+    width: outerWidth,
+    minWidth: "100%",
+  };
+  const listStyle: React.CSSProperties = {
+    position: "relative",
+    height: Math.max(0, totalRows * rowHeight),
+    width: "100%",
+  };
 
   return (
-    <ScrollAreaPrimitive.Root
-      className={cn("relative", className)}
-      style={{
-        height,
-        // Used to offset the vertical scrollbar so it doesn't cover the sticky header
-        ["--vr-header-height" as unknown as string]: `${effectiveHeaderHeight}px`,
-      }}
-    >
+    <ScrollAreaPrimitive.Root className={cn("relative w-full overflow-hidden", className)} style={{ height }}>
       <ScrollAreaPrimitive.Viewport
         ref={viewportRef}
-        className={cn(
-          "size-full rounded-[inherit] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
-          // reserve space so scrollbars don't cover last columns/rows
-          wantsHorizontal ? "pr-3 pb-3" : "pr-3"
-        )}
+        className="h-full w-full"
         onScroll={onScroll}
+        style={{ height }}
       >
-        <div style={{ height: totalHeight, position: "relative", ...widthStyle }}>
+        <div style={wrapperStyle}>
           {header ? (
             <div
-              style={{ height: effectiveHeaderHeight, top: 0 }}
-              className="sticky top-0 z-30 bg-background"
+              ref={headerRef}
+              style={{ position: "sticky", top: 0, zIndex: 20 }}
+              className="bg-background"
             >
               {header}
             </div>
           ) : null}
-
-          <div style={{ position: "absolute", top: effectiveHeaderHeight, left: 0, right: 0, ...widthStyle }}>
-            {rowsToRender.map((index) => {
-              const item = cache.current.get(index);
-              const isLoaded = item !== undefined;
-              const style: React.CSSProperties = {
-                position: "absolute",
-                top: index * rowHeight,
-                left: 0,
-                height: rowHeight,
-                ...widthStyle,
-              };
-              return (
-                <React.Fragment key={`${queryKey}:${index}`}>
-                  {renderRow({ index, item, style, isLoaded })}
-                </React.Fragment>
-              );
-            })}
-          </div>
+          <div style={listStyle}>{items}</div>
         </div>
       </ScrollAreaPrimitive.Viewport>
-
-      <ScrollAreaPrimitive.ScrollAreaScrollbar
-        orientation="vertical"
-        className="relative z-20 flex touch-none select-none p-px transition-colors w-2.5 border-l border-l-transparent bg-sky-100 mt-[var(--vr-header-height)] h-[calc(100%-var(--vr-header-height))]"
-      >
-        <ScrollAreaPrimitive.ScrollAreaThumb className="bg-white relative flex-1 rounded-full border border-sky-200 shadow-sm" />
-      </ScrollAreaPrimitive.ScrollAreaScrollbar>
-
-      {wantsHorizontal ? (
-        <ScrollAreaPrimitive.ScrollAreaScrollbar
-          orientation="horizontal"
-          className="relative z-20 flex touch-none select-none p-px transition-colors w-full h-2.5 border-t border-t-transparent"
-        >
-          <ScrollAreaPrimitive.ScrollAreaThumb className="bg-border relative flex-1 rounded-full" />
-        </ScrollAreaPrimitive.ScrollAreaScrollbar>
-      ) : null}
+      <ScrollAreaPrimitive.Scrollbar orientation="vertical" />
+      {showHorizontalScrollbar ? <ScrollAreaPrimitive.Scrollbar orientation="horizontal" /> : null}
       <ScrollAreaPrimitive.Corner />
     </ScrollAreaPrimitive.Root>
   );
 }
+
 

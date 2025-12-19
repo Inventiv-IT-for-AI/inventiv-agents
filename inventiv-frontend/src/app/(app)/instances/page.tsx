@@ -5,17 +5,18 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Plus, RefreshCcw } from "lucide-react";
 import { Instance } from "@/lib/types";
-import { apiUrl } from "@/lib/api";
 import { useInstances } from "@/hooks/useInstances";
 import { useRealtimeEvents } from "@/hooks/useRealtimeEvents";
 import { useCatalog } from "@/hooks/useCatalog";
-import { StatsCard } from "@/components/shared/StatsCard";
+import { IAStatsCard } from "ia-widgets";
 import { CreateInstanceModal } from "@/components/instances/CreateInstanceModal";
 import { TerminateInstanceModal } from "@/components/instances/TerminateInstanceModal";
 import { ReinstallInstanceModal } from "@/components/instances/ReinstallInstanceModal";
 import { Server, Activity, AlertCircle, RefreshCcw as RefreshIcon } from "lucide-react";
 import { InstanceTable } from "@/components/instances/InstanceTable";
 import { InstanceTimelineModal } from "@/components/instances/InstanceTimelineModal";
+import { ArchiveInstanceModal } from "@/components/instances/ArchiveInstanceModal";
+import { WorkspaceBanner } from "@/components/shared/WorkspaceBanner";
 
 export default function InstancesPage() {
     useRealtimeEvents();
@@ -30,6 +31,8 @@ export default function InstancesPage() {
     const [instanceToTerminate, setInstanceToTerminate] = useState<string | null>(null);
     const [isReinstallOpen, setIsReinstallOpen] = useState(false);
     const [instanceToReinstall, setInstanceToReinstall] = useState<string | null>(null);
+    const [isArchiveOpen, setIsArchiveOpen] = useState(false);
+    const [instanceToArchive, setInstanceToArchive] = useState<string | null>(null);
     const [isTimelineOpen, setIsTimelineOpen] = useState(false);
     const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(null);
 
@@ -38,18 +41,9 @@ export default function InstancesPage() {
         setIsCreateOpen(true);
     };
 
-    const handleArchive = async (id: string) => {
-        try {
-            const res = await fetch(apiUrl(`instances/${id}/archive`), { method: "PUT" });
-            if (res.ok) {
-                refreshInstances();
-            } else {
-                alert("Failed to archive");
-            }
-        } catch (e) {
-            console.error(e);
-            alert("Error archiving instance");
-        }
+    const openArchiveModal = (id: string) => {
+        setInstanceToArchive(id);
+        setIsArchiveOpen(true);
     };
 
     const openTerminateModal = (id: string) => {
@@ -125,28 +119,30 @@ export default function InstancesPage() {
                 </div>
             </div>
 
+            <WorkspaceBanner />
+
             {/* Stats */}
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-                <StatsCard
+                <IAStatsCard
                     title="Total Instances"
                     value={stats.total}
                     description="All time managed"
                     icon={Server}
                 />
-                <StatsCard
+                <IAStatsCard
                     title="Active"
                     value={stats.active}
                     description="Operational"
                     icon={Activity}
                     valueClassName="text-green-600"
                 />
-                <StatsCard
+                <IAStatsCard
                     title="Provisioning"
                     value={stats.provisioning}
                     icon={RefreshIcon}
                     valueClassName="text-blue-600"
                 />
-                <StatsCard
+                <IAStatsCard
                     title="Failed/Terminated"
                     value={stats.failed}
                     icon={AlertCircle}
@@ -161,7 +157,7 @@ export default function InstancesPage() {
                         onViewDetails={openTimelineModal}
                         onTerminate={openTerminateModal}
                         onReinstall={openReinstallModal}
-                        onArchive={handleArchive}
+                        onArchive={openArchiveModal}
                         refreshKey={String(refreshSeq)}
                     />
                 </CardContent>
@@ -196,6 +192,16 @@ export default function InstancesPage() {
                     setInstanceToReinstall(null);
                 }}
                 instanceId={instanceToReinstall}
+                onSuccess={refreshInstances}
+            />
+
+            <ArchiveInstanceModal
+                open={isArchiveOpen}
+                onClose={() => {
+                    setIsArchiveOpen(false);
+                    setInstanceToArchive(null);
+                }}
+                instanceId={instanceToArchive}
                 onSuccess={refreshInstances}
             />
 
