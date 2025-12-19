@@ -1,4 +1,5 @@
 use crate::settings;
+use crate::workbench;
 use inventiv_common::{Instance, InstanceStatus, InstanceType, LlmModel, Region, Zone};
 use utoipa::OpenApi;
 
@@ -21,6 +22,13 @@ use utoipa::OpenApi;
         settings::update_zone,
         settings::list_instance_types,
         settings::update_instance_type
+        ,
+        // Workbench (persistence)
+        workbench::create_workbench_run,
+        workbench::list_workbench_runs,
+        workbench::get_workbench_run,
+        workbench::append_workbench_message,
+        workbench::complete_workbench_run
     ),
     components(
         schemas(
@@ -39,6 +47,17 @@ use utoipa::OpenApi;
             settings::UpdateRegionRequest,
             settings::UpdateZoneRequest,
             settings::UpdateInstanceTypeRequest
+            ,
+            // Workbench
+            workbench::WorkbenchRunRow,
+            workbench::WorkbenchMessageRow,
+            workbench::CreateWorkbenchRunRequest,
+            workbench::CreateWorkbenchRunResponse,
+            workbench::AppendWorkbenchMessageRequest,
+            workbench::AppendWorkbenchMessageResponse,
+            workbench::CompleteWorkbenchRunRequest,
+            workbench::WorkbenchRunWithMessages,
+            workbench::ListWorkbenchRunsQuery
         )
     ),
     tags(

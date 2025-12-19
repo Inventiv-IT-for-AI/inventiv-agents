@@ -17,6 +17,7 @@ pub struct AuthUser {
     pub user_id: uuid::Uuid,
     pub email: String,
     pub role: String,
+    pub current_organization_id: Option<uuid::Uuid>,
 }
 
 #[derive(Clone, Debug)]
@@ -33,6 +34,8 @@ struct Claims {
     sub: String, // user_id
     email: String,
     role: String,
+    // Optional org context (multi-tenant MVP)
+    current_organization_id: Option<String>,
     iat: usize,
     exp: usize,
 }
@@ -80,6 +83,7 @@ pub fn sign_session_jwt(user: &AuthUser) -> anyhow::Result<String> {
         sub: user.user_id.to_string(),
         email: user.email.clone(),
         role: user.role.clone(),
+        current_organization_id: user.current_organization_id.map(|id| id.to_string()),
         iat: now,
         exp,
     };
@@ -101,10 +105,15 @@ fn decode_session_jwt(token: &str) -> anyhow::Result<AuthUser> {
         &validation,
     )?;
     let user_id = uuid::Uuid::parse_str(&data.claims.sub)?;
+    let current_organization_id = match data.claims.current_organization_id.as_deref() {
+        Some(s) if !s.trim().is_empty() => uuid::Uuid::parse_str(s).ok(),
+        _ => None,
+    };
     Ok(AuthUser {
         user_id,
         email: data.claims.email,
         role: data.claims.role,
+        current_organization_id,
     })
 }
 

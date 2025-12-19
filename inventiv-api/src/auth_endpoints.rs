@@ -34,6 +34,7 @@ struct UserAuthRow {
     role: String,
     first_name: Option<String>,
     last_name: Option<String>,
+    current_organization_id: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -44,6 +45,9 @@ pub struct MeResponse {
     pub role: String,
     pub first_name: Option<String>,
     pub last_name: Option<String>,
+    pub current_organization_id: Option<uuid::Uuid>,
+    pub current_organization_name: Option<String>,
+    pub current_organization_slug: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -53,6 +57,9 @@ struct MeRow {
     role: String,
     first_name: Option<String>,
     last_name: Option<String>,
+    current_organization_id: Option<uuid::Uuid>,
+    current_organization_name: Option<String>,
+    current_organization_slug: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,7 +94,7 @@ pub async fn login(
     // password_hash = crypt($password, password_hash)
     let row: Option<UserAuthRow> = sqlx::query_as(
         r#"
-        SELECT id, email, role, first_name, last_name
+        SELECT id, email, role, first_name, last_name, current_organization_id
         FROM users
         WHERE (username = $1 OR email = $1)
           AND password_hash = crypt($2, password_hash)
@@ -113,6 +120,7 @@ pub async fn login(
         user_id: u.id,
         email: u.email.clone(),
         role: u.role.clone(),
+        current_organization_id: u.current_organization_id,
     };
     let token = match auth::sign_session_jwt(&auth_user) {
         Ok(t) => t,
@@ -151,9 +159,18 @@ pub async fn me(
 ) -> impl IntoResponse {
     let row: Option<MeRow> = sqlx::query_as(
         r#"
-        SELECT username, email, role, first_name, last_name
-        FROM users
-        WHERE id = $1
+        SELECT
+          u.username,
+          u.email,
+          u.role,
+          u.first_name,
+          u.last_name,
+          u.current_organization_id,
+          o.name as current_organization_name,
+          o.slug as current_organization_slug
+        FROM users u
+        LEFT JOIN organizations o ON o.id = u.current_organization_id
+        WHERE u.id = $1
         LIMIT 1
         "#,
     )
@@ -183,6 +200,9 @@ pub async fn me(
         role: r.role,
         first_name: r.first_name,
         last_name: r.last_name,
+        current_organization_id: r.current_organization_id,
+        current_organization_name: r.current_organization_name,
+        current_organization_slug: r.current_organization_slug,
     })
     .into_response()
 }
@@ -264,9 +284,18 @@ pub async fn update_me(
     // Return refreshed profile
     let row: Option<MeRow> = sqlx::query_as(
         r#"
-        SELECT username, email, role, first_name, last_name
-        FROM users
-        WHERE id = $1
+        SELECT
+          u.username,
+          u.email,
+          u.role,
+          u.first_name,
+          u.last_name,
+          u.current_organization_id,
+          o.name as current_organization_name,
+          o.slug as current_organization_slug
+        FROM users u
+        LEFT JOIN organizations o ON o.id = u.current_organization_id
+        WHERE u.id = $1
         LIMIT 1
         "#,
     )
@@ -284,6 +313,9 @@ pub async fn update_me(
             role: r.role,
             first_name: r.first_name,
             last_name: r.last_name,
+            current_organization_id: r.current_organization_id,
+            current_organization_name: r.current_organization_name,
+            current_organization_slug: r.current_organization_slug,
         })
         .into_response(),
         None => {

@@ -37,7 +37,9 @@ mod instance_type_zones; // Module for zone associations
 mod provider_settings;
 mod settings; // Module
 mod simple_logger;
+mod organizations;
 mod users_endpoint;
+mod workbench;
 // Simple logger without sqlx macros
 
 // use audit_log::AuditLogger; // Commented out due to DATABASE_URL build issues
@@ -113,6 +115,26 @@ async fn main() {
             auth::require_user_or_api_key,
         ));
 
+    // Workbench persistence API (auth = cookie/JWT OR API key)
+    let workbench_api = Router::new()
+        .route(
+            "/workbench/runs",
+            get(workbench::list_workbench_runs).post(workbench::create_workbench_run),
+        )
+        .route("/workbench/runs/:id", get(workbench::get_workbench_run))
+        .route(
+            "/workbench/runs/:id/messages",
+            post(workbench::append_workbench_message),
+        )
+        .route(
+            "/workbench/runs/:id/complete",
+            post(workbench::complete_workbench_run),
+        )
+        .route_layer(middleware::from_fn_with_state(
+            state.db.clone(),
+            auth::require_user_or_api_key,
+        ));
+
     // Protected routes (require user session)
     let protected = Router::new()
         .route(
@@ -122,6 +144,15 @@ async fn main() {
         .route(
             "/auth/me/password",
             axum::routing::put(auth_endpoints::change_password),
+        )
+        // Organizations (multi-tenant MVP)
+        .route(
+            "/organizations",
+            get(organizations::list_organizations).post(organizations::create_organization),
+        )
+        .route(
+            "/organizations/current",
+            axum::routing::put(organizations::set_current_organization),
         )
         // API Keys (dashboard-managed)
         .route(
@@ -280,6 +311,7 @@ async fn main() {
         .merge(public)
         .merge(worker)
         .merge(openai)
+        .merge(workbench_api)
         .merge(protected)
         .layer(cors) // Apply CORS to ALL routes
         .with_state(state);
@@ -3417,8 +3449,13 @@ async fn events_stream(
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(32);
 
     tokio::spawn(async move {
-        // Start at "now" so we don't flood on connect; the UI will do an initial fetch anyway.
-        let mut last_instances_ts = chrono::Utc::now();
+        // IMPORTANT:
+        // We do NOT want to emit "instance.updated" on noisy changes like heartbeats.
+        // We compute a stable signature (hash) for "meaningful" instance fields and only emit when it changes.
+        // On connect, we initialize the signature map but do not emit (UI will fetch initial state anyway).
+        let mut instances_initialized = false;
+        let mut instance_sig: std::collections::HashMap<uuid::Uuid, String> = std::collections::HashMap::new();
+
         let mut last_actions_ts = chrono::Utc::now();
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
 
@@ -3432,60 +3469,79 @@ async fn events_stream(
             interval.tick().await;
 
             if topics.contains("instances") {
-                let rows: Vec<(uuid::Uuid, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+                #[derive(sqlx::FromRow)]
+                struct InstanceSigRow {
+                    id: uuid::Uuid,
+                    sig: String,
+                }
+
+                // Signature excludes "noisy" fields (heartbeats, health checks, reconciliation, worker telemetry)
+                // and ALSO excludes error/debug fields that can change frequently during retries but are not
+                // displayed in the Instances list UI.
+                //
+                // It includes only fields that are user-visible in the Instances table (and affect sorting/filtering).
+                let rows: Vec<InstanceSigRow> = sqlx::query_as(
                     r#"
                     SELECT
                       id,
-                      GREATEST(
-                        COALESCE(created_at, 'epoch'::timestamptz),
-                        COALESCE(ready_at, 'epoch'::timestamptz),
-                        COALESCE(failed_at, 'epoch'::timestamptz),
-                        COALESCE(terminated_at, 'epoch'::timestamptz),
-                        COALESCE(last_health_check, 'epoch'::timestamptz),
-                        COALESCE((last_reconciliation AT TIME ZONE 'UTC'), 'epoch'::timestamptz),
-                        COALESCE(worker_last_heartbeat, 'epoch'::timestamptz)
-                      ) AS changed_at
+                      md5(
+                        concat_ws(
+                          '|',
+                          COALESCE(status::text, ''),
+                          COALESCE(is_archived::text, ''),
+                          COALESCE(provider_id::text, ''),
+                          COALESCE(zone_id::text, ''),
+                          COALESCE(instance_type_id::text, ''),
+                          COALESCE(model_id::text, ''),
+                          COALESCE(ip_address::text, '')
+                        )
+                      ) AS sig
                     FROM instances
-                    WHERE GREATEST(
-                        COALESCE(created_at, 'epoch'::timestamptz),
-                        COALESCE(ready_at, 'epoch'::timestamptz),
-                        COALESCE(failed_at, 'epoch'::timestamptz),
-                        COALESCE(terminated_at, 'epoch'::timestamptz),
-                        COALESCE(last_health_check, 'epoch'::timestamptz),
-                        COALESCE((last_reconciliation AT TIME ZONE 'UTC'), 'epoch'::timestamptz),
-                        COALESCE(worker_last_heartbeat, 'epoch'::timestamptz)
-                      ) > $1
-                    ORDER BY changed_at ASC
-                    LIMIT 200
                     "#,
                 )
-                .bind(last_instances_ts)
                 .fetch_all(&db)
                 .await
                 .unwrap_or_default();
 
-                if !rows.is_empty() {
-                    let mut max_ts = last_instances_ts;
-                    let ids: Vec<uuid::Uuid> = rows
-                        .into_iter()
-                        .map(|(id, ts)| {
-                            if ts > max_ts {
-                                max_ts = ts;
-                            }
-                            id
-                        })
-                        .collect();
-                    last_instances_ts = max_ts;
+                if !instances_initialized {
+                    instance_sig.clear();
+                    for r in rows {
+                        instance_sig.insert(r.id, r.sig);
+                    }
+                    instances_initialized = true;
+                } else {
+                    let mut seen = std::collections::HashSet::with_capacity(rows.len());
+                    let mut changed: Vec<uuid::Uuid> = Vec::new();
 
-                    let payload = InstancesChangedPayload {
-                        ids,
-                        emitted_at: chrono::Utc::now(),
-                    };
-                    let ev = Event::default()
-                        .event("instance.updated")
-                        .data(serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string()));
-                    if tx.send(Ok(ev)).await.is_err() {
-                        return;
+                    for r in rows {
+                        seen.insert(r.id);
+                        match instance_sig.get(&r.id) {
+                            Some(prev) if prev == &r.sig => {}
+                            _ => {
+                                instance_sig.insert(r.id, r.sig);
+                                changed.push(r.id);
+                            }
+                        }
+                    }
+
+                    // Remove signatures for deleted instances
+                    instance_sig.retain(|id, _| seen.contains(id));
+
+                    if !changed.is_empty() {
+                        // Keep payload size reasonable; send in chunks.
+                        for chunk in changed.chunks(200) {
+                            let payload = InstancesChangedPayload {
+                                ids: chunk.to_vec(),
+                                emitted_at: chrono::Utc::now(),
+                            };
+                            let ev = Event::default().event("instance.updated").data(
+                                serde_json::to_string(&payload)
+                                    .unwrap_or_else(|_| "{}".to_string()),
+                            );
+                            if tx.send(Ok(ev)).await.is_err() {
+                                return;
+                            }
+                        }
                     }
                 }
             }
