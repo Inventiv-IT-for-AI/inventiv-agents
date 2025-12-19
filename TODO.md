@@ -30,12 +30,24 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 
 ### Temps réel (UI)
 - **SSE**: `GET /events/stream` (topics instances/actions) + hook frontend `useRealtimeEvents` (refresh instances + action logs).
-- **VirtualizedDataTable persistence**: préférences colonnes persistées pour la pop-in “Actions de l’instance”.
+- **IADataTable persistence**: préférences colonnes persistées (tri/largeur/ordre/visibilité) pour les tables IA (dont la pop-in “Actions de l’instance”).
+
+### UI / Design system (monorepo)
+- **Packages internes**:
+  - `inventiv-ui/ia-designsys` (primitives UI centralisées)
+  - `inventiv-ui/ia-widgets` (widgets de plus haut niveau, préfixe `IA*`)
+- **Tailwind v4 (CSS-first)**: ajout des `@source` vers les packages workspaces (`ia-widgets`, `ia-designsys`) pour éviter toute purge de classes.
+- **IADataTable**: table virtualisée réutilisable (dans `ia-widgets`) + **resize via séparateurs dédiés** (5px) entre colonnes.
+- **Ergonomie dev**: `make ui-down` et `make ui-local-down` (stop UI Docker / kill UI host).
 
 ### Dev ergonomics
 - **PORT_OFFSET** (worktrees) + UI-only exposée.
 - **`make api-expose`**: proxy loopback pour tunnels (cloudflared) sans modifier `docker-compose.yml`.
 - **DB/Redis stateful**: `make down` garde volumes, `make nuke` wipe.
+
+### Multi-tenant (MVP)
+- **Organisations**: création + membership + sélection “organisation courante” (switcher UX).
+- **Pré-câblage DB “model sharing + chargeback tokens”** (non-breaking): tables `organization_models` + `organization_model_shares` + extension `finops.inference_usage`.
 
 ---
 
@@ -68,9 +80,38 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 - **Validation**: consolidation dashboards + exports + séries temporelles.
 
 ### Multi-tenant & sécurité
-- **Tenants**: entité + isolation.
-- **Users / access management**: passer du full-admin actuel à un modèle multi-rôles.
-- **Droits par module** + **RLS** PostgreSQL (à concevoir).
+- ✅ **Organisations (MVP)**: création + membership + sélection “organisation courante” (switcher UX).
+- ✅ **Pré-câblage DB “model sharing + chargeback”** (non-breaking):
+  - `organizations` + `organization_memberships` + `users.current_organization_id`
+  - `organization_models` (offering publié par org)
+  - `organization_model_shares` (contrats provider→consumer, `pricing` JSONB)
+  - extension `finops.inference_usage` pour attribuer `provider_organization_id` / `consumer_organization_id` + `unit_price_eur_per_1k_tokens` + `charged_amount_eur`
+
+📄 Doc: `docs/MULTI_TENANT_MODEL_SHARING_BILLING.md` (pricing v1 = **€/1k tokens**)
+- **Tenants v1 (Org isolation)**:
+  - Isoler les ressources “métier” par `organization_id` (au minimum: instances, workbench_runs, action_logs, api_keys).
+  - Introduire une notion d’**org courante obligatoire** pour les endpoints métier (401/409 si non sélectionnée).
+  - Clarifier RBAC org: `owner|admin|member` + policy par endpoint.
+  - (Plus tard) **RLS PostgreSQL** une fois le modèle stabilisé.
+
+📄 Roadmap cible: `docs/MULTI_TENANT_ROADMAP.md` (users first-class + org workspaces + community offerings + entitlements + billing tokens)
+
+- **API keys org-owned (prévu)**:
+  - Activer `api_keys.organization_id` (actuellement nullable) + migration data (si besoin).
+  - Résolution “consumer org” via API key (prioritaire) ou session (org courante).
+
+- **Partage de modèles inter-org (provider→consumer)**:
+  - CRUD `organization_models` (publish/unpublish).
+  - CRUD `organization_model_shares` (grant/pause/revoke + pricing JSONB).
+  - Convention d’identifiant “virtual model”: `org_slug/model_code` (côté OpenAI proxy).
+  - Clarifier `visibility`: `public | unlisted | private` (private = org-only; unlisted = non listé mais accessible si autorisé).
+  - Ajouter “consumer org discovery prefs” (autoriser/masquer public/payant/payant-with-contract).
+
+- **Chargeback tokens (v1)**:
+  - Ingestion/persistence des events `finops.inference_usage` avec:
+    - `consumer_organization_id`, `provider_organization_id`, `organization_model_id`
+    - pricing v1: `eur_per_1k_tokens`, calcul `charged_amount_eur`
+  - Exposer dashboards/exports “consommation par org / provider / consumer”.
 
 ### Data plane / perf
 - **Optimisation load-balancing** (sticky, health scoring, failover, retry policy).

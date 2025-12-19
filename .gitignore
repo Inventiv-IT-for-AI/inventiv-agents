@@ -31,5 +31,17 @@ env/*.env
 .idea/
 .vscode/
 
+# Node / frontend
+node_modules/
+**/node_modules/
+.next/
+**/.next/
+dist/
+**/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
 # Project
 artifacts/

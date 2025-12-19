@@ -25,6 +25,14 @@ Thank you for your interest in contributing to our project!
 *   **Style**: We use `rustfmt` standard. Run `cargo fmt`.
 *   **Linting**: We use `clippy`. Run `cargo clippy`.
 
+### Maintainability / Clean code
+
+- Keep entrypoints **thin**: avoid growing `main.rs`, `page.tsx`, etc. into “god files”.
+- Apply **SRP** (*one file/module = one mission*). Extract logic into dedicated modules/components/hooks/services.
+- Prefer code that is **readable and testable** (separate IO from pure logic when possible).
+
+Reference: `docs/engineering_guidelines.md`
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under its **AGPL v3** License.

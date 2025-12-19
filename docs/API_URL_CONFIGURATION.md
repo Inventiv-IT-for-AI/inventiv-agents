@@ -52,8 +52,15 @@ Le helper `apiUrl()` est centralisé dans `inventiv-frontend/src/lib/api.ts` pou
 
 ## 🚀 Redémarrage nécessaire
 
-Après modification des `.env*`, redémarrer le serveur dev :
+Après modification des `.env*`, redémarrer le serveur dev (recommandé) :
 ```bash
-cd inventiv-frontend
-npm run dev -- --port 3000
+make ui-down
+make ui
+```
+
+Si tu utilises l’UI sur le host :
+
+```bash
+make ui-local-down
+make ui-local
 ```

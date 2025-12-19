@@ -42,7 +42,8 @@ Dans le scénario “simple” (Docker Compose sur quelques machines), l’Orche
 
 #### 3. Inventiv Router (Data Plane) — *statut*
 *   **Prévu** (OpenAI-compatible), mais **non présent** dans le repo à ce stade.
-*   La doc “Router” reste utile pour la cible produit, mais les scripts/README doivent être alignés tant que ce service n’est pas réintroduit.
+*   **État actuel (repo)**: `inventiv-api` expose déjà les endpoints OpenAI-compatible (`/v1/*`) et route vers les workers disponibles.
+*   La doc “Router” reste utile pour la cible produit, mais doit être lue comme **roadmap** tant que ce service n’est pas réintroduit.
 
 #### 4. Inventiv Worker (Agent Sidecar)
 *   Déployé sur les instances GPU.

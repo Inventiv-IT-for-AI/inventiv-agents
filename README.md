@@ -2,7 +2,7 @@
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![GHCR (build + promote)](https://github.com/Inventiv-IT-for-AI/inventiv-agents/actions/workflows/ghcr.yml/badge.svg)](https://github.com/Inventiv-IT-for-AI/inventiv-agents/actions/workflows/ghcr.yml)
-[![Version](https://img.shields.io/badge/version-0.3.5-blue.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)](VERSION)
 
 **Control-plane + data-plane pour exécuter des agents/instances IA** — Infrastructure d'inférence LLM scalable, modulaire et performante, écrite en **Rust**.
 
@@ -12,7 +12,7 @@
 
 **Pourquoi c'est utile** : Permet de déployer et scaler des modèles LLM (vLLM) de manière standardisée, avec suivi financier intégré et contrôle granulaire sur les ressources cloud.
 
-📘 **Documentation détaillée** : [Architecture](docs/architecture.md) | [Domain Design & CQRS](docs/domain_design.md) | [Spécifications Générales](docs/specification_generale.md)
+📘 **Documentation détaillée** : [Architecture](docs/architecture.md) | [Domain Design & CQRS](docs/domain_design.md) | [Spécifications Générales](docs/specification_generale.md) | [UI Design System](docs/ui_design_system.md) | [`ia-widgets`](docs/ia_widgets.md) | [Engineering Guidelines](docs/engineering_guidelines.md)
 
 ## Fonctionnalités clés
 
@@ -76,6 +76,7 @@
 - [Architecture détaillée](docs/architecture.md)
 - [Domain Design & CQRS](docs/domain_design.md)
 - [Worker & Router Phase 0.2](docs/worker_and_router_phase_0_2.md)
+- [Multi-tenant: Organisations + partage de modèles + billing tokens](docs/MULTI_TENANT_MODEL_SHARING_BILLING.md)
 
 ## Prérequis
 
@@ -140,18 +141,47 @@ make ui
 Cela démarre Next.js dans Docker, exposé sur `http://localhost:3000` (ou `3000 + PORT_OFFSET`).
 Les appels backend passent via des routes same-origin `/api/backend/*` côté frontend (proxy server-side vers `API_INTERNAL_URL=http://api:8003` dans le réseau Docker).
 
-**Option manuelle** :
+> Note (monorepo): les packages JS/TS (ex: `inventiv-frontend`, `inventiv-ui/ia-widgets`) cohabitent avec les services Rust/Python.
+> Le repo utilise **npm workspaces** pour gérer uniquement ces dossiers — le reste (Rust/Python/infra) n’est pas impacté.
+
+## UI / Design system
+
+Nous maintenons un design system basé sur **Tailwind v4 + shadcn/ui**, avec une règle simple:
+**pas de nouveaux widgets/components inventés sans validation du besoin et du style**.
+
+- Charte & conventions: [UI Design System](docs/ui_design_system.md)
+- Primitives UI centralisées (shadcn-style): `inventiv-ui/ia-designsys` (import: `ia-designsys`)
+- Widgets réutilisables: [`ia-widgets`](docs/ia_widgets.md) (`inventiv-ui/ia-widgets`, import: `ia-widgets`)
+
+## Clean code / maintenabilité
+
+Important: éviter de transformer les fichiers pivots (`main.rs`, `page.tsx`, …) en “god files”.
+On applique SRP (*un fichier / un module / une mission*) et on garde les entrypoints “thin” pour rendre le code lisible et testable.
+
+Référence: [Engineering Guidelines](docs/engineering_guidelines.md)
+
+**Option “UI sur le host” (debug)** :
 
 ```bash
-# 1) Créer inventiv-frontend/.env.local
-# (nécessite d’exposer l’API sur le host, voir `make api-expose`)
-echo "NEXT_PUBLIC_API_URL=http://127.0.0.1:8003" > inventiv-frontend/.env.local
+# 0) Démarrer la stack (API dans Docker)
+make up
 
-# 2) Installer les dépendances (première fois)
-cd inventiv-frontend && npm install
+# 1) Exposer l’API en loopback (si tu veux lancer l’UI hors Docker)
+make api-expose
 
-# 3) Démarrer Next.js
-npm run dev -- --port 3000
+# 2) Installer les dépendances JS (monorepo) à la racine
+npm install --no-audit --no-fund
+
+# 3) Démarrer Next.js (host) en mode webpack (watch fiable workspaces)
+API_INTERNAL_URL="http://127.0.0.1:8003" \
+  npm -w inventiv-frontend run dev -- --webpack --port 3000
+```
+
+Arrêter rapidement l’UI :
+
+```bash
+make ui-down        # stop UI dans Docker
+make ui-local-down  # kill process local sur le port UI
 ```
 
 ### 4. Authentification

@@ -1,18 +1,18 @@
-# InventivDataTable — Guide utilisateur
+# IADataTable — Guide utilisateur
 
-Ce guide décrit comment utiliser le composant React **`InventivDataTable`** (Next.js) pour afficher des listes virtualisées avec :
+Ce guide décrit comment utiliser le composant React **`IADataTable`** pour afficher des listes virtualisées avec :
 - colonnes **masquables / réordonnables / redimensionnables** (préférences persistées par `listId`)
 - **tri au clic** sur les en-têtes (client-side ou server-side)
 
 ## Import
 
-Le composant vit dans le frontend :
-- `inventiv-frontend/src/components/shared/InventivDataTable.tsx`
+Le composant vit dans le package monorepo :
+- `inventiv-ui/ia-widgets/src/IADataTable.tsx`
 
 Usage :
 
 ```tsx
-import { InventivDataTable, type InventivDataTableColumn } from "@/components/shared/InventivDataTable";
+import { IADataTable, type IADataTableColumn } from "ia-widgets";
 ```
 
 ## Concepts clés
@@ -33,14 +33,14 @@ import { InventivDataTable, type InventivDataTableColumn } from "@/components/sh
 ```tsx
 type Row = { id: string; name: string; cost?: number; createdAt: string };
 
-const columns: InventivDataTableColumn<Row>[] = [
+const columns: IADataTableColumn<Row>[] = [
   { id: "name", label: "Name", sortable: true, getSortValue: (r) => r.name, cell: ({ row }) => row.name },
   { id: "cost", label: "Cost", sortable: true, getSortValue: (r) => r.cost ?? null, align: "right", cell: ({ row }) => row.cost ?? "-" },
   { id: "created", label: "Created", sortable: true, getSortValue: (r) => new Date(r.createdAt), cell: ({ row }) => r.createdAt },
 ];
 
 return (
-  <InventivDataTable<Row>
+  <IADataTable<Row>
     listId="example:local"
     title="Local table"
     autoHeight
@@ -59,14 +59,14 @@ Notes :
 
 ## Exemple 2 — Données remote (`loadRange`) + tri server-side
 
-Avec `loadRange`, `InventivDataTable` est généralement en mode **server** : il **émet** l’état de tri, et c’est au parent (hook/API) de refetch dans le bon ordre.
+Avec `loadRange`, `IADataTable` est généralement en mode **server** : il **émet** l’état de tri, et c’est au parent (hook/API) de refetch dans le bon ordre.
 
 ```tsx
 type SortState = { columnId: string; direction: "asc" | "desc" } | null;
 
 const [sort, setSort] = useState<SortState>(null);
 
-const columns: InventivDataTableColumn<Row>[] = [
+const columns: IADataTableColumn<Row>[] = [
   { id: "name", label: "Name", sortable: true, cell: ({ row }) => row.name },
   { id: "created_at", label: "Created", sortable: true, cell: ({ row }) => row.createdAt },
 ];
@@ -84,7 +84,7 @@ async function loadRange(offset: number, limit: number) {
 }
 
 return (
-  <InventivDataTable<Row>
+  <IADataTable<Row>
     listId="example:remote"
     title="Remote table"
     height={520}
