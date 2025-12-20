@@ -93,7 +93,9 @@ pub async fn run(pool: Pool<Postgres>) {
                                 let provider = match ProviderManager::get_provider(
                                     &provider_code,
                                     db_clone.clone(),
-                                ) {
+                                )
+                                .await
+                                {
                                     Ok(p) => p,
                                     Err(_) => return,
                                 };

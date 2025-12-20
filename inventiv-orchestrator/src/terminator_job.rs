@@ -173,7 +173,7 @@ pub async fn terminator_terminating_instances(
                     .await
                     .unwrap_or(None)
                     .unwrap_or_else(|| ProviderManager::current_provider_name());
-            if let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()) {
+            if let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()).await {
                 let _ =
                     delete_instance_volumes_best_effort(pool, provider.as_ref(), instance_id).await;
             }
@@ -222,7 +222,7 @@ pub async fn terminator_terminating_instances(
             .unwrap_or(None)
             .unwrap_or_else(|| ProviderManager::current_provider_name());
 
-        let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()) else {
+        let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()).await else {
             let _ = sqlx::query("UPDATE instances SET last_reconciliation = NULL WHERE id = $1")
                 .bind(instance_id)
                 .execute(pool)

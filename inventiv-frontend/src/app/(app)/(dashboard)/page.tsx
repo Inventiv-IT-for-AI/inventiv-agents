@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { displayOrDash, formatEur } from "@/lib/utils";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useMemo } from "react";
-import { IA_COLORS, IADonutMiniChart, IALineTimeSeries, IAStatCell } from "ia-widgets";
+import { IA_COLORS, IADonutMiniChart, IAHistogramTimeSeries, IAStatCell } from "ia-widgets";
 
 export default function DashboardPage() {
   const { instances } = useInstances();
@@ -42,6 +42,28 @@ export default function DashboardPage() {
       .sort((a, b) => new Date(a.bucket).getTime() - new Date(b.bucket).getTime())
       .map((r) => ({ t: r.bucket, v: r.amount_eur }));
   }, [finops.series]);
+
+  const spendTicks = useMemo(() => {
+    const n = spendSeries.length;
+    if (n <= 1) return [];
+    const fmt = (iso: string) => {
+      const d = new Date(iso);
+      // Minimal labels, based on selected window.
+      if (finops.window === "hour") return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+      if (finops.window === "day") return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+      if (finops.window === "week_7d") return d.toLocaleDateString(undefined, { weekday: "short" });
+      if (finops.window === "month_30d") return d.toLocaleDateString(undefined, { month: "short", day: "2-digit" });
+      return d.toLocaleDateString(undefined, { month: "short" });
+    };
+    const i0 = 0;
+    const i1 = Math.floor((n - 1) / 2);
+    const i2 = n - 1;
+    return [
+      { index: i0, label: fmt(spendSeries[i0].t) },
+      { index: i1, label: fmt(spendSeries[i1].t) },
+      { index: i2, label: fmt(spendSeries[i2].t) },
+    ];
+  }, [finops.window, spendSeries]);
 
   const allocationDonut = useMemo(() => {
     const rows = finops.summary?.allocation?.by_provider ?? [];
@@ -228,11 +250,12 @@ export default function DashboardPage() {
                     </Tabs>
                   </div>
                   <div className="flex items-center gap-3">
-                    <IALineTimeSeries
+                    <IAHistogramTimeSeries
                       points={spendSeries}
                       width={420}
                       height={90}
-                      stroke={IA_COLORS.blue}
+                      color={IA_COLORS.blue}
+                      ticks={spendTicks}
                     />
                     <div className="min-w-0">
                       <div className="text-xs text-muted-foreground">Cumulative total</div>

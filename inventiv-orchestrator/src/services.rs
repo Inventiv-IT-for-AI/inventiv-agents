@@ -154,7 +154,7 @@ pub async fn process_termination(
                 .unwrap_or(None)
                 .unwrap_or_else(|| ProviderManager::current_provider_name());
 
-                if let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone())
+                if let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()).await
                 {
                     // LOG 2: PROVIDER_TERMINATE (API call to provider)
                     let api_start = Instant::now();
@@ -837,7 +837,7 @@ pub async fn process_provisioning(
     }
 
     // 1. Init Provider
-    let provider = match ProviderManager::get_provider(&provider_name, pool.clone()) {
+    let provider = match ProviderManager::get_provider(&provider_name, pool.clone()).await {
         Ok(p) => p,
         Err(e) => {
             let msg = format!("Missing Provider Credentials: {}", e);
@@ -2147,7 +2147,7 @@ pub async fn process_catalog_sync(pool: Pool<Postgres>) {
 
     // 1. Get Provider (Scaleway)
     let provider_name = ProviderManager::current_provider_name();
-    if let Ok(provider) = ProviderManager::get_provider(&provider_name, pool.clone()) {
+    if let Ok(provider) = ProviderManager::get_provider(&provider_name, pool.clone()).await {
         // Ensure the provider exists in DB (required for Settings UI and FK integrity).
         let provider_uuid: Option<Uuid> = sqlx::query_scalar(
             r#"
@@ -2331,7 +2331,7 @@ pub async fn process_catalog_sync(pool: Pool<Postgres>) {
 pub async fn process_full_reconciliation(pool: Pool<Postgres>) {
     println!("🔄 [Full Reconciliation] Starting...");
     let provider_name = ProviderManager::current_provider_name();
-    if let Ok(provider) = ProviderManager::get_provider(&provider_name, pool.clone()) {
+    if let Ok(provider) = ProviderManager::get_provider(&provider_name, pool.clone()).await {
         // Zones for this provider
         let zones: Vec<String> = sqlx::query_scalar(
             r#"

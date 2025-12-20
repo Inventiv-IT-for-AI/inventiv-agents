@@ -327,14 +327,26 @@ if [ $rc -ne 0 ]; then
 fi
 
 echo "== 10) Validate time series endpoints =="
-curl -fsS -b /tmp/inventiv_cookies.txt \
-  "${API_BASE_URL}/gpu/activity?window_s=600&instance_id=${INSTANCE_ID}&granularity=second" \
-  | head -c 200 >/dev/null
+curl -fsS -o /dev/null -b /tmp/inventiv_cookies.txt \
+  "${API_BASE_URL}/gpu/activity?window_s=600&instance_id=${INSTANCE_ID}&granularity=second"
 
-curl -fsS -b /tmp/inventiv_cookies.txt \
-  "${API_BASE_URL}/system/activity?window_s=600&instance_id=${INSTANCE_ID}&granularity=second" \
-  | head -c 200 >/dev/null
+curl -fsS -o /dev/null -b /tmp/inventiv_cookies.txt \
+  "${API_BASE_URL}/system/activity?window_s=600&instance_id=${INSTANCE_ID}&granularity=second"
 echo "✅ gpu/activity + system/activity reachable"
+
+echo "== 10b) Ensure OpenAI upstream is reachable in local mock setup =="
+# In the mock provider, instances may get a synthetic RFC1918 IP that is not routable from the docker-compose network.
+# For this E2E test, route OpenAI proxy traffic to the mock-vllm container IP.
+MOCK_VLLM_CONTAINER="inventiv-agents-worker-fixes-mock-vllm-1"
+MOCK_VLLM_IP="$(docker inspect "${MOCK_VLLM_CONTAINER}" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null || true)"
+if [ -z "${MOCK_VLLM_IP}" ]; then
+  echo "❌ Could not determine mock-vllm container IP (${MOCK_VLLM_CONTAINER})" >&2
+  docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep -E 'mock-vllm|NAME' >&2 || true
+  exit 1
+fi
+docker compose exec -T db psql -U postgres -d llminfra -c \
+  "UPDATE instances SET ip_address='${MOCK_VLLM_IP}'::inet WHERE id='${INSTANCE_ID}';" >/dev/null
+echo "✅ instance ip_address set to mock-vllm (${MOCK_VLLM_IP}) for OpenAI proxy"
 
 echo "== 11) Validate OpenAI proxy endpoints (models + chat) =="
 echo "Creating a short-lived API key for OpenAI proxy auth..."

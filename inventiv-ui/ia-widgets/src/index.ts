@@ -38,6 +38,9 @@ export type { IADonutMiniChartProps, IADonutSegment } from "./IADonutMiniChart";
 export { IALineTimeSeries } from "./IALineTimeSeries";
 export type { IALineTimeSeriesProps, IATimeSeriesPoint } from "./IALineTimeSeries";
 
+export { IAHistogramTimeSeries } from "./IAHistogramTimeSeries";
+export type { IAHistogramTimeSeriesProps, IAHistogramPoint, IAHistogramTick } from "./IAHistogramTimeSeries";
+
 export { IA_COLORS } from "./iaColors";
 export type { IAColorName } from "./iaColors";
 

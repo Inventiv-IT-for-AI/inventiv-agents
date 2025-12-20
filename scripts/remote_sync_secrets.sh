@@ -15,6 +15,7 @@ set -euo pipefail
 # Writes on remote (chmod 600):
 #   scaleway_access_key
 #   scaleway_secret_key
+#   provider_settings_key
 #   llm-studio-key.pub
 #   ghcr_token
 #   default_admin_password
@@ -109,6 +110,11 @@ fi
 if ! upload_secret_file "scaleway_secret_key" "${LOCAL_SECRETS_DIR}/scaleway_secret_key"; then
   upload_secret_value "scaleway_secret_key" "${SCALEWAY_SECRET_KEY:-${SCW_SECRET_KEY:-}}"
 fi
+
+# 1bis) Provider settings encryption key (used to store encrypted provider credentials in DB).
+# Generate once and keep it stable per environment:
+#   openssl rand -base64 32 > deploy/secrets/provider_settings_key
+upload_secret_file "provider_settings_key" "${LOCAL_SECRETS_DIR}/provider_settings_key" || true
 
 # 2) SSH pub key used by orchestrator for worker provisioning
 if ! upload_secret_file "llm-studio-key.pub" "${LOCAL_SECRETS_DIR}/llm-studio-key.pub"; then
