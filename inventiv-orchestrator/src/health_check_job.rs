@@ -90,10 +90,12 @@ pub async fn run(pool: Pool<Postgres>) {
                                         .unwrap_or_else(|| {
                                             ProviderManager::current_provider_name()
                                         });
-                                let provider =
-                                    ProviderManager::get_provider(&provider_code, db_clone.clone());
-                                let Some(provider) = provider else {
-                                    return;
+                                let provider = match ProviderManager::get_provider(
+                                    &provider_code,
+                                    db_clone.clone(),
+                                ) {
+                                    Ok(p) => p,
+                                    Err(_) => return,
                                 };
                                 let start = std::time::Instant::now();
                                 let log_id = logger::log_event_with_metadata(

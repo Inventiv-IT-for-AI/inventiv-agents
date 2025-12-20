@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { displayOrDash, formatEur } from "@/lib/utils";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useMemo } from "react";
+import { IA_COLORS, IADonutMiniChart, IALineTimeSeries, IAStatCell } from "ia-widgets";
 
 export default function DashboardPage() {
   const { instances } = useInstances();
@@ -32,6 +33,25 @@ export default function DashboardPage() {
     const rows = finops.summary?.actual_spend_windows ?? [];
     const order = ["minute", "hour", "day", "month_30d", "year_365d"];
     return [...rows].sort((a, b) => order.indexOf(a.window) - order.indexOf(b.window));
+  }, [finops.summary]);
+
+  const spendSeries = useMemo(() => {
+    const rows = finops.series ?? [];
+    return rows
+      .slice()
+      .sort((a, b) => new Date(a.bucket).getTime() - new Date(b.bucket).getTime())
+      .map((r) => ({ t: r.bucket, v: r.amount_eur }));
+  }, [finops.series]);
+
+  const allocationDonut = useMemo(() => {
+    const rows = finops.summary?.allocation?.by_provider ?? [];
+    const top = [...rows].sort((a, b) => b.burn_rate_eur_per_hour - a.burn_rate_eur_per_hour).slice(0, 4);
+    const palette = [IA_COLORS.teal, IA_COLORS.blue, IA_COLORS.orange, IA_COLORS.purple];
+    return top.map((p, idx) => ({
+      label: p.provider_code ?? p.provider_name ?? p.provider_id.slice(0, 8),
+      value: p.burn_rate_eur_per_hour,
+      color: palette[idx % palette.length],
+    }));
   }, [finops.summary]);
 
   // Recent instances (last 5)
@@ -161,28 +181,98 @@ export default function DashboardPage() {
             <div className="space-y-3">
               {/* Allocation totals (current) */}
               <div className="grid gap-3 md:grid-cols-4">
-                <div className="p-3 border rounded-lg">
-                  <div className="text-xs text-muted-foreground">Allocation / minute</div>
-                  <div className="text-xl font-bold">
-                    {allocationTotal ? formatEur(allocationTotal.forecast_eur_per_minute, { minFrac: 6, maxFrac: 6 }) : "-"}
+                <IAStatCell
+                  title="Allocation / minute"
+                  value={allocationTotal ? formatEur(allocationTotal.forecast_eur_per_minute, { minFrac: 6, maxFrac: 6 }) : "—"}
+                  subtitle="forecast"
+                  icon={TrendingUp}
+                  accent="amber"
+                />
+                <IAStatCell
+                  title="Allocation / hour"
+                  value={allocationTotal ? formatEur(allocationTotal.forecast_eur_per_hour, { minFrac: 4, maxFrac: 4 }) : "—"}
+                  subtitle="forecast"
+                  icon={TrendingUp}
+                  accent="red"
+                />
+                <IAStatCell
+                  title="Allocation / day"
+                  value={allocationTotal ? formatEur(allocationTotal.forecast_eur_per_day, { minFrac: 4, maxFrac: 4 }) : "—"}
+                  subtitle="forecast"
+                  icon={TrendingUp}
+                  accent="blue"
+                />
+                <IAStatCell
+                  title="Allocation / 30d"
+                  value={allocationTotal ? formatEur(allocationTotal.forecast_eur_per_month_30d, { minFrac: 2, maxFrac: 2 }) : "—"}
+                  subtitle="forecast"
+                  icon={TrendingUp}
+                  accent="purple"
+                />
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-[1fr_260px]">
+                <div className="rounded-xl border border-border bg-card text-card-foreground p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <div>
+                      <div className="text-sm font-medium">Actual spend (curve)</div>
+                    </div>
+                    <Tabs value={finops.window} onValueChange={(v: string) => finops.setWindow(v)}>
+                      <TabsList>
+                        <TabsTrigger value="hour">1h</TabsTrigger>
+                        <TabsTrigger value="day">1d</TabsTrigger>
+                        <TabsTrigger value="week_7d">1w</TabsTrigger>
+                        <TabsTrigger value="month_30d">1m</TabsTrigger>
+                        <TabsTrigger value="year_365d">1y</TabsTrigger>
+                      </TabsList>
+                    </Tabs>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <IALineTimeSeries
+                      points={spendSeries}
+                      width={420}
+                      height={90}
+                      stroke={IA_COLORS.blue}
+                    />
+                    <div className="min-w-0">
+                      <div className="text-xs text-muted-foreground">Cumulative total</div>
+                      <div className="text-lg font-semibold tabular-nums">
+                        {cumulativeTotal !== null ? formatEur(cumulativeTotal, { minFrac: 2, maxFrac: 2 }) : "—"}
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-1">Auto-refresh 10s</div>
+                    </div>
                   </div>
                 </div>
-                <div className="p-3 border rounded-lg">
-                  <div className="text-xs text-muted-foreground">Allocation / hour</div>
-                  <div className="text-xl font-bold">
-                    {allocationTotal ? formatEur(allocationTotal.forecast_eur_per_hour, { minFrac: 4, maxFrac: 4 }) : "-"}
-                  </div>
-                </div>
-                <div className="p-3 border rounded-lg">
-                  <div className="text-xs text-muted-foreground">Allocation / day</div>
-                  <div className="text-xl font-bold">
-                    {allocationTotal ? formatEur(allocationTotal.forecast_eur_per_day, { minFrac: 4, maxFrac: 4 }) : "-"}
-                  </div>
-                </div>
-                <div className="p-3 border rounded-lg">
-                  <div className="text-xs text-muted-foreground">Allocation / 30d</div>
-                  <div className="text-xl font-bold">
-                    {allocationTotal ? formatEur(allocationTotal.forecast_eur_per_month_30d, { minFrac: 2, maxFrac: 2 }) : "-"}
+
+                <div className="rounded-xl border border-border bg-card text-card-foreground p-4 flex items-center gap-3">
+                  <IADonutMiniChart
+                    segments={allocationDonut}
+                    size={140}
+                    centerLabel={
+                      allocationTotal
+                        ? formatEur(allocationTotal.forecast_eur_per_hour, { minFrac: 4, maxFrac: 4 })
+                        : "—"
+                    }
+                    subLabel={allocationTotal ? "Total €/h" : "No data"}
+                    showSegmentLabels={true}
+                  />
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium">Top providers</div>
+                    <div className="mt-2 space-y-1">
+                      {allocationDonut.length ? (
+                        allocationDonut.map((s) => (
+                          <div key={s.label} className="flex items-center justify-between gap-2 text-xs">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="inline-block size-2.5 rounded-full" style={{ backgroundColor: s.color }} />
+                              <span className="truncate text-muted-foreground">{s.label}</span>
+                            </div>
+                            <span className="tabular-nums">{formatEur(s.value, { minFrac: 4, maxFrac: 4 })}/h</span>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="text-xs text-muted-foreground">No allocation data yet.</div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>

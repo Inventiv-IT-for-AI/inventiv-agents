@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 import { OrganizationSection, type WorkspaceMe } from "./OrganizationSection";
+import { useSnackbar } from "ia-widgets";
 
 export type Me = WorkspaceMe & {
   user_id: string;
@@ -29,6 +30,7 @@ export type AccountSectionProps = {
 
 export function AccountSection({ onMeChange }: AccountSectionProps) {
   const router = useRouter();
+  const snackbar = useSnackbar();
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -166,21 +168,30 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
         }
         const body = await res.json().catch(() => null);
         const code = body?.error || body?.message;
-        setProfileError(
+        const msg =
           code === "conflict" || code === "username_or_email_already_exists"
             ? "Username ou email déjà utilisé"
             : code === "session_invalid"
               ? "Session expirée, veuillez vous reconnecter"
               : "Erreur lors de la mise à jour"
-        );
+        setProfileError(msg);
+        snackbar.error(msg, {
+          title: "Profil",
+          details: JSON.stringify({ status: res.status, body }, null, 2),
+        });
         return;
       }
       const data = (await res.json()) as Me;
       setMe(data);
       onMeChange?.(data);
+      snackbar.success("Profil mis à jour", { title: "Profil" });
     } catch (e) {
       console.error(e);
       setProfileError("Erreur réseau");
+      snackbar.error("Erreur réseau", {
+        title: "Profil",
+        details: e instanceof Error ? e.message : String(e),
+      });
     } finally {
       setProfileSaving(false);
     }
@@ -202,14 +213,21 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
         }
         const body = await res.json().catch(() => null);
         const code = body?.error || body?.message;
-        setOrgError(code === "not_a_member" ? "Vous n’êtes pas membre de cette organisation" : "Impossible de changer d’organisation");
+        const msg =
+          code === "not_a_member"
+            ? "Vous n’êtes pas membre de cette organisation"
+            : "Impossible de changer d’organisation";
+        setOrgError(msg);
+        snackbar.error(msg, { title: "Workspace", details: JSON.stringify({ status: res.status, body }, null, 2) });
         return;
       }
       await fetchMe();
       await fetchOrgs();
+      snackbar.success("Workspace mis à jour", { title: "Workspace" });
     } catch (e) {
       console.error(e);
       setOrgError("Erreur réseau");
+      snackbar.error("Erreur réseau", { title: "Workspace", details: e instanceof Error ? e.message : String(e) });
     } finally {
       setOrgLoading(false);
     }
@@ -230,13 +248,20 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
           return;
         }
         setOrgError("Impossible de revenir en mode Personal");
+        const body = await res.text().catch(() => "");
+        snackbar.error("Impossible de revenir en mode Personal", {
+          title: "Workspace",
+          details: JSON.stringify({ status: res.status, body }, null, 2),
+        });
         return;
       }
       await fetchMe();
       await fetchOrgs();
+      snackbar.success("Workspace: Personal", { title: "Workspace" });
     } catch (e) {
       console.error(e);
       setOrgError("Erreur réseau");
+      snackbar.error("Erreur réseau", { title: "Workspace", details: e instanceof Error ? e.message : String(e) });
     } finally {
       setOrgLoading(false);
     }
@@ -248,6 +273,7 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
     const slug = createOrgForm.slug.trim();
     if (!name) {
       setCreateOrgError("Nom requis");
+      snackbar.warning("Nom requis", { title: "Organisation" });
       return;
     }
     setCreateOrgSaving(true);
@@ -268,22 +294,25 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
         }
         const body = await res.json().catch(() => null);
         const code = body?.error || body?.message;
-        setCreateOrgError(
+        const msg =
           code === "organization_slug_already_exists" || code === "conflict"
             ? "Slug déjà utilisé"
             : code === "name_required"
               ? "Nom requis"
               : "Erreur lors de la création"
-        );
+        setCreateOrgError(msg);
+        snackbar.error(msg, { title: "Organisation", details: JSON.stringify({ status: res.status, body }, null, 2) });
         return;
       }
       setCreateOrgOpen(false);
       setCreateOrgForm({ name: "", slug: "" });
       await fetchMe();
       await fetchOrgs();
+      snackbar.success("Organisation créée", { title: "Organisation" });
     } catch (e) {
       console.error(e);
       setCreateOrgError("Erreur réseau");
+      snackbar.error("Erreur réseau", { title: "Organisation", details: e instanceof Error ? e.message : String(e) });
     } finally {
       setCreateOrgSaving(false);
     }
@@ -294,10 +323,12 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
     setPwdSuccess(null);
     if (!pwdForm.current_password.trim() || !pwdForm.new_password.trim()) {
       setPwdError("Veuillez remplir tous les champs");
+      snackbar.warning("Veuillez remplir tous les champs", { title: "Mot de passe" });
       return;
     }
     if (pwdForm.new_password !== pwdForm.confirm_new_password) {
       setPwdError("La confirmation ne correspond pas");
+      snackbar.warning("La confirmation ne correspond pas", { title: "Mot de passe" });
       return;
     }
     setPwdSaving(true);
@@ -317,20 +348,23 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
         }
         const body = await res.json().catch(() => null);
         const code = body?.error || body?.message;
-        setPwdError(
+        const msg =
           code === "invalid_current_password" || code === "current_password_invalid"
             ? "Mot de passe actuel incorrect"
             : code === "session_invalid"
               ? "Session expirée, veuillez vous reconnecter"
               : "Erreur lors du changement de mot de passe"
-        );
+        setPwdError(msg);
+        snackbar.error(msg, { title: "Mot de passe", details: JSON.stringify({ status: res.status, body }, null, 2) });
         return;
       }
       setPwdForm({ current_password: "", new_password: "", confirm_new_password: "" });
       setPwdSuccess("Mot de passe mis à jour");
+      snackbar.success("Mot de passe mis à jour", { title: "Mot de passe" });
     } catch (e) {
       console.error(e);
       setPwdError("Erreur réseau");
+      snackbar.error("Erreur réseau", { title: "Mot de passe", details: e instanceof Error ? e.message : String(e) });
     } finally {
       setPwdSaving(false);
     }

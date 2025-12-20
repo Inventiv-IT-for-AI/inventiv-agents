@@ -32,9 +32,11 @@ mod api_keys;
 mod auth;
 mod auth_endpoints;
 mod bootstrap_admin;
+mod chat;
 mod finops;
 mod instance_type_zones; // Module for zone associations
 mod provider_settings;
+mod rbac;
 mod settings; // Module
 mod simple_logger;
 mod organizations;
@@ -123,12 +125,26 @@ async fn main() {
         )
         .route("/workbench/runs/:id", get(workbench::get_workbench_run))
         .route(
+            "/workbench/runs/:id",
+            axum::routing::put(workbench::update_workbench_run)
+                .delete(workbench::delete_workbench_run),
+        )
+        .route(
             "/workbench/runs/:id/messages",
             post(workbench::append_workbench_message),
         )
         .route(
             "/workbench/runs/:id/complete",
             post(workbench::complete_workbench_run),
+        )
+        .route(
+            "/workbench/projects",
+            get(workbench::list_workbench_projects).post(workbench::create_workbench_project),
+        )
+        .route(
+            "/workbench/projects/:id",
+            axum::routing::put(workbench::update_workbench_project)
+                .delete(workbench::delete_workbench_project),
         )
         .route_layer(middleware::from_fn_with_state(
             state.db.clone(),
@@ -145,6 +161,8 @@ async fn main() {
             "/auth/me/password",
             axum::routing::put(auth_endpoints::change_password),
         )
+        // Chat (UI): list allowed models for current workspace
+        .route("/chat/models", get(chat::list_chat_models))
         // Organizations (multi-tenant MVP)
         .route(
             "/organizations",
@@ -168,6 +186,8 @@ async fn main() {
         .route("/runtime/models", get(list_runtime_models))
         // GPU activity (nvtop-like)
         .route("/gpu/activity", get(list_gpu_activity))
+        // System activity (CPU/Mem/Disk/Network)
+        .route("/system/activity", get(list_system_activity))
         .route("/deployments", post(create_deployment))
         // Realtime (SSE)
         .route("/events/stream", get(events_stream))
@@ -280,6 +300,10 @@ async fn main() {
         .route(
             "/finops/dashboard/costs/window",
             get(finops::get_costs_dashboard_window),
+        )
+        .route(
+            "/finops/dashboard/costs/series",
+            get(finops::get_costs_dashboard_series),
         )
         .route(
             "/finops/cost/forecast/minute",
@@ -712,6 +736,247 @@ async fn list_gpu_activity(
         .into_response()
 }
 
+#[derive(Deserialize, IntoParams)]
+struct SystemActivityParams {
+    /// How far back to query (seconds). Default 300.
+    window_s: Option<i64>,
+    /// Optional filter (single instance).
+    instance_id: Option<uuid::Uuid>,
+    /// "second" | "minute" | "hour" | "day"
+    granularity: Option<String>,
+}
+
+#[derive(Serialize, sqlx::FromRow)]
+struct SystemSampleRow {
+    time: chrono::DateTime<chrono::Utc>,
+    instance_id: uuid::Uuid,
+    cpu_usage_pct: Option<f64>,
+    load1: Option<f64>,
+    mem_used_bytes: Option<i64>,
+    mem_total_bytes: Option<i64>,
+    disk_used_bytes: Option<i64>,
+    disk_total_bytes: Option<i64>,
+    net_rx_bps: Option<f64>,
+    net_tx_bps: Option<f64>,
+    instance_name: Option<String>,
+    provider_name: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SystemActivitySample {
+    ts: String,
+    cpu_pct: Option<f64>,
+    load1: Option<f64>,
+    mem_pct: Option<f64>,
+    disk_pct: Option<f64>,
+    net_rx_mbps: Option<f64>,
+    net_tx_mbps: Option<f64>,
+}
+
+#[derive(Serialize)]
+struct SystemActivityInstanceSeries {
+    instance_id: uuid::Uuid,
+    instance_name: Option<String>,
+    provider_name: Option<String>,
+    samples: Vec<SystemActivitySample>,
+}
+
+#[derive(Serialize)]
+struct SystemActivityResponse {
+    window_s: i64,
+    generated_at: String,
+    instances: Vec<SystemActivityInstanceSeries>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/system/activity",
+    params(SystemActivityParams),
+    responses((status = 200, description = "System activity (CPU/Mem/Disk/Network time series)", body = SystemActivityResponse))
+)]
+async fn list_system_activity(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<SystemActivityParams>,
+) -> impl IntoResponse {
+    let window_s = params.window_s.unwrap_or(300).clamp(30, 3600);
+    let gran = params
+        .granularity
+        .as_deref()
+        .unwrap_or("second")
+        .trim()
+        .to_ascii_lowercase();
+    let instance_filter = params.instance_id;
+
+    let rows: Vec<SystemSampleRow> = match gran.as_str() {
+        "minute" => sqlx::query_as::<Postgres, SystemSampleRow>(
+            r#"
+            SELECT
+              time_bucket(INTERVAL '1 minute', s.time) as time,
+              s.instance_id,
+              AVG(s.cpu_usage_pct) as cpu_usage_pct,
+              AVG(s.load1) as load1,
+              AVG(s.mem_used_bytes)::bigint as mem_used_bytes,
+              MAX(s.mem_total_bytes)::bigint as mem_total_bytes,
+              AVG(s.disk_used_bytes)::bigint as disk_used_bytes,
+              MAX(s.disk_total_bytes)::bigint as disk_total_bytes,
+              AVG(s.net_rx_bps) as net_rx_bps,
+              AVG(s.net_tx_bps) as net_tx_bps,
+              i.provider_instance_id::text as instance_name,
+              p.name as provider_name
+            FROM system_samples s
+            JOIN instances i ON i.id = s.instance_id
+            LEFT JOIN providers p ON p.id = i.provider_id
+            WHERE s.time > NOW() - make_interval(secs => $1)
+              AND ($2::uuid IS NULL OR s.instance_id = $2)
+            GROUP BY time, s.instance_id, i.provider_instance_id, p.name
+            ORDER BY s.instance_id, time ASC
+            "#,
+        )
+        .bind(window_s)
+        .bind(instance_filter)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default(),
+        "hour" => sqlx::query_as::<Postgres, SystemSampleRow>(
+            r#"
+            SELECT
+              time_bucket(INTERVAL '1 hour', s.time) as time,
+              s.instance_id,
+              AVG(s.cpu_usage_pct) as cpu_usage_pct,
+              AVG(s.load1) as load1,
+              AVG(s.mem_used_bytes)::bigint as mem_used_bytes,
+              MAX(s.mem_total_bytes)::bigint as mem_total_bytes,
+              AVG(s.disk_used_bytes)::bigint as disk_used_bytes,
+              MAX(s.disk_total_bytes)::bigint as disk_total_bytes,
+              AVG(s.net_rx_bps) as net_rx_bps,
+              AVG(s.net_tx_bps) as net_tx_bps,
+              i.provider_instance_id::text as instance_name,
+              p.name as provider_name
+            FROM system_samples s
+            JOIN instances i ON i.id = s.instance_id
+            LEFT JOIN providers p ON p.id = i.provider_id
+            WHERE s.time > NOW() - make_interval(secs => $1)
+              AND ($2::uuid IS NULL OR s.instance_id = $2)
+            GROUP BY time, s.instance_id, i.provider_instance_id, p.name
+            ORDER BY s.instance_id, time ASC
+            "#,
+        )
+        .bind(window_s)
+        .bind(instance_filter)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default(),
+        "day" => sqlx::query_as::<Postgres, SystemSampleRow>(
+            r#"
+            SELECT
+              time_bucket(INTERVAL '1 day', s.time) as time,
+              s.instance_id,
+              AVG(s.cpu_usage_pct) as cpu_usage_pct,
+              AVG(s.load1) as load1,
+              AVG(s.mem_used_bytes)::bigint as mem_used_bytes,
+              MAX(s.mem_total_bytes)::bigint as mem_total_bytes,
+              AVG(s.disk_used_bytes)::bigint as disk_used_bytes,
+              MAX(s.disk_total_bytes)::bigint as disk_total_bytes,
+              AVG(s.net_rx_bps) as net_rx_bps,
+              AVG(s.net_tx_bps) as net_tx_bps,
+              i.provider_instance_id::text as instance_name,
+              p.name as provider_name
+            FROM system_samples s
+            JOIN instances i ON i.id = s.instance_id
+            LEFT JOIN providers p ON p.id = i.provider_id
+            WHERE s.time > NOW() - make_interval(secs => $1)
+              AND ($2::uuid IS NULL OR s.instance_id = $2)
+            GROUP BY time, s.instance_id, i.provider_instance_id, p.name
+            ORDER BY s.instance_id, time ASC
+            "#,
+        )
+        .bind(window_s)
+        .bind(instance_filter)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default(),
+        // second (default): raw samples
+        _ => sqlx::query_as::<Postgres, SystemSampleRow>(
+            r#"
+            SELECT
+              s.time,
+              s.instance_id,
+              s.cpu_usage_pct,
+              s.load1,
+              s.mem_used_bytes,
+              s.mem_total_bytes,
+              s.disk_used_bytes,
+              s.disk_total_bytes,
+              s.net_rx_bps,
+              s.net_tx_bps,
+              i.provider_instance_id::text as instance_name,
+              p.name as provider_name
+            FROM system_samples s
+            JOIN instances i ON i.id = s.instance_id
+            LEFT JOIN providers p ON p.id = i.provider_id
+            WHERE s.time > NOW() - make_interval(secs => $1)
+              AND ($2::uuid IS NULL OR s.instance_id = $2)
+            ORDER BY s.instance_id, s.time ASC
+            "#,
+        )
+        .bind(window_s)
+        .bind(instance_filter)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default(),
+    };
+
+    use std::collections::BTreeMap;
+    let mut map: BTreeMap<uuid::Uuid, (Option<String>, Option<String>, Vec<SystemActivitySample>)> =
+        BTreeMap::new();
+
+    for r in rows {
+        let mem_pct = match (r.mem_used_bytes, r.mem_total_bytes) {
+            (Some(u), Some(t)) if t > 0 => Some((u as f64 / t as f64) * 100.0),
+            _ => None,
+        };
+        let disk_pct = match (r.disk_used_bytes, r.disk_total_bytes) {
+            (Some(u), Some(t)) if t > 0 => Some((u as f64 / t as f64) * 100.0),
+            _ => None,
+        };
+        let net_rx_mbps = r.net_rx_bps.map(|bps| (bps * 8.0) / 1_000_000.0);
+        let net_tx_mbps = r.net_tx_bps.map(|bps| (bps * 8.0) / 1_000_000.0);
+        let sample = SystemActivitySample {
+            ts: r.time.to_rfc3339(),
+            cpu_pct: r.cpu_usage_pct,
+            load1: r.load1,
+            mem_pct,
+            disk_pct,
+            net_rx_mbps,
+            net_tx_mbps,
+        };
+        let entry = map
+            .entry(r.instance_id)
+            .or_insert((r.instance_name.clone(), r.provider_name.clone(), Vec::new()));
+        entry.2.push(sample);
+    }
+
+    let instances = map
+        .into_iter()
+        .map(|(instance_id, (instance_name, provider_name, samples))| SystemActivityInstanceSeries {
+            instance_id,
+            instance_name,
+            provider_name,
+            samples,
+        })
+        .collect();
+
+    (
+        StatusCode::OK,
+        Json(SystemActivityResponse {
+            window_s,
+            generated_at: chrono::Utc::now().to_rfc3339(),
+            instances,
+        }),
+    )
+        .into_response()
+}
+
 async fn bump_runtime_model_counters(db: &Pool<Postgres>, model_id: &str, ok: bool) {
     let mid = model_id.trim();
     if mid.is_empty() {
@@ -802,10 +1067,15 @@ async fn select_ready_worker_for_model(
     Some((chosen.id, format!("http://{}:{}", ip, port)))
 }
 
-async fn resolve_openai_model_id(db: &Pool<Postgres>, requested: Option<&str>) -> Option<String> {
+async fn resolve_openai_model_id(
+    db: &Pool<Postgres>,
+    requested: Option<&str>,
+    user: Option<&auth::AuthUser>,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
     // Accept either:
     // - HF repo id (models.model_id)
     // - UUID (models.id) as string
+    // - Organization offering id: org_slug/model_code (private to current org for now)
     // If missing, fallback to WORKER_MODEL_ID env (dev convenience).
     let Some(raw) = requested
         .map(|s| s.trim())
@@ -817,8 +1087,73 @@ async fn resolve_openai_model_id(db: &Pool<Postgres>, requested: Option<&str>) -
                 .filter(|s| !s.trim().is_empty())
         })
     else {
-        return None;
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"missing_model"})),
+        ));
     };
+
+    // Offering id: org_slug/model_code
+    if let Some((org_slug, code)) = raw.split_once('/') {
+        let org_slug = org_slug.trim();
+        let code = code.trim();
+        if org_slug.is_empty() || code.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"invalid_model","message":"invalid_offering_id"})),
+            ));
+        }
+
+        let Some(u) = user else {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({"error":"forbidden","message":"offering_requires_user_session"})),
+            ));
+        };
+        let Some(current_org) = u.current_organization_id else {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({"error":"forbidden","message":"organization_required"})),
+            ));
+        };
+
+        // For now: org offerings are private (only usable when the offering belongs to the current org).
+        let row: Option<(uuid::Uuid, String)> = sqlx::query_as(
+            r#"
+            SELECT om.organization_id, m.model_id
+            FROM organization_models om
+            JOIN organizations o ON o.id = om.organization_id
+            JOIN models m ON m.id = om.model_id
+            WHERE o.slug = $1
+              AND om.code = $2
+              AND om.is_active = true
+              AND m.is_active = true
+            LIMIT 1
+            "#,
+        )
+        .bind(org_slug)
+        .bind(code)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten();
+
+        let Some((offering_org_id, hf_model_id)) = row else {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({"error":"not_found","message":"offering_not_found"})),
+            ));
+        };
+
+        if offering_org_id != current_org {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({"error":"forbidden","message":"offering_not_accessible_in_current_org"})),
+            ));
+        }
+
+        return Ok(hf_model_id);
+    }
 
     // If it looks like a UUID, try resolve -> HF repo id.
     if let Ok(uid) = uuid::Uuid::parse_str(&raw) {
@@ -829,7 +1164,7 @@ async fn resolve_openai_model_id(db: &Pool<Postgres>, requested: Option<&str>) -
                 .await
                 .ok()
                 .flatten();
-        return hf.or(Some(raw));
+        return Ok(hf.unwrap_or(raw));
     }
 
     // If it matches an active catalog entry by HF repo id, return it; else keep as-is.
@@ -841,9 +1176,10 @@ async fn resolve_openai_model_id(db: &Pool<Postgres>, requested: Option<&str>) -
     .await
     .unwrap_or(false);
     if exists {
-        Some(raw)
+        Ok(raw)
     } else {
-        Some(raw)
+        // Keep as-is (may still be served by workers even if not in catalog).
+        Ok(raw)
     }
 }
 
@@ -918,26 +1254,36 @@ async fn openai_list_models(State(state): State<Arc<AppState>>) -> impl IntoResp
 
 async fn openai_proxy_chat_completions(
     State(state): State<Arc<AppState>>,
+    user: Option<axum::extract::Extension<auth::AuthUser>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    openai_proxy_to_worker(&state, "/v1/chat/completions", headers, body).await
+    openai_proxy_to_worker(
+        &state,
+        "/v1/chat/completions",
+        headers,
+        body,
+        user.map(|u| u.0),
+    )
+    .await
 }
 
 async fn openai_proxy_completions(
     State(state): State<Arc<AppState>>,
+    user: Option<axum::extract::Extension<auth::AuthUser>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    openai_proxy_to_worker(&state, "/v1/completions", headers, body).await
+    openai_proxy_to_worker(&state, "/v1/completions", headers, body, user.map(|u| u.0)).await
 }
 
 async fn openai_proxy_embeddings(
     State(state): State<Arc<AppState>>,
+    user: Option<axum::extract::Extension<auth::AuthUser>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    openai_proxy_to_worker(&state, "/v1/embeddings", headers, body).await
+    openai_proxy_to_worker(&state, "/v1/embeddings", headers, body, user.map(|u| u.0)).await
 }
 
 async fn openai_proxy_to_worker(
@@ -945,6 +1291,7 @@ async fn openai_proxy_to_worker(
     path: &str,
     headers: HeaderMap,
     body: Bytes,
+    user: Option<auth::AuthUser>,
 ) -> Response {
     let v: serde_json::Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
@@ -957,15 +1304,9 @@ async fn openai_proxy_to_worker(
         }
     };
     let requested_model = v.get("model").and_then(|m| m.as_str());
-    let model_id = match resolve_openai_model_id(&state.db, requested_model).await {
-        Some(m) => m,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error":"missing_model"})),
-            )
-                .into_response();
-        }
+    let model_id = match resolve_openai_model_id(&state.db, requested_model, user.as_ref()).await {
+        Ok(m) => m,
+        Err(e) => return e.into_response(),
     };
     let stream = v.get("stream").and_then(|b| b.as_bool()).unwrap_or(false);
 
@@ -1374,6 +1715,23 @@ pub struct InstanceResponse {
     pub provider_instance_id: Option<String>,
     pub status: String,
     pub ip_address: Option<String>,
+    // Worker (data plane) state (optional; may be NULL when worker not registered yet)
+    #[sqlx(default)]
+    pub worker_status: Option<String>,
+    #[sqlx(default)]
+    pub worker_last_heartbeat: Option<chrono::DateTime<chrono::Utc>>,
+    #[sqlx(default)]
+    pub worker_model_id: Option<String>,
+    #[sqlx(default)]
+    pub worker_queue_depth: Option<i32>,
+    #[sqlx(default)]
+    pub worker_gpu_utilization: Option<f64>,
+    #[sqlx(default)]
+    pub worker_health_port: Option<i32>,
+    #[sqlx(default)]
+    pub worker_vllm_port: Option<i32>,
+    #[sqlx(default)]
+    pub worker_metadata: Option<serde_json::Value>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub terminated_at: Option<chrono::DateTime<chrono::Utc>>,
     pub last_health_check: Option<chrono::DateTime<chrono::Utc>>,
@@ -2439,7 +2797,15 @@ async fn list_instances(
             m.model_id as model_code,
             i.provider_instance_id::text as provider_instance_id,
             i.status::text as status, 
-            i.ip_address::text as ip_address, 
+            i.ip_address::text as ip_address,
+            i.worker_status,
+            i.worker_last_heartbeat,
+            i.worker_model_id,
+            i.worker_queue_depth,
+            i.worker_gpu_utilization,
+            i.worker_health_port,
+            i.worker_vllm_port,
+            i.worker_metadata,
             i.created_at,
             i.terminated_at,
             i.last_health_check,
@@ -2551,7 +2917,15 @@ async fn search_instances(
             m.model_id as model_code,
             i.provider_instance_id::text as provider_instance_id,
             i.status::text as status, 
-            i.ip_address::text as ip_address, 
+            i.ip_address::text as ip_address,
+            i.worker_status,
+            i.worker_last_heartbeat,
+            i.worker_model_id,
+            i.worker_queue_depth,
+            i.worker_gpu_utilization,
+            i.worker_health_port,
+            i.worker_vllm_port,
+            i.worker_metadata,
             i.created_at,
             i.terminated_at,
             i.last_health_check,
@@ -2642,7 +3016,15 @@ async fn get_instance(
             m.model_id as model_code,
             i.provider_instance_id::text as provider_instance_id,
             i.status::text as status, 
-            i.ip_address::text as ip_address, 
+            i.ip_address::text as ip_address,
+            i.worker_status,
+            i.worker_last_heartbeat,
+            i.worker_model_id,
+            i.worker_queue_depth,
+            i.worker_gpu_utilization,
+            i.worker_health_port,
+            i.worker_vllm_port,
+            i.worker_metadata,
             i.created_at,
             i.terminated_at,
             i.last_health_check,

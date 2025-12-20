@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { RefreshCcw } from "lucide-react";
 import { apiUrl } from "@/lib/api";
 import type { GpuActivityResponse, Instance } from "@/lib/types";
-import { SparklineDual } from "@/components/shared/SparklineDual";
+import { IASparklineDual } from "ia-widgets";
 import { displayOrDash } from "@/lib/utils";
 
 export default function GpuActivityPage() {
@@ -187,7 +187,7 @@ export default function GpuActivityPage() {
                 </div>
                 <div className="text-[11px] text-zinc-500 truncate">{t.subtitle}</div>
                 <div className="mt-2">
-                  <SparklineDual points={t.points} />
+                  <IASparklineDual points={t.points} />
                 </div>
               </div>
             ))}

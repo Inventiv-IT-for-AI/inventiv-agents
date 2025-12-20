@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { IADataTable, type DataTableSortState, type IADataTableColumn, type LoadRangeResult } from "ia-widgets";
 import { IAAlert, IAAlertDescription, IAAlertTitle } from "ia-designsys";
+import { useSnackbar } from "ia-widgets";
 
 type User = {
   id: string;
@@ -22,6 +23,7 @@ type User = {
 };
 
 export default function UsersPage() {
+  const snackbar = useSnackbar();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
@@ -80,60 +82,87 @@ export default function UsersPage() {
   };
 
   const createUser = async () => {
-    const res = await fetch(apiUrl("/users"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        username: form.username,
-        email: form.email,
-        password: form.password,
-        role: form.role,
-        first_name: form.first_name || null,
-        last_name: form.last_name || null,
-      }),
-    });
-    if (!res.ok) {
-      const msg = await res.text().catch(() => "");
-      setError(`Erreur création user (${res.status}) ${msg}`);
-      return;
+    try {
+      const res = await fetch(apiUrl("/users"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: form.username,
+          email: form.email,
+          password: form.password,
+          role: form.role,
+          first_name: form.first_name || null,
+          last_name: form.last_name || null,
+        }),
+      });
+      if (!res.ok) {
+        const msg = await res.text().catch(() => "");
+        const eMsg = `Erreur création user (${res.status})`;
+        setError(`${eMsg} ${msg}`);
+        snackbar.error(eMsg, { title: "Users", details: msg });
+        return;
+      }
+      setCreateOpen(false);
+      setRefreshTick((v) => v + 1);
+      snackbar.success("Utilisateur créé", { title: "Users" });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(`Erreur réseau ${msg}`);
+      snackbar.error("Erreur réseau", { title: "Users", details: msg });
     }
-    setCreateOpen(false);
-    setRefreshTick((v) => v + 1);
   };
 
   const saveUser = async () => {
     if (!selected) return;
-    const res = await fetch(apiUrl(`/users/${selected.id}`), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        username: form.username,
-        email: form.email,
-        role: form.role,
-        first_name: form.first_name || null,
-        last_name: form.last_name || null,
-        ...(form.password.trim() ? { password: form.password } : {}),
-      }),
-    });
-    if (!res.ok) {
-      const msg = await res.text().catch(() => "");
-      setError(`Erreur update user (${res.status}) ${msg}`);
-      return;
+    try {
+      const res = await fetch(apiUrl(`/users/${selected.id}`), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: form.username,
+          email: form.email,
+          role: form.role,
+          first_name: form.first_name || null,
+          last_name: form.last_name || null,
+          ...(form.password.trim() ? { password: form.password } : {}),
+        }),
+      });
+      if (!res.ok) {
+        const msg = await res.text().catch(() => "");
+        const eMsg = `Erreur update user (${res.status})`;
+        setError(`${eMsg} ${msg}`);
+        snackbar.error(eMsg, { title: "Users", details: msg });
+        return;
+      }
+      setEditOpen(false);
+      setSelected(null);
+      setRefreshTick((v) => v + 1);
+      snackbar.success("Utilisateur mis à jour", { title: "Users" });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(`Erreur réseau ${msg}`);
+      snackbar.error("Erreur réseau", { title: "Users", details: msg });
     }
-    setEditOpen(false);
-    setSelected(null);
-    setRefreshTick((v) => v + 1);
   };
 
   const deleteUser = async (u: User) => {
     if (!confirm(`Supprimer l'utilisateur ${u.email} ?`)) return;
-    const res = await fetch(apiUrl(`/users/${u.id}`), { method: "DELETE" });
-    if (!res.ok && res.status !== 204) {
-      const msg = await res.text().catch(() => "");
-      setError(`Erreur suppression user (${res.status}) ${msg}`);
-      return;
+    try {
+      const res = await fetch(apiUrl(`/users/${u.id}`), { method: "DELETE" });
+      if (!res.ok && res.status !== 204) {
+        const msg = await res.text().catch(() => "");
+        const eMsg = `Erreur suppression user (${res.status})`;
+        setError(`${eMsg} ${msg}`);
+        snackbar.error(eMsg, { title: "Users", details: msg });
+        return;
+      }
+      setRefreshTick((v) => v + 1);
+      snackbar.success("Utilisateur supprimé", { title: "Users" });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(`Erreur réseau ${msg}`);
+      snackbar.error("Erreur réseau", { title: "Users", details: msg });
     }
-    setRefreshTick((v) => v + 1);
   };
 
   type UsersSearchResponse = {

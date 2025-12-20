@@ -367,4 +367,156 @@ pub async fn set_current_organization(
     resp
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::extract::{State as AxumState};
+    use axum::http::StatusCode;
+    use axum::Extension;
+    use sqlx::postgres::PgPoolOptions;
+
+    fn test_database_url() -> Option<String> {
+        std::env::var("DATABASE_URL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+    }
+
+    async fn setup_pool() -> Option<Pool<Postgres>> {
+        let Some(url) = test_database_url() else {
+            eprintln!("skipping integration test: DATABASE_URL not set");
+            return None;
+        };
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&url)
+            .await
+            .ok()?;
+
+        // Ensure schema/migrations exist (safe to re-run in dev DB; in CI prefer a dedicated DB).
+        let _ = sqlx::migrate!("../sqlx-migrations").run(&pool).await;
+        Some(pool)
+    }
+
+    #[tokio::test]
+    async fn admin_is_owner_of_all_orgs_migration_is_idempotent() {
+        let Some(pool) = setup_pool().await else {
+            return;
+        };
+
+        // Create an admin user (if not exists)
+        let admin_id: uuid::Uuid = sqlx::query_scalar(
+            r#"
+            INSERT INTO users (id, username, email, password_hash, role)
+            VALUES (gen_random_uuid(), 'admin', 'admin@inventiv.local', 'x', 'admin')
+            ON CONFLICT (username) DO UPDATE SET email = EXCLUDED.email
+            RETURNING id
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("admin upsert");
+
+        // Create two orgs
+        let org_a: uuid::Uuid = sqlx::query_scalar(
+            r#"
+            INSERT INTO organizations (id, name, slug, created_by_user_id)
+            VALUES (gen_random_uuid(), 'Org A', 'org-a', $1)
+            ON CONFLICT (slug) DO UPDATE SET updated_at = NOW()
+            RETURNING id
+            "#,
+        )
+        .bind(admin_id)
+        .fetch_one(&pool)
+        .await
+        .expect("org a");
+
+        let org_b: uuid::Uuid = sqlx::query_scalar(
+            r#"
+            INSERT INTO organizations (id, name, slug, created_by_user_id)
+            VALUES (gen_random_uuid(), 'Org B', 'org-b', $1)
+            ON CONFLICT (slug) DO UPDATE SET updated_at = NOW()
+            RETURNING id
+            "#,
+        )
+        .bind(admin_id)
+        .fetch_one(&pool)
+        .await
+        .expect("org b");
+
+        // Ensure admin membership is not owner initially (simulate)
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO organization_memberships (organization_id, user_id, role)
+            VALUES ($1, $2, 'user')
+            ON CONFLICT (organization_id, user_id) DO UPDATE SET role = 'user'
+            "#,
+        )
+        .bind(org_a)
+        .bind(admin_id)
+        .execute(&pool)
+        .await;
+
+        // Execute the migration SQL manually (idempotent)
+        let mig_sql =
+            include_str!("../../sqlx-migrations/20251218032000_admin_owner_all_organizations.sql");
+        sqlx::query(mig_sql)
+            .execute(&pool)
+            .await
+            .expect("migration execution");
+        // Run again to prove idempotence
+        sqlx::query(mig_sql)
+            .execute(&pool)
+            .await
+            .expect("migration execution 2");
+
+        // Verify membership role is owner for both orgs
+        let roles: Vec<(uuid::Uuid, String)> = sqlx::query_as(
+            r#"
+            SELECT organization_id, role
+            FROM organization_memberships
+            WHERE user_id = $1
+              AND organization_id IN ($2, $3)
+            ORDER BY organization_id
+            "#,
+        )
+        .bind(admin_id)
+        .bind(org_a)
+        .bind(org_b)
+        .fetch_all(&pool)
+        .await
+        .expect("roles fetch");
+
+        assert_eq!(roles.len(), 2);
+        assert!(roles.iter().all(|(_, r)| r == "owner"));
+
+        // Also verify the handler would list both orgs for admin (because membership exists).
+        let state = Arc::new(crate::AppState {
+            redis_client: redis::Client::open("redis://127.0.0.1/").unwrap(),
+            db: pool.clone(),
+        });
+        let auth_user = auth::AuthUser {
+            user_id: admin_id,
+            email: "admin@inventiv.local".to_string(),
+            role: "admin".to_string(),
+            current_organization_id: None,
+        };
+
+        let resp = list_organizations(AxumState(state), Extension(auth_user))
+            .await
+            .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let arr = v.as_array().cloned().unwrap_or_default();
+        // at least those two slugs
+        let slugs: Vec<String> = arr
+            .iter()
+            .filter_map(|o| o.get("slug").and_then(|s| s.as_str()).map(|s| s.to_string()))
+            .collect();
+        assert!(slugs.contains(&"org-a".to_string()));
+        assert!(slugs.contains(&"org-b".to_string()));
+    }
+}
+
 

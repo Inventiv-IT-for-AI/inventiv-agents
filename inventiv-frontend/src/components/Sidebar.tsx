@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Settings, Activity, Archive, BarChart3, Server, Users, Terminal, KeyRound, Cpu } from "lucide-react";
+import { LayoutDashboard, Settings, Activity, Archive, BarChart3, Server, Users, Terminal, KeyRound, Cpu, MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import type { Me } from "@/components/account/AccountSection";
@@ -47,6 +47,7 @@ export function Sidebar() {
                     </h2>
                     <div className="space-y-1">
                         <SidebarLink href="/" icon={LayoutDashboard} label="Dashboard" />
+                        <SidebarLink href="/chat" icon={MessageSquare} label="Chat" />
                         <SidebarLink href="/instances" icon={Server} label="Instances" />
                         <SidebarLink href="/models" icon={Activity} label="Models" />
                         <SidebarLink href="/gpu-activity" icon={Cpu} label="GPU Activity" />

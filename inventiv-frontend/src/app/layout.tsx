@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Rubik, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { AppProviders } from "@/components/AppProviders";
 
 const inventivSans = Rubik({
   variable: "--font-rubik",
@@ -39,7 +40,7 @@ export default function RootLayout({
       <body
         className={`${inventivSans.variable} ${geistMono.variable} antialiased`}
       >
-        {children}
+        <AppProviders>{children}</AppProviders>
       </body>
     </html>
   );

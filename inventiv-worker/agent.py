@@ -1,6 +1,8 @@
 import json
 import os
+import re
 import subprocess
+import shutil
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -19,10 +21,16 @@ WORKER_ID = os.getenv("WORKER_ID", "").strip() or str(uuid4())
 MODEL_ID = os.getenv("MODEL_ID", "").strip()
 VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 VLLM_READY_URL = f"{VLLM_BASE_URL}/v1/models"
+VLLM_METRICS_URL = os.getenv("VLLM_METRICS_URL", f"{VLLM_BASE_URL}/metrics").rstrip("/")
 
 WORKER_HEALTH_PORT = int(os.getenv("WORKER_HEALTH_PORT", "8080"))
 WORKER_VLLM_PORT = int(os.getenv("WORKER_VLLM_PORT", "8000"))
 HEARTBEAT_INTERVAL_S = float(os.getenv("WORKER_HEARTBEAT_INTERVAL_S", "4"))
+WORKER_DISK_PATH = os.getenv("WORKER_DISK_PATH", "/").strip() or "/"
+
+# State for rate/percent calculations (best-effort)
+_PREV_CPU = None  # (total, idle)
+_PREV_NET = None  # (rx_bytes, tx_bytes, ts)
 
 
 def _auth_headers():
@@ -146,6 +154,225 @@ def _try_nvidia_smi():
     except Exception:
         return {}
 
+def _read_proc_stat_cpu():
+    """
+    Returns (total_ticks, idle_ticks) from /proc/stat, or None.
+    """
+    try:
+        with open("/proc/stat", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("cpu "):
+                    parts = line.strip().split()
+                    # cpu user nice system idle iowait irq softirq steal guest guest_nice
+                    vals = [int(x) for x in parts[1:] if x.isdigit() or x.lstrip("-").isdigit()]
+                    if len(vals) < 4:
+                        return None
+                    user, nice, system, idle = vals[0], vals[1], vals[2], vals[3]
+                    iowait = vals[4] if len(vals) > 4 else 0
+                    irq = vals[5] if len(vals) > 5 else 0
+                    softirq = vals[6] if len(vals) > 6 else 0
+                    steal = vals[7] if len(vals) > 7 else 0
+                    idle_all = idle + iowait
+                    non_idle = user + nice + system + irq + softirq + steal
+                    total = idle_all + non_idle
+                    return (total, idle_all)
+    except Exception:
+        return None
+    return None
+
+
+def _read_meminfo():
+    """
+    Returns dict with mem_total_bytes, mem_available_bytes.
+    """
+    out = {}
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as f:
+            for line in f:
+                if ":" not in line:
+                    continue
+                k, v = line.split(":", 1)
+                k = k.strip()
+                v = v.strip()
+                if not v:
+                    continue
+                # Values are usually kB.
+                m = re.match(r"^(\d+)\s+kB$", v)
+                if not m:
+                    continue
+                bytes_v = int(m.group(1)) * 1024
+                if k == "MemTotal":
+                    out["mem_total_bytes"] = bytes_v
+                elif k == "MemAvailable":
+                    out["mem_available_bytes"] = bytes_v
+    except Exception:
+        return {}
+    return out
+
+
+def _read_loadavg():
+    try:
+        with open("/proc/loadavg", "r", encoding="utf-8") as f:
+            parts = (f.read() or "").strip().split()
+        if len(parts) < 3:
+            return {}
+        return {"load1": float(parts[0]), "load5": float(parts[1]), "load15": float(parts[2])}
+    except Exception:
+        return {}
+
+
+def _disk_usage(path: str):
+    try:
+        du = shutil.disk_usage(path)
+        return {
+            "disk_path": path,
+            "disk_total_bytes": int(du.total),
+            "disk_used_bytes": int(du.used),
+            "disk_free_bytes": int(du.free),
+        }
+    except Exception:
+        return {}
+
+
+def _read_netdev_totals():
+    """
+    Returns (rx_bytes, tx_bytes) summed across interfaces (excluding loopback), or None.
+    """
+    try:
+        with open("/proc/net/dev", "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        rx = 0
+        tx = 0
+        for line in lines[2:]:
+            if ":" not in line:
+                continue
+            iface, rest = line.split(":", 1)
+            iface = iface.strip()
+            if not iface or iface == "lo":
+                continue
+            parts = rest.split()
+            if len(parts) < 16:
+                continue
+            rx += int(parts[0])
+            tx += int(parts[8])
+        return (rx, tx)
+    except Exception:
+        return None
+
+
+def _collect_system_metrics():
+    """
+    Best-effort system metrics (works in containers with /proc mounted).
+    Returns dict suitable for worker_metadata.system.
+    """
+    global _PREV_CPU, _PREV_NET
+    now = time.time()
+
+    out = {}
+    out.update(_read_loadavg())
+    out.update(_read_meminfo())
+    out.update(_disk_usage(WORKER_DISK_PATH))
+
+    # CPU usage percent (requires previous sample)
+    cpu = _read_proc_stat_cpu()
+    if cpu and _PREV_CPU:
+        total, idle = cpu
+        prev_total, prev_idle = _PREV_CPU
+        dt_total = total - prev_total
+        dt_idle = idle - prev_idle
+        if dt_total > 0:
+            out["cpu_usage_pct"] = max(0.0, min(100.0, (1.0 - (dt_idle / float(dt_total))) * 100.0))
+    if cpu:
+        _PREV_CPU = cpu
+
+    # Network rates (bytes/sec) since last sample
+    net = _read_netdev_totals()
+    if net:
+        rx, tx = net
+        if _PREV_NET:
+            prev_rx, prev_tx, prev_ts = _PREV_NET
+            dt = max(0.001, now - prev_ts)
+            out["net_rx_bps"] = max(0.0, (rx - prev_rx) / dt)
+            out["net_tx_bps"] = max(0.0, (tx - prev_tx) / dt)
+        _PREV_NET = (rx, tx, now)
+        out["net_rx_bytes_total"] = rx
+        out["net_tx_bytes_total"] = tx
+
+    # Convenience derived percents
+    mt = out.get("mem_total_bytes")
+    ma = out.get("mem_available_bytes")
+    if isinstance(mt, int) and mt > 0 and isinstance(ma, int):
+        out["mem_used_bytes"] = max(0, mt - ma)
+        out["mem_used_pct"] = max(0.0, min(100.0, ((mt - ma) / float(mt)) * 100.0))
+
+    dt = out.get("disk_total_bytes")
+    du = out.get("disk_used_bytes")
+    if isinstance(dt, int) and dt > 0 and isinstance(du, int):
+        out["disk_used_pct"] = max(0.0, min(100.0, (du / float(dt)) * 100.0))
+
+    return out
+
+
+def _parse_prometheus_metric(text: str, names):
+    """
+    Parse first matching metric among `names` from Prometheus text exposition.
+    Returns float or None.
+    """
+    for name in names:
+        # match: name{...} 12.3  OR name 12.3
+        m = re.search(rf"(?m)^{re.escape(name)}(?:\{{[^}}]*\}})?\s+([0-9eE\.\+\-]+)\s*$", text)
+        if m:
+            try:
+                return float(m.group(1))
+            except Exception:
+                pass
+    return None
+
+
+def _collect_vllm_signals():
+    """
+    Best-effort vLLM signals for load-balancing (queue depth / inflight).
+    Returns dict.
+    """
+    try:
+        resp = requests.get(VLLM_METRICS_URL, timeout=2)
+        if resp.status_code != 200:
+            return {}
+        txt = resp.text or ""
+    except Exception:
+        return {}
+
+    # Metric names vary across vLLM versions; try a small allowlist.
+    waiting = _parse_prometheus_metric(
+        txt,
+        names=[
+            "vllm_num_requests_waiting",
+            "vllm:num_requests_waiting",
+            "vllm_requests_waiting",
+            "vllm:requests_waiting",
+        ],
+    )
+    running = _parse_prometheus_metric(
+        txt,
+        names=[
+            "vllm_num_requests_running",
+            "vllm:num_requests_running",
+            "vllm_requests_running",
+            "vllm:requests_running",
+        ],
+    )
+    out = {}
+    if waiting is not None:
+        out["requests_waiting"] = waiting
+    if running is not None:
+        out["requests_running"] = running
+    if waiting is not None:
+        try:
+            out["queue_depth"] = int(max(0.0, waiting))
+        except Exception:
+            pass
+    return out
+
 
 class _Handler(BaseHTTPRequestHandler):
     def _write(self, code: int, body: str, content_type: str = "text/plain"):
@@ -170,6 +397,8 @@ class _Handler(BaseHTTPRequestHandler):
             ready = 1 if check_vllm_ready() else 0
             up = 1
             gpu = _try_nvidia_smi()
+            sysm = _collect_system_metrics()
+            vllm = _collect_vllm_signals()
             lines = [
                 "# HELP inventiv_worker_up Worker process is up (always 1).",
                 "# TYPE inventiv_worker_up gauge",
@@ -178,6 +407,24 @@ class _Handler(BaseHTTPRequestHandler):
                 "# TYPE inventiv_worker_vllm_ready gauge",
                 f"inventiv_worker_vllm_ready {ready}",
             ]
+            if "queue_depth" in vllm:
+                lines += [
+                    "# HELP inventiv_worker_queue_depth Best-effort queue depth (requests waiting).",
+                    "# TYPE inventiv_worker_queue_depth gauge",
+                    f"inventiv_worker_queue_depth {int(vllm['queue_depth'])}",
+                ]
+            if "requests_running" in vllm:
+                lines += [
+                    "# HELP inventiv_worker_requests_running Best-effort running requests.",
+                    "# TYPE inventiv_worker_requests_running gauge",
+                    f"inventiv_worker_requests_running {float(vllm['requests_running'])}",
+                ]
+            if "requests_waiting" in vllm:
+                lines += [
+                    "# HELP inventiv_worker_requests_waiting Best-effort waiting requests.",
+                    "# TYPE inventiv_worker_requests_waiting gauge",
+                    f"inventiv_worker_requests_waiting {float(vllm['requests_waiting'])}",
+                ]
             if "gpu_utilization" in gpu:
                 lines += [
                     "# HELP inventiv_worker_gpu_utilization GPU utilization percent.",
@@ -195,6 +442,80 @@ class _Handler(BaseHTTPRequestHandler):
                     "# HELP inventiv_worker_gpu_mem_total_mb GPU memory total MB.",
                     "# TYPE inventiv_worker_gpu_mem_total_mb gauge",
                     f"inventiv_worker_gpu_mem_total_mb {gpu['gpu_mem_total_mb']}",
+                ]
+            # Per-GPU metrics (preferred for observability / balancing)
+            if isinstance(gpu.get("gpus"), list):
+                lines += [
+                    "# HELP inventiv_worker_gpu_utilization_by_gpu GPU utilization percent by GPU index.",
+                    "# TYPE inventiv_worker_gpu_utilization_by_gpu gauge",
+                ]
+                for g in gpu.get("gpus") or []:
+                    try:
+                        idx = int(g.get("index", 0))
+                        util = float(g.get("gpu_utilization", 0.0))
+                        lines.append(f'inventiv_worker_gpu_utilization_by_gpu{{gpu_index="{idx}"}} {util}')
+                    except Exception:
+                        continue
+                lines += [
+                    "# HELP inventiv_worker_gpu_mem_used_mb_by_gpu GPU memory used MB by GPU index.",
+                    "# TYPE inventiv_worker_gpu_mem_used_mb_by_gpu gauge",
+                ]
+                for g in gpu.get("gpus") or []:
+                    try:
+                        idx = int(g.get("index", 0))
+                        used = float(g.get("gpu_mem_used_mb", 0.0))
+                        lines.append(f'inventiv_worker_gpu_mem_used_mb_by_gpu{{gpu_index="{idx}"}} {used}')
+                    except Exception:
+                        continue
+
+            # System metrics
+            if "cpu_usage_pct" in sysm:
+                lines += [
+                    "# HELP inventiv_worker_cpu_usage_pct CPU usage percent (host/container).",
+                    "# TYPE inventiv_worker_cpu_usage_pct gauge",
+                    f"inventiv_worker_cpu_usage_pct {float(sysm['cpu_usage_pct'])}",
+                ]
+            if "load1" in sysm:
+                lines += [
+                    "# HELP inventiv_worker_load1 Load average (1m).",
+                    "# TYPE inventiv_worker_load1 gauge",
+                    f"inventiv_worker_load1 {float(sysm['load1'])}",
+                ]
+            if "mem_used_bytes" in sysm:
+                lines += [
+                    "# HELP inventiv_worker_mem_used_bytes Memory used bytes.",
+                    "# TYPE inventiv_worker_mem_used_bytes gauge",
+                    f"inventiv_worker_mem_used_bytes {int(sysm['mem_used_bytes'])}",
+                ]
+            if "mem_total_bytes" in sysm:
+                lines += [
+                    "# HELP inventiv_worker_mem_total_bytes Memory total bytes.",
+                    "# TYPE inventiv_worker_mem_total_bytes gauge",
+                    f"inventiv_worker_mem_total_bytes {int(sysm['mem_total_bytes'])}",
+                ]
+            if "disk_used_bytes" in sysm:
+                lines += [
+                    "# HELP inventiv_worker_disk_used_bytes Disk used bytes for WORKER_DISK_PATH.",
+                    "# TYPE inventiv_worker_disk_used_bytes gauge",
+                    f"inventiv_worker_disk_used_bytes {int(sysm['disk_used_bytes'])}",
+                ]
+            if "disk_total_bytes" in sysm:
+                lines += [
+                    "# HELP inventiv_worker_disk_total_bytes Disk total bytes for WORKER_DISK_PATH.",
+                    "# TYPE inventiv_worker_disk_total_bytes gauge",
+                    f"inventiv_worker_disk_total_bytes {int(sysm['disk_total_bytes'])}",
+                ]
+            if "net_rx_bps" in sysm:
+                lines += [
+                    "# HELP inventiv_worker_net_rx_bps Network receive bytes/sec (aggregated).",
+                    "# TYPE inventiv_worker_net_rx_bps gauge",
+                    f"inventiv_worker_net_rx_bps {float(sysm['net_rx_bps'])}",
+                ]
+            if "net_tx_bps" in sysm:
+                lines += [
+                    "# HELP inventiv_worker_net_tx_bps Network transmit bytes/sec (aggregated).",
+                    "# TYPE inventiv_worker_net_tx_bps gauge",
+                    f"inventiv_worker_net_tx_bps {float(sysm['net_tx_bps'])}",
                 ]
             self._write(200, "\n".join(lines) + "\n")
             return
@@ -217,7 +538,12 @@ def register_worker_once():
         "model_id": MODEL_ID or None,
         "vllm_port": WORKER_VLLM_PORT,
         "health_port": WORKER_HEALTH_PORT,
-        "metadata": _try_nvidia_smi() or None,
+        "metadata": {
+            **(_try_nvidia_smi() or {}),
+            "system": _collect_system_metrics() or None,
+            "vllm": _collect_vllm_signals() or None,
+        }
+        or None,
     }
     try:
         resp = requests.post(
@@ -250,15 +576,22 @@ def send_heartbeat(status: str):
     if not CONTROL_PLANE_URL or not INSTANCE_ID:
         return False
     gpu = _try_nvidia_smi()
+    sysm = _collect_system_metrics()
+    vllm = _collect_vllm_signals()
     payload = {
         "instance_id": INSTANCE_ID,
         "worker_id": WORKER_ID,
         "status": status,
         "model_id": MODEL_ID or None,
-        "queue_depth": None,
+        "queue_depth": vllm.get("queue_depth"),
         "gpu_utilization": gpu.get("gpu_utilization"),
         "gpu_mem_used_mb": gpu.get("gpu_mem_used_mb"),
-        "metadata": gpu or None,
+        "metadata": {
+            **(gpu or {}),
+            "system": sysm or None,
+            "vllm": vllm or None,
+        }
+        or None,
     }
     try:
         resp = requests.post(

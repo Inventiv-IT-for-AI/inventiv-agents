@@ -8,7 +8,7 @@ import { Instance } from "@/lib/types";
 import { useInstances } from "@/hooks/useInstances";
 import { useRealtimeEvents } from "@/hooks/useRealtimeEvents";
 import { useCatalog } from "@/hooks/useCatalog";
-import { IAStatsCard } from "ia-widgets";
+import { IAStatCell } from "ia-widgets";
 import { CreateInstanceModal } from "@/components/instances/CreateInstanceModal";
 import { TerminateInstanceModal } from "@/components/instances/TerminateInstanceModal";
 import { ReinstallInstanceModal } from "@/components/instances/ReinstallInstanceModal";
@@ -123,30 +123,33 @@ export default function InstancesPage() {
 
             {/* Stats */}
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-                <IAStatsCard
+                <IAStatCell
                     title="Total Instances"
                     value={stats.total}
-                    description="All time managed"
+                    subtitle="All time managed"
                     icon={Server}
+                    accent="indigo"
                 />
-                <IAStatsCard
+                <IAStatCell
                     title="Active"
                     value={stats.active}
-                    description="Operational"
+                    subtitle="Operational"
                     icon={Activity}
-                    valueClassName="text-green-600"
+                    accent="green"
                 />
-                <IAStatsCard
+                <IAStatCell
                     title="Provisioning"
                     value={stats.provisioning}
+                    subtitle="Provisioning / booting"
                     icon={RefreshIcon}
-                    valueClassName="text-blue-600"
+                    accent="cyan"
                 />
-                <IAStatsCard
+                <IAStatCell
                     title="Failed/Terminated"
                     value={stats.failed}
+                    subtitle="Needs attention"
                     icon={AlertCircle}
-                    valueClassName="text-muted-foreground"
+                    accent={stats.failed > 0 ? "red" : "purple"}
                 />
             </div>
 

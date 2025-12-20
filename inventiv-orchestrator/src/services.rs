@@ -154,7 +154,7 @@ pub async fn process_termination(
                 .unwrap_or(None)
                 .unwrap_or_else(|| ProviderManager::current_provider_name());
 
-                if let Some(provider) = ProviderManager::get_provider(&provider_code, pool.clone())
+                if let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone())
                 {
                     // LOG 2: PROVIDER_TERMINATE (API call to provider)
                     let api_start = Instant::now();
@@ -837,25 +837,32 @@ pub async fn process_provisioning(
     }
 
     // 1. Init Provider
-    let provider_opt = ProviderManager::get_provider(&provider_name, pool.clone());
-
-    if provider_opt.is_none() {
-        let msg = "Missing Provider Credentials";
-        println!("❌ Error: {}", msg);
-        if let Some(log_id) = log_id_execute {
-            let duration = start.elapsed().as_millis() as i32;
-            logger::log_event_complete(&pool, log_id, "failed", duration, Some(msg))
-                .await
-                .ok();
-        }
-        sqlx::query("UPDATE instances SET status = 'failed' WHERE id = $1")
+    let provider = match ProviderManager::get_provider(&provider_name, pool.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            let msg = format!("Missing Provider Credentials: {}", e);
+            eprintln!("❌ {}", msg);
+            if let Some(log_id) = log_id_execute {
+                let duration = start.elapsed().as_millis() as i32;
+                logger::log_event_complete(&pool, log_id, "failed", duration, Some(&msg))
+                    .await
+                    .ok();
+            }
+            let _ = sqlx::query(
+                "UPDATE instances
+                 SET status = 'failed',
+                     error_code = COALESCE(error_code, 'MISSING_PROVIDER_CREDENTIALS'),
+                     error_message = COALESCE($2, error_message),
+                     failed_at = COALESCE(failed_at, NOW())
+                 WHERE id = $1",
+            )
             .bind(instance_uuid)
+            .bind(&msg)
             .execute(&pool)
-            .await
-            .ok();
-        return;
-    }
-    let provider = provider_opt.unwrap();
+            .await;
+            return;
+        }
+    };
 
     // 1.5 Idempotence guard: if provider_instance_id already exists, don't create a second server
     let existing: Option<(Option<String>, Option<String>)> =
@@ -974,113 +981,95 @@ pub async fn process_provisioning(
             // Diskless override has priority.
             image_id = img;
         } else {
-            // Try provider-side auto-discovery.
-            if let Some(provider) = ProviderManager::get_provider(&provider_name, pool.clone()) {
-                match provider.resolve_boot_image(&zone, &instance_type).await {
-                    Ok(Some(img)) => {
-                        println!(
-                            "ℹ️ Scaleway diskless: auto-resolved boot image '{}' for zone '{}' (type '{}')",
-                            img, zone, instance_type
-                        );
-                        image_id = img;
+            // Try provider-side auto-discovery (reuse already-initialized provider).
+            match provider.resolve_boot_image(&zone, &instance_type).await {
+                Ok(Some(img)) => {
+                    println!(
+                        "ℹ️ Scaleway diskless: auto-resolved boot image '{}' for zone '{}' (type '{}')",
+                        img, zone, instance_type
+                    );
+                    image_id = img;
 
-                        // Make subsequent provisions deterministic: persist the resolved boot image
-                        // onto the instance type allocation_params if it isn't set already.
-                        let _ = sqlx::query(
-                            r#"
-                            UPDATE instance_types
-                            SET allocation_params =
-                                jsonb_set(
-                                    allocation_params,
-                                    '{scaleway}',
-                                    COALESCE(allocation_params->'scaleway', '{}'::jsonb)
-                                      || jsonb_build_object('boot_image_id', to_jsonb($2::text)),
-                                    true
-                                )
-                            WHERE id = $1
-                              AND NULLIF(TRIM(allocation_params->'scaleway'->>'boot_image_id'), '') IS NULL
-                            "#,
-                        )
-                        .bind(type_id)
-                        .bind(&image_id)
-                        .execute(&pool)
-                        .await;
-                    }
-                    Ok(None) => {
-                        let msg = "Scaleway requires a diskless/compatible boot image for this instance type. Auto-discovery did not find a suitable image. Configure instance_types.allocation_params.scaleway.boot_image_id for this type.".to_string();
-                        eprintln!("❌ {}", msg);
-                        if let Some(log_id) = log_id_execute {
-                            let duration = start.elapsed().as_millis() as i32;
-                            logger::log_event_complete(
-                                &pool,
-                                log_id,
-                                "failed",
-                                duration,
-                                Some(&msg),
+                    // Make subsequent provisions deterministic: persist the resolved boot image
+                    // onto the instance type allocation_params if it isn't set already.
+                    let _ = sqlx::query(
+                        r#"
+                        UPDATE instance_types
+                        SET allocation_params =
+                            jsonb_set(
+                                allocation_params,
+                                '{scaleway}',
+                                COALESCE(allocation_params->'scaleway', '{}'::jsonb)
+                                  || jsonb_build_object('boot_image_id', to_jsonb($2::text)),
+                                true
                             )
-                            .await
-                            .ok();
-                        }
-                        let _ = sqlx::query(
-                            "UPDATE instances
-                             SET status = 'failed',
-                                 error_code = COALESCE(error_code, 'SCW_DISKLESS_BOOT_IMAGE_REQUIRED'),
-                                 error_message = COALESCE($2, error_message),
-                                 failed_at = COALESCE(failed_at, NOW())
-                             WHERE id = $1"
+                        WHERE id = $1
+                          AND NULLIF(TRIM(allocation_params->'scaleway'->>'boot_image_id'), '') IS NULL
+                        "#,
+                    )
+                    .bind(type_id)
+                    .bind(&image_id)
+                    .execute(&pool)
+                    .await;
+                },
+                Ok(None) => {
+                    let msg = "Scaleway requires a diskless/compatible boot image for this instance type. Auto-discovery did not find a suitable image. Configure instance_types.allocation_params.scaleway.boot_image_id for this type.".to_string();
+                    eprintln!("❌ {}", msg);
+                    if let Some(log_id) = log_id_execute {
+                        let duration = start.elapsed().as_millis() as i32;
+                        logger::log_event_complete(
+                            &pool,
+                            log_id,
+                            "failed",
+                            duration,
+                            Some(&msg),
                         )
-                        .bind(instance_uuid)
-                        .bind(&msg)
-                        .execute(&pool)
-                        .await;
-                        return;
-                    }
-                    Err(e) => {
-                        let msg =
-                            format!("Scaleway diskless boot image auto-discovery failed: {}", e);
-                        eprintln!("❌ {}", msg);
-                        if let Some(log_id) = log_id_execute {
-                            let duration = start.elapsed().as_millis() as i32;
-                            logger::log_event_complete(
-                                &pool,
-                                log_id,
-                                "failed",
-                                duration,
-                                Some(&msg),
-                            )
-                            .await
-                            .ok();
-                        }
-                        let _ = sqlx::query(
-                            "UPDATE instances
-                             SET status = 'failed',
-                                 error_code = COALESCE(error_code, 'SCW_DISKLESS_BOOT_IMAGE_RESOLVE_FAILED'),
-                                 error_message = COALESCE($2, error_message),
-                                 failed_at = COALESCE(failed_at, NOW())
-                             WHERE id = $1"
-                        )
-                        .bind(instance_uuid)
-                        .bind(&msg)
-                        .execute(&pool)
-                        .await;
-                        return;
-                    }
-                }
-            } else {
-                let msg = "Missing Provider Credentials".to_string();
-                eprintln!("❌ {}", msg);
-                if let Some(log_id) = log_id_execute {
-                    let duration = start.elapsed().as_millis() as i32;
-                    logger::log_event_complete(&pool, log_id, "failed", duration, Some(&msg))
                         .await
                         .ok();
-                }
-                let _ = sqlx::query("UPDATE instances SET status = 'failed', error_message = COALESCE($2, error_message), failed_at = COALESCE(failed_at, NOW()) WHERE id = $1")
+                    }
+                    let _ = sqlx::query(
+                        "UPDATE instances
+                         SET status = 'failed',
+                             error_code = COALESCE(error_code, 'SCW_DISKLESS_BOOT_IMAGE_REQUIRED'),
+                             error_message = COALESCE($2, error_message),
+                             failed_at = COALESCE(failed_at, NOW())
+                         WHERE id = $1",
+                    )
                     .bind(instance_uuid)
                     .bind(&msg)
                     .execute(&pool)
                     .await;
-                return;
+                    return;
+                },
+                Err(e) => {
+                    let msg = format!("Scaleway diskless boot image auto-discovery failed: {}", e);
+                    eprintln!("❌ {}", msg);
+                    if let Some(log_id) = log_id_execute {
+                        let duration = start.elapsed().as_millis() as i32;
+                        logger::log_event_complete(
+                            &pool,
+                            log_id,
+                            "failed",
+                            duration,
+                            Some(&msg),
+                        )
+                        .await
+                        .ok();
+                    }
+                    let _ = sqlx::query(
+                        "UPDATE instances
+                         SET status = 'failed',
+                             error_code = COALESCE(error_code, 'SCW_DISKLESS_BOOT_IMAGE_RESOLVE_FAILED'),
+                             error_message = COALESCE($2, error_message),
+                             failed_at = COALESCE(failed_at, NOW())
+                         WHERE id = $1",
+                    )
+                    .bind(instance_uuid)
+                    .bind(&msg)
+                    .execute(&pool)
+                    .await;
+                    return;
+                },
             }
         }
     }
@@ -2158,7 +2147,7 @@ pub async fn process_catalog_sync(pool: Pool<Postgres>) {
 
     // 1. Get Provider (Scaleway)
     let provider_name = ProviderManager::current_provider_name();
-    if let Some(provider) = ProviderManager::get_provider(&provider_name, pool.clone()) {
+    if let Ok(provider) = ProviderManager::get_provider(&provider_name, pool.clone()) {
         // Ensure the provider exists in DB (required for Settings UI and FK integrity).
         let provider_uuid: Option<Uuid> = sqlx::query_scalar(
             r#"
@@ -2335,14 +2324,14 @@ pub async fn process_catalog_sync(pool: Pool<Postgres>) {
             }
         }
     } else {
-        println!("❌ [Catalog Sync] Provider Scaleway not configured.");
+        println!("❌ [Catalog Sync] Provider not configured (missing credentials).");
     }
 }
 
 pub async fn process_full_reconciliation(pool: Pool<Postgres>) {
     println!("🔄 [Full Reconciliation] Starting...");
     let provider_name = ProviderManager::current_provider_name();
-    if let Some(provider) = ProviderManager::get_provider(&provider_name, pool.clone()) {
+    if let Ok(provider) = ProviderManager::get_provider(&provider_name, pool.clone()) {
         // Zones for this provider
         let zones: Vec<String> = sqlx::query_scalar(
             r#"
@@ -2522,6 +2511,6 @@ pub async fn process_full_reconciliation(pool: Pool<Postgres>) {
         }
         println!("✅ [Full Reconciliation] Completed.");
     } else {
-        println!("❌ [Full Reconciliation] Provider Scaleway not configured.");
+        println!("❌ [Full Reconciliation] Provider not configured (missing credentials).");
     }
 }

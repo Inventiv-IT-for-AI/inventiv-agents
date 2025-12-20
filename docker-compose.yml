@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # --- INFRA ---
   redis:
@@ -25,6 +23,9 @@ services:
     environment:
       - MODEL_ID=demo-model
       - PORT=8000
+      # Expose minimal vLLM-style Prometheus metrics for agent parsing (queue depth, running).
+      - VLLM_NUM_REQUESTS_WAITING=${MOCK_VLLM_REQUESTS_WAITING:-7}
+      - VLLM_NUM_REQUESTS_RUNNING=${MOCK_VLLM_REQUESTS_RUNNING:-1}
     volumes:
       - ./inventiv-worker/mock_vllm.py:/app/mock_vllm.py:ro
     ports:

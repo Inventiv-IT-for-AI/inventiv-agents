@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  workflow_call:
+  pull_request:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (fmt/clippy/test)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-workspace
+
+      - name: Security check (no committed private keys)
+        run: make security-check
+
+      - name: Format (check)
+        run: make fmt-check
+
+      - name: Clippy
+        run: make clippy
+
+      - name: Tests
+        run: make test
+
+  frontend:
+    name: Frontend (lint/build)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Lint
+        run: npm run lint:ui
+
+      - name: Build
+        run: npm run build:ui
+
+

@@ -1,4 +1,4 @@
-name: GHCR (build + promote)
+name: GHCR (arm64 build + promote)
 
 on:
   push:
@@ -37,7 +37,7 @@ jobs:
         run: |
           echo "OWNER_LC=$(echo \"$GITHUB_REPOSITORY_OWNER\" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
           echo "TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
-          echo "SHA=${GITHUB_SHA}" >> "$GITHUB_ENV"
+          echo "SHA=${GITHUB_SHA:0:12}" >> "$GITHUB_ENV"
 
       - uses: docker/setup-qemu-action@v3
         with:

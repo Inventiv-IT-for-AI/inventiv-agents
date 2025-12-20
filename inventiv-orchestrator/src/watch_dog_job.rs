@@ -71,7 +71,7 @@ pub async fn watchdog_ready_instances(
             .unwrap_or(None)
             .unwrap_or_else(|| ProviderManager::current_provider_name());
 
-        let Some(provider) = ProviderManager::get_provider(&provider_code, pool.clone()) else {
+        let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()) else {
             let _ = sqlx::query("UPDATE instances SET last_reconciliation = NULL WHERE id = $1")
                 .bind(instance_id)
                 .execute(pool)

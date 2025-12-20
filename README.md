@@ -251,7 +251,14 @@ Pour activer le provisioning Scaleway réel :
 ```bash
 # Dans env/dev.env (local) ou env/staging.env / env/prod.env (remote)
 SCALEWAY_PROJECT_ID=<your-project-id>
+# Recommandé (secret file monté dans les conteneurs)
+SCALEWAY_SECRET_KEY_FILE=/run/secrets/scaleway_secret_key
+#
+# Alternative (moins recommandé): secret en clair via env var
 SCALEWAY_SECRET_KEY=<your-secret-key>
+# Alias supportés (si tu utilises déjà ces noms ailleurs):
+# - SCALEWAY_API_TOKEN
+# - SCW_SECRET_KEY
 # Optionnel selon besoin
 SCALEWAY_ACCESS_KEY=<your-access-key>
 ```
@@ -600,6 +607,30 @@ Voir [docs/MONITORING_IMPROVEMENTS.md](docs/MONITORING_IMPROVEMENTS.md) pour les
 **Action logs** : Endpoint `/action_logs/search` avec pagination et stats
 
 **FinOps** : Dashboard frontend avec coûts réels/forecast/cumulatifs
+
+### Tests E2E (mock) + nettoyage Docker
+
+Un test d’intégration “mock” existe pour valider la chaîne **API → Orchestrator → Worker → API** (heartbeats + séries temporelles + proxy OpenAI):
+
+```bash
+make test-worker-observability [PORT_OFFSET=...]
+```
+
+Si ta DB Docker échoue avec `No space left on device`, tu peux nettoyer les ressources Docker **inutilisées** et **anciennes** (par défaut: > 7 jours) *scope projet compose*:
+
+```bash
+make docker-prune-old
+```
+
+Options:
+- `OLDER_THAN_HOURS=168` (défaut = 7 jours)
+- `CLEAN_ALL_UNUSED_IMAGES_OLD=1` (plus agressif: prune global des images inutilisées > N heures)
+
+Commande “one-shot” (nettoyage + test):
+
+```bash
+make test-worker-observability-clean [PORT_OFFSET=...]
+```
 
 ## Sécurité
 

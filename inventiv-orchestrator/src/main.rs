@@ -641,6 +641,60 @@ async fn worker_heartbeat(
         .await;
     }
 
+    // Insert time series system samples (CPU/Mem/Disk/Network) from metadata.system.
+    // Best-effort only: do not fail heartbeat on metrics insert.
+    if let Some(meta) = meta_clone.as_ref() {
+        if let Some(sys) = meta.get("system") {
+            let cpu = sys.get("cpu_usage_pct").and_then(|v| v.as_f64());
+            let load1 = sys.get("load1").and_then(|v| v.as_f64());
+            let mem_used = sys.get("mem_used_bytes").and_then(|v| v.as_i64());
+            let mem_total = sys.get("mem_total_bytes").and_then(|v| v.as_i64());
+            let disk_used = sys.get("disk_used_bytes").and_then(|v| v.as_i64());
+            let disk_total = sys.get("disk_total_bytes").and_then(|v| v.as_i64());
+            let rx_bps = sys.get("net_rx_bps").and_then(|v| v.as_f64());
+            let tx_bps = sys.get("net_tx_bps").and_then(|v| v.as_f64());
+
+            // Insert only when at least one meaningful field is present.
+            if cpu.is_some()
+                || load1.is_some()
+                || mem_used.is_some()
+                || mem_total.is_some()
+                || disk_used.is_some()
+                || disk_total.is_some()
+                || rx_bps.is_some()
+                || tx_bps.is_some()
+            {
+                let _ = sqlx::query(
+                    r#"
+                    INSERT INTO system_samples (
+                      instance_id,
+                      cpu_usage_pct,
+                      load1,
+                      mem_used_bytes,
+                      mem_total_bytes,
+                      disk_used_bytes,
+                      disk_total_bytes,
+                      net_rx_bps,
+                      net_tx_bps
+                    )
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                    "#,
+                )
+                .bind(payload.instance_id)
+                .bind(cpu)
+                .bind(load1)
+                .bind(mem_used)
+                .bind(mem_total)
+                .bind(disk_used)
+                .bind(disk_total)
+                .bind(rx_bps)
+                .bind(tx_bps)
+                .execute(&state.db)
+                .await;
+            }
+        }
+    }
+
     match res {
         Ok(r) if r.rows_affected() > 0 => {
             (StatusCode::OK, Json(json!({"status": "ok"}))).into_response()

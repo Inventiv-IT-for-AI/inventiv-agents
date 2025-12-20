@@ -59,14 +59,6 @@ check-stg-env:
 check-prod-env:
 	$(call require_env_file,$(PRD_ENV_FILE),env/prod.env.example)
 
-.PHONY: ui-version-sync ui-version-check
-# UI package versioning (no publish): keep ia-designsys/ia-widgets aligned with VERSION
-ui-version-sync:
-	node scripts/sync_ui_versions.mjs
-
-ui-version-check:
-	node scripts/check_ui_versions.mjs
-
 # Compose wrappers (keep commands consistent everywhere)
 COMPOSE_LOCAL = $(COMPOSE) -f $(LOCAL_COMPOSE_FILE) --env-file $(DEV_ENV_FILE)
 COMPOSE_DEPLOY = $(COMPOSE) -f $(DEPLOY_COMPOSE_FILE) --env-file $(DEV_ENV_FILE)
@@ -81,7 +73,6 @@ PRD_REMOTE_SSH ?=
 	images-build-version images-push-version images-build-latest images-push-latest \
 	images-publish-stg images-publish-prod \
 	ghcr-token-local ghcr-login \
-	ui-version-sync ui-version-check \
 	up down ps logs ui dev-create dev-create-edge dev-start dev-start-edge dev-stop dev-delete dev-ps dev-logs dev-restart-orchestrator dev-cert \
 	edge-create edge-start edge-stop edge-delete edge-ps edge-logs edge-cert \
 	stg-provision stg-destroy stg-bootstrap stg-secrets-sync stg-rebuild stg-create stg-update stg-start stg-stop stg-delete stg-status stg-logs stg-cert stg-renew stg-ghcr-token \
@@ -89,7 +80,9 @@ PRD_REMOTE_SSH ?=
 	prod-provision prod-destroy prod-bootstrap prod-secrets-sync prod-rebuild prod-create prod-update prod-start prod-stop prod-delete prod-status prod-logs prod-cert prod-renew prod-ghcr-token \
 	prod-cert-export prod-cert-import prod-reset-admin-password \
 	reset-admin-password \
-	test clean
+	docker-prune-old test test-worker-observability test-worker-observability-clean clean check fmt fmt-check clippy \
+	ui-install ui-lint ui-build security-check \
+	ci-fast ci
 
 help:
 	@echo ""
@@ -718,6 +711,65 @@ prod-renew:
 
 test:
 	cargo test --workspace
+
+# Integration test (mock provider): API -> Orchestrator -> Worker -> API (observability + OpenAI proxy)
+.PHONY: test-worker-observability
+test-worker-observability:
+	@chmod +x ./scripts/test_worker_observability_mock.sh 2>/dev/null || true
+	@RESET_VOLUMES=0 PORT_OFFSET=$(PORT_OFFSET) ./scripts/test_worker_observability_mock.sh
+
+# Prune old/unused Docker resources for this compose project (default: older than 7 days).
+# Optional:
+# - OLDER_THAN_HOURS=168
+# - CLEAN_ALL_UNUSED_IMAGES_OLD=1 (more aggressive; affects other repos)
+.PHONY: docker-prune-old
+docker-prune-old:
+	@chmod +x ./scripts/docker_prune_project_old.sh 2>/dev/null || true
+	@COMPOSE_PROJECT_NAME=$$(basename "$$(pwd)") OLDER_THAN_HOURS=$${OLDER_THAN_HOURS:-168} CLEAN_ALL_UNUSED_IMAGES_OLD=$${CLEAN_ALL_UNUSED_IMAGES_OLD:-0} \
+	  ./scripts/docker_prune_project_old.sh
+
+# One-shot: prune old docker resources then run the mock observability E2E test.
+.PHONY: test-worker-observability-clean
+test-worker-observability-clean: docker-prune-old
+	@$(MAKE) test-worker-observability PORT_OFFSET=$(PORT_OFFSET)
+
+# Cargo check (fast compile-only)
+check:
+	cargo check --workspace
+
+# Rust formatting
+fmt:
+	cargo fmt --all
+
+fmt-check:
+	cargo fmt --all -- --check
+
+# Rust lint (deny warnings)
+clippy:
+	cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+# Frontend (monorepo) tasks
+ui-install:
+	npm ci --no-audit --no-fund
+
+ui-lint: ui-install
+	npm run lint:ui
+
+ui-build: ui-install
+	npm run build:ui
+
+# Security / hygiene checks (tracked files only)
+security-check:
+	@chmod +x ./scripts/check_no_private_keys.sh 2>/dev/null || true
+	@./scripts/check_no_private_keys.sh
+
+# CI presets
+ci-fast: security-check fmt-check clippy test ui-lint ui-build
+	@echo "✅ ci-fast OK"
+
+# Full local CI (today: same as ci-fast; smoke tests can be added later)
+ci: ci-fast
+	@echo "✅ ci OK"
 
 clean:
 	rm -rf target/

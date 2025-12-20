@@ -57,6 +57,19 @@ Composants spécifiques à une feature (instances, settings, monitoring…), non
 - **Modals**: `Dialog` shadcn, header/footer standardisés.
 - **Actions**: `Button` + `variant` (`default`, `outline`, `secondary`, `destructive`, `ghost`) au lieu de `<button className="...">`.
 
+## Multi-tenant UX : indicateurs de scope (Personal vs Organisation)
+
+Règle : le **workspace courant** (Personal vs Organisation) change le **scope** de toutes les actions.
+Le design doit rendre ce changement **visuellement évident**.
+
+### Sidebar background “org color” (anti-erreur)
+- Chaque organisation doit pouvoir définir une **couleur / thème visuel** (MVP: fond de la sidebar).
+- Quand l’utilisateur change d’organisation, la sidebar doit changer de couleur immédiatement.
+- La couleur doit être suffisamment contrastée pour rester lisible (texte/icônes).
+- En mode **Personal**, utiliser le thème neutre par défaut.
+
+> Note: l’objectif est la prévention d’erreur (“je pensais être dans l’org A mais j’étais dans l’org B”).
+
 ## Accessibilité (checklist)
 
 - Tous les controls doivent avoir un **label** (`<Label>`, `aria-label`, `aria-describedby`).

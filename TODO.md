@@ -91,8 +91,18 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 - **Tenants v1 (Org isolation)**:
   - Isoler les ressources “métier” par `organization_id` (au minimum: instances, workbench_runs, action_logs, api_keys).
   - Introduire une notion d’**org courante obligatoire** pour les endpoints métier (401/409 si non sélectionnée).
-  - Clarifier RBAC org: `owner|admin|member` + policy par endpoint.
+  - Clarifier RBAC org: `owner|admin|manager|user` + policy par endpoint.
+  - Règles RBAC:
+    - Invitations: Owner/Admin/Manager
+    - Dernier Owner non révocable
+    - Audit logs immuables (pas de delete)
+  - “Double activation”:
+    - Admin active techniquement (providers/regions/zones/types/models/api_keys/users/plan)
+    - Manager active économiquement (providers/regions/zones/types/models/api_keys/users/plan)
+    - Opérationnel uniquement si les 2 activations sont OK (par ressource)
+    - UX: afficher un état “non opérationnel” + alerte indiquant le flag manquant (tech/eco)
   - (Plus tard) **RLS PostgreSQL** une fois le modèle stabilisé.
+  - UX anti-erreur: **couleur de sidebar configurable par organisation** (visuel “scope changed”).
 
 📄 Roadmap cible: `docs/MULTI_TENANT_ROADMAP.md` (users first-class + org workspaces + community offerings + entitlements + billing tokens)
 
@@ -130,3 +140,51 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 5) **Tenants + RBAC** (premier cut)  
 6) **LB hardening** + signaux worker (queue depth / TTFT)  
 7) **Autoscaling MVP** (politiques + cooldowns)
+
+---
+
+## 🚀 Plan d’implémentation (step-by-step, testable) — RBAC + scoping org
+
+### Phase 1 — RBAC foundation (backend + tests) → commit
+- **DB (migrations)**:
+  - Normaliser `organization_memberships.role` sur: `owner|admin|manager|user`
+  - Backfill: `member` → `user` (si présent)
+  - Contrainte `CHECK` + `DEFAULT 'user'`
+- **Backend (Rust)**:
+  - Module RBAC (enum + helpers): rôle org, règles d’assignation (Owner/Admin/Manager), double activation (tech/eco)
+  - Tests unitaires sur la matrice RBAC (sans DB)
+- **Tests**:
+  - `cargo check -p inventiv-api`
+  - `cargo test -p inventiv-api`
+
+### Phase 2 — Roles associés aux users (membership lifecycle) + tests → commit
+- **API (org-scopé)**:
+  - `GET /organizations/members`
+  - `PUT /organizations/members/:user_id/role` (règles: Owner tout; Manager ↔ User; Admin ↔ User)
+  - `DELETE /organizations/members/:user_id` + invariant “dernier Owner non révocable”
+- **Audit logs**: loguer role changes et removals (immutables)
+- **Tests**: dernier owner, escalations interdites, etc.
+
+### Phase 3 — Invitations + Users management + tests → commit
+- **DB**: `organization_invitations` (email, token, expiry, role, invited_by, accepted_at)
+- **API**:
+  - `POST /organizations/invitations`
+  - `GET /organizations/invitations`
+  - `POST /organizations/invitations/:token/accept` (user existant ou création)
+- **UI**: inviter, voir pending, accepter (flow)
+
+### Phase 4 — Settings org-scopés + double activation + tests → commit(s)
+- Providers/regions/zones/types/models/settings scoppés org
+- Double activation **par ressource**:
+  - Admin = tech only, Manager = eco only, Owner = both
+  - UI: état “non opérationnel” + alerte flag manquant
+
+### Phase 5 — Instances org-scopées + RBAC + tests → commit(s)
+- Admin/Owner: ops (provision/terminate/reinstall/scheduling/scaling)
+- Manager: finance gating + dashboards
+- User: usage / lecture selon politique
+
+### Phase 6 — Models/Offerings + RBAC + tests → commit(s)
+- Admin: config technique + publication
+- Manager: pricing + activation économique + partage
+- Owner: tout

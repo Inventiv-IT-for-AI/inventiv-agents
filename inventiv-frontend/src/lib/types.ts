@@ -166,8 +166,13 @@ export type WorkbenchRun = {
     created_at: string;
     started_at: string;
     completed_at?: string | null;
+    deleted_at?: string | null;
     created_by_user_id?: string | null;
     created_via_api_key_id?: string | null;
+    organization_id?: string | null;
+    shared_with_org?: boolean;
+    project_id?: string | null;
+    title?: string | null;
     model_id: string;
     mode: string;
     status: "in_progress" | "success" | "failed" | "cancelled" | string;
@@ -175,6 +180,17 @@ export type WorkbenchRun = {
     duration_ms?: number | null;
     error_message?: string | null;
     metadata?: Record<string, unknown> | null;
+};
+
+export type WorkbenchProject = {
+    id: string;
+    created_at: string;
+    updated_at: string;
+    deleted_at?: string | null;
+    owner_user_id?: string | null;
+    organization_id?: string | null;
+    name: string;
+    shared_with_org: boolean;
 };
 
 export type WorkbenchMessage = {
@@ -446,4 +462,9 @@ export type FinopsCostsDashboardWindowResponse = {
     by_region_eur: FinopsRegionCostRow[];
     by_instance_type_eur: FinopsInstanceTypeCostRow[];
     by_instance_eur: FinopsInstanceCostRow[];
+};
+
+export type FinopsCostsDashboardSeriesPoint = {
+    bucket: string;
+    amount_eur: number;
 };
