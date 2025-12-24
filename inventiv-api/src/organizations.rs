@@ -10,6 +10,7 @@ use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 
 use crate::{auth, AppState};
+use crate::rbac;
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct OrganizationRow {
@@ -52,6 +53,47 @@ pub struct CreateOrganizationRequest {
 pub struct SetCurrentOrganizationRequest {
     /// When null, switches back to "personal" mode (no org selected).
     pub organization_id: Option<uuid::Uuid>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct OrganizationMemberRow {
+    pub user_id: uuid::Uuid,
+    pub username: String,
+    pub email: String,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub role: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OrganizationMemberResponse {
+    pub user_id: uuid::Uuid,
+    pub username: String,
+    pub email: String,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub role: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<OrganizationMemberRow> for OrganizationMemberResponse {
+    fn from(r: OrganizationMemberRow) -> Self {
+        Self {
+            user_id: r.user_id,
+            username: r.username,
+            email: r.email,
+            first_name: r.first_name,
+            last_name: r.last_name,
+            role: r.role,
+            created_at: r.created_at,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetMemberRoleRequest {
+    pub role: String,
 }
 
 fn slugify(input: &str) -> String {
@@ -109,6 +151,63 @@ async fn is_member(db: &Pool<Postgres>, org_id: uuid::Uuid, user_id: uuid::Uuid)
     .fetch_one(db)
     .await
     .unwrap_or(false)
+}
+
+async fn get_membership_role(
+    db: &Pool<Postgres>,
+    org_id: uuid::Uuid,
+    user_id: uuid::Uuid,
+) -> Option<rbac::OrgRole> {
+    let role: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT role
+        FROM organization_memberships
+        WHERE organization_id = $1 AND user_id = $2
+        "#,
+    )
+    .bind(org_id)
+    .bind(user_id)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    role.and_then(|r| rbac::OrgRole::parse(&r))
+}
+
+async fn count_owners(db: &Pool<Postgres>, org_id: uuid::Uuid) -> i64 {
+    sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM organization_memberships
+        WHERE organization_id = $1 AND role = 'owner'
+        "#,
+    )
+    .bind(org_id)
+    .fetch_one(db)
+    .await
+    .unwrap_or(0)
+}
+
+async fn insert_audit_action(
+    db: &Pool<Postgres>,
+    action_type: &str,
+    actor_user_id: uuid::Uuid,
+    request_payload: serde_json::Value,
+    response_payload: Option<serde_json::Value>,
+) {
+    // Best-effort: never fail the business operation because of audit logging.
+    let _ = sqlx::query(
+        r#"
+        INSERT INTO action_logs (id, action_type, component, status, user_id, request_payload, response_payload, created_at, completed_at, duration_ms)
+        VALUES (gen_random_uuid(), $1, 'api', 'success', $2, $3, $4, NOW(), NOW(), 0)
+        "#,
+    )
+    .bind(action_type)
+    .bind(actor_user_id.to_string())
+    .bind(request_payload)
+    .bind(response_payload)
+    .execute(db)
+    .await;
 }
 
 pub async fn list_organizations(
@@ -367,6 +466,304 @@ pub async fn set_current_organization(
     resp
 }
 
+pub async fn list_current_organization_members(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
+) -> impl IntoResponse {
+    let Some(org_id) = user.current_organization_id else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid_request","message":"no_current_organization"})),
+        )
+            .into_response();
+    };
+
+    let ok = is_member(&state.db, org_id, user.user_id).await;
+    if !ok {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"forbidden","message":"not_a_member"})),
+        )
+            .into_response();
+    }
+
+    let rows: Vec<OrganizationMemberRow> = sqlx::query_as(
+        r#"
+        SELECT u.id AS user_id,
+               u.username,
+               u.email,
+               u.first_name,
+               u.last_name,
+               om.role,
+               om.created_at
+        FROM organization_memberships om
+        JOIN users u ON u.id = om.user_id
+        WHERE om.organization_id = $1
+        ORDER BY
+          CASE om.role
+            WHEN 'owner' THEN 0
+            WHEN 'admin' THEN 1
+            WHEN 'manager' THEN 2
+            ELSE 3
+          END,
+          om.created_at ASC
+        "#,
+    )
+    .bind(org_id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    Json(rows.into_iter().map(OrganizationMemberResponse::from).collect::<Vec<_>>()).into_response()
+}
+
+pub async fn set_current_organization_member_role(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
+    axum::extract::Path(member_user_id): axum::extract::Path<uuid::Uuid>,
+    Json(req): Json<SetMemberRoleRequest>,
+) -> impl IntoResponse {
+    let Some(org_id) = user.current_organization_id else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid_request","message":"no_current_organization"})),
+        )
+            .into_response();
+    };
+
+    let Some(actor_role) = get_membership_role(&state.db, org_id, user.user_id).await else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"forbidden","message":"not_a_member"})),
+        )
+            .into_response();
+    };
+
+    let Some(target_role) = get_membership_role(&state.db, org_id, member_user_id).await else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"not_found","message":"member_not_found"})),
+        )
+            .into_response();
+    };
+
+    let Some(new_role) = rbac::OrgRole::parse(&req.role) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid_request","message":"invalid_role"})),
+        )
+            .into_response();
+    };
+
+    if !rbac::can_assign_role(actor_role, target_role, new_role) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"forbidden","message":"role_change_not_allowed"})),
+        )
+            .into_response();
+    }
+
+    // Invariant: last owner cannot be changed/downgraded.
+    if target_role == rbac::OrgRole::Owner && new_role != rbac::OrgRole::Owner {
+        let owners = count_owners(&state.db, org_id).await;
+        if owners <= 1 {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error":"conflict","message":"last_owner_cannot_be_changed"})),
+            )
+                .into_response();
+        }
+    }
+
+    let res = sqlx::query(
+        r#"
+        UPDATE organization_memberships
+        SET role = $3
+        WHERE organization_id = $1 AND user_id = $2
+        "#,
+    )
+    .bind(org_id)
+    .bind(member_user_id)
+    .bind(new_role.as_str())
+    .execute(&state.db)
+    .await;
+
+    if let Err(e) = res {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"db_error","message": e.to_string()})),
+        )
+            .into_response();
+    }
+
+    insert_audit_action(
+        &state.db,
+        "ORG_MEMBER_ROLE_UPDATED",
+        user.user_id,
+        json!({
+            "organization_id": org_id,
+            "member_user_id": member_user_id,
+            "from_role": target_role.as_str(),
+            "to_role": new_role.as_str(),
+        }),
+        None,
+    )
+    .await;
+
+    Json(json!({"status":"ok","member_user_id":member_user_id,"role":new_role.as_str()})).into_response()
+}
+
+pub async fn remove_current_organization_member(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
+    axum::extract::Path(member_user_id): axum::extract::Path<uuid::Uuid>,
+) -> impl IntoResponse {
+    let Some(org_id) = user.current_organization_id else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid_request","message":"no_current_organization"})),
+        )
+            .into_response();
+    };
+
+    let Some(actor_role) = get_membership_role(&state.db, org_id, user.user_id).await else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"forbidden","message":"not_a_member"})),
+        )
+            .into_response();
+    };
+    let Some(target_role) = get_membership_role(&state.db, org_id, member_user_id).await else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"not_found","message":"member_not_found"})),
+        )
+            .into_response();
+    };
+
+    // Allow self-leave for any role (subject to last-owner invariant).
+    let is_self = member_user_id == user.user_id;
+
+    // Permission to remove:
+    // - Owner: anyone (except last-owner invariant)
+    // - Admin: admin/user
+    // - Manager: manager/user
+    // - User: only self (leave)
+    let allowed = if is_self {
+        true
+    } else {
+        match (actor_role, target_role) {
+            (rbac::OrgRole::Owner, _) => true,
+            (rbac::OrgRole::Admin, rbac::OrgRole::Admin | rbac::OrgRole::User) => true,
+            (rbac::OrgRole::Manager, rbac::OrgRole::Manager | rbac::OrgRole::User) => true,
+            _ => false,
+        }
+    };
+
+    if !allowed {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"forbidden","message":"member_remove_not_allowed"})),
+        )
+            .into_response();
+    }
+
+    // Invariant: last owner cannot be removed (including self leave).
+    if target_role == rbac::OrgRole::Owner {
+        let owners = count_owners(&state.db, org_id).await;
+        if owners <= 1 {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error":"conflict","message":"last_owner_cannot_be_removed"})),
+            )
+                .into_response();
+        }
+    }
+
+    let mut tx = match state.db.begin().await {
+        Ok(t) => t,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"db_error","message": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let res = sqlx::query(
+        r#"
+        DELETE FROM organization_memberships
+        WHERE organization_id = $1 AND user_id = $2
+        "#,
+    )
+    .bind(org_id)
+    .bind(member_user_id)
+    .execute(&mut *tx)
+    .await;
+
+    if let Err(e) = res {
+        let _ = tx.rollback().await;
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"db_error","message": e.to_string()})),
+        )
+            .into_response();
+    }
+
+    // If user removed is currently in this org workspace, clear their selection to avoid dangling scope.
+    let _ = sqlx::query(
+        r#"
+        UPDATE users
+        SET current_organization_id = NULL,
+            updated_at = NOW()
+        WHERE id = $1 AND current_organization_id = $2
+        "#,
+    )
+    .bind(member_user_id)
+    .bind(org_id)
+    .execute(&mut *tx)
+    .await;
+
+    if let Err(e) = tx.commit().await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"db_error","message": e.to_string()})),
+        )
+            .into_response();
+    }
+
+    insert_audit_action(
+        &state.db,
+        "ORG_MEMBER_REMOVED",
+        user.user_id,
+        json!({
+            "organization_id": org_id,
+            "member_user_id": member_user_id,
+            "member_role": target_role.as_str(),
+            "is_self": is_self,
+        }),
+        None,
+    )
+    .await;
+
+    Json(json!({"status":"ok"})).into_response()
+}
+
+pub async fn leave_current_organization(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
+) -> impl IntoResponse {
+    // Just call the remove endpoint logic for self.
+    let member_user_id = user.user_id;
+    remove_current_organization_member(
+        State(state),
+        axum::extract::Extension(user),
+        axum::extract::Path(member_user_id),
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,6 +913,144 @@ mod tests {
             .collect();
         assert!(slugs.contains(&"org-a".to_string()));
         assert!(slugs.contains(&"org-b".to_string()));
+    }
+
+    #[tokio::test]
+    async fn last_owner_cannot_be_downgraded_or_removed() {
+        let Some(pool) = setup_pool().await else {
+            return;
+        };
+
+        let owner_id = uuid::Uuid::new_v4();
+        let other_id = uuid::Uuid::new_v4();
+        let org_id = uuid::Uuid::new_v4();
+
+        // Create users
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO users (id, username, email, password_hash, role)
+            VALUES ($1, 'owner1', 'owner1@inventiv.local', 'x', 'user')
+            "#,
+        )
+        .bind(owner_id)
+        .execute(&pool)
+        .await;
+
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO users (id, username, email, password_hash, role)
+            VALUES ($1, 'user2', 'user2@inventiv.local', 'x', 'user')
+            "#,
+        )
+        .bind(other_id)
+        .execute(&pool)
+        .await;
+
+        // Create org
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO organizations (id, name, slug, created_by_user_id)
+            VALUES ($1, 'Org T', 'org-t', $2)
+            ON CONFLICT (slug) DO UPDATE SET updated_at = NOW()
+            "#,
+        )
+        .bind(org_id)
+        .bind(owner_id)
+        .execute(&pool)
+        .await;
+
+        // Memberships: owner + user
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO organization_memberships (organization_id, user_id, role)
+            VALUES ($1, $2, 'owner')
+            ON CONFLICT (organization_id, user_id) DO UPDATE SET role = 'owner'
+            "#,
+        )
+        .bind(org_id)
+        .bind(owner_id)
+        .execute(&pool)
+        .await;
+
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO organization_memberships (organization_id, user_id, role)
+            VALUES ($1, $2, 'user')
+            ON CONFLICT (organization_id, user_id) DO UPDATE SET role = 'user'
+            "#,
+        )
+        .bind(org_id)
+        .bind(other_id)
+        .execute(&pool)
+        .await;
+
+        let state = Arc::new(crate::AppState {
+            redis_client: redis::Client::open("redis://127.0.0.1/").unwrap(),
+            db: pool.clone(),
+        });
+        let auth_user = auth::AuthUser {
+            user_id: owner_id,
+            email: "owner1@inventiv.local".to_string(),
+            role: "user".to_string(),
+            current_organization_id: Some(org_id),
+        };
+
+        // Try to downgrade last owner -> conflict
+        let resp = set_current_organization_member_role(
+            AxumState(state.clone()),
+            Extension(auth_user.clone()),
+            axum::extract::Path(owner_id),
+            Json(SetMemberRoleRequest {
+                role: "admin".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        // Try to remove last owner -> conflict
+        let resp = remove_current_organization_member(
+            AxumState(state.clone()),
+            Extension(auth_user.clone()),
+            axum::extract::Path(owner_id),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        // Add second owner then downgrade/remove should succeed
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO organization_memberships (organization_id, user_id, role)
+            VALUES ($1, $2, 'owner')
+            ON CONFLICT (organization_id, user_id) DO UPDATE SET role = 'owner'
+            "#,
+        )
+        .bind(org_id)
+        .bind(other_id)
+        .execute(&pool)
+        .await;
+
+        let resp = set_current_organization_member_role(
+            AxumState(state.clone()),
+            Extension(auth_user.clone()),
+            axum::extract::Path(owner_id),
+            Json(SetMemberRoleRequest {
+                role: "admin".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let resp = remove_current_organization_member(
+            AxumState(state),
+            Extension(auth_user),
+            axum::extract::Path(owner_id),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }
 

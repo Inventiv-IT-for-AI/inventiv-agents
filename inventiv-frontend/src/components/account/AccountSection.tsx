@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 
 import { OrganizationSection, type WorkspaceMe } from "./OrganizationSection";
 import { useSnackbar } from "ia-widgets";
+import { OrganizationMembersDialog } from "./OrganizationMembersDialog";
 
 export type Me = WorkspaceMe & {
   user_id: string;
@@ -64,6 +65,14 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
   const [createOrgForm, setCreateOrgForm] = useState({ name: "", slug: "" });
   const [createOrgSaving, setCreateOrgSaving] = useState(false);
   const [createOrgError, setCreateOrgError] = useState<string | null>(null);
+  const [orgMembersOpen, setOrgMembersOpen] = useState(false);
+
+  const currentOrgRole = useMemo(() => {
+    const orgId = me?.current_organization_id;
+    if (!orgId) return null;
+    const o = orgs.find((x) => x.id === orgId);
+    return o?.role ?? null;
+  }, [me?.current_organization_id, orgs]);
 
   const displayName = useMemo(() => {
     if (!me) return "User";
@@ -478,6 +487,13 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
                   />
                 </div>
               </div>
+              {me?.current_organization_id ? (
+                <div className="flex justify-end">
+                  <Button variant="outline" onClick={() => setOrgMembersOpen(true)}>
+                    Membres & rôles
+                  </Button>
+                </div>
+              ) : null}
               {me?.current_organization_name ? (
                 <div className="text-xs text-muted-foreground">
                   Actuelle: {me.current_organization_name}
@@ -570,6 +586,20 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <OrganizationMembersDialog
+        open={orgMembersOpen}
+        onOpenChange={(o) => {
+          setOrgMembersOpen(o);
+          if (!o) {
+            // after role changes / leave, refresh local state
+            void fetchMe().catch(() => null);
+            void fetchOrgs().catch(() => null);
+          }
+        }}
+        actorUserId={me?.user_id ?? null}
+        actorOrgRole={currentOrgRole}
+      />
     </>
   );
 }

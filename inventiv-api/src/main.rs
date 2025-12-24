@@ -175,6 +175,20 @@ async fn main() {
             "/organizations/current",
             axum::routing::put(organizations::set_current_organization),
         )
+        // Organization management (current org)
+        .route(
+            "/organizations/current/members",
+            get(organizations::list_current_organization_members),
+        )
+        .route(
+            "/organizations/current/members/:user_id",
+            axum::routing::put(organizations::set_current_organization_member_role)
+                .delete(organizations::remove_current_organization_member),
+        )
+        .route(
+            "/organizations/current/leave",
+            axum::routing::post(organizations::leave_current_organization),
+        )
         // API Keys (dashboard-managed)
         .route(
             "/api_keys",

@@ -32,6 +32,14 @@ export type Instance = {
     storage_count?: number;
     storage_sizes_gb?: number[];
     storages?: InstanceStorageInfo[];
+    // --- Worker observability (from orchestrator heartbeats) ---
+    worker_status?: string | null;
+    worker_last_heartbeat?: string | null;
+    worker_queue_depth?: number | null;
+    worker_gpu_utilization?: number | null;
+    worker_metadata?: Record<string, unknown> | null;
+    worker_health_port?: number | null;
+    worker_vllm_port?: number | null;
 };
 
 export type InstanceStorageInfo = {
@@ -157,6 +165,16 @@ export type Organization = {
     role?: string | null;
 };
 
+export type OrganizationMember = {
+  user_id: string;
+  username: string;
+  email: string;
+  first_name?: string | null;
+  last_name?: string | null;
+  role: "owner" | "admin" | "manager" | "user" | string;
+  created_at: string;
+};
+
 // -----------------------------
 // Workbench (persisted runs)
 // -----------------------------
@@ -248,6 +266,29 @@ export type GpuActivityResponse = {
     window_s: number;
     generated_at: string;
     instances: GpuActivityInstanceSeries[];
+};
+
+export type SystemActivitySample = {
+    ts: string;
+    cpu_pct: number | null;
+    load1: number | null;
+    mem_pct: number | null;
+    disk_pct: number | null;
+    net_rx_mbps: number | null;
+    net_tx_mbps: number | null;
+};
+
+export type SystemActivityInstanceSeries = {
+    instance_id: string;
+    instance_name: string | null;
+    provider_name: string | null;
+    samples: SystemActivitySample[];
+};
+
+export type SystemActivityResponse = {
+    window_s: number;
+    generated_at: string;
+    instances: SystemActivityInstanceSeries[];
 };
 
 export type ActionLog = {
