@@ -108,6 +108,7 @@ BEGIN
   INSERT INTO runtime_models(model_id, first_seen_at, last_seen_at)
   VALUES (m, ts, ts)
   ON CONFLICT (model_id) DO UPDATE
+    SET last_seen_at = ts;
   RETURN NEW;
 END;
 $$;
