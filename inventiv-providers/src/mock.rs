@@ -138,22 +138,6 @@ impl MockProvider {
         cmd.env("WORKER_AUTH_TOKEN", std::env::var("WORKER_AUTH_TOKEN").unwrap_or_else(|_| "dev-worker-token".to_string()));
         
         // Mock vLLM doesn't need model configuration (it just echoes requests)
-            if let Ok(model) = std::env::var("MOCK_VLLM_MODEL") {
-                cmd.env("MOCK_VLLM_MODEL", &model);
-            }
-            if let Ok(quantization) = std::env::var("MOCK_VLLM_QUANTIZATION") {
-                cmd.env("MOCK_VLLM_QUANTIZATION", &quantization);
-            }
-            if let Ok(max_len) = std::env::var("MOCK_VLLM_MAX_LEN") {
-                cmd.env("MOCK_VLLM_MAX_LEN", &max_len);
-            }
-            if let Ok(hf_token) = std::env::var("WORKER_HF_TOKEN") {
-                cmd.env("WORKER_HF_TOKEN", &hf_token);
-            }
-            if let Ok(trust_remote) = std::env::var("MOCK_VLLM_TRUST_REMOTE_CODE") {
-                cmd.env("MOCK_VLLM_TRUST_REMOTE_CODE", &trust_remote);
-            }
-        }
 
         // Execute with timeout (30 seconds max for docker compose up)
         // Use spawn + select to allow killing the process on timeout
