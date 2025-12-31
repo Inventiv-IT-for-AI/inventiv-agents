@@ -5,8 +5,6 @@
 --
 -- IMPORTANT: keep search_path including public so sqlx can access its _sqlx_migrations table.
 SELECT pg_catalog.set_config('search_path', 'public', false);
-
-SELECT pg_catalog.set_config('search_path', '', false);
 CREATE EXTENSION IF NOT EXISTS timescaledb WITH SCHEMA public;
 
 --
@@ -1192,30 +1190,6 @@ CREATE TRIGGER trg_provider_settings_validate BEFORE INSERT OR UPDATE ON public.
 CREATE TRIGGER trg_settings_definitions_updated_at BEFORE UPDATE ON public.settings_definitions FOR EACH ROW EXECUTE FUNCTION public.set_updated_at_settings_definitions();
 
 --
--- Name: gpu_samples ts_cagg_invalidation_trigger; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER ts_cagg_invalidation_trigger AFTER INSERT OR DELETE OR UPDATE ON public.gpu_samples FOR EACH ROW EXECUTE FUNCTION _timescaledb_functions.continuous_agg_invalidation_trigger('1');
-
---
--- Name: system_samples ts_cagg_invalidation_trigger; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER ts_cagg_invalidation_trigger AFTER INSERT OR DELETE OR UPDATE ON public.system_samples FOR EACH ROW EXECUTE FUNCTION _timescaledb_functions.continuous_agg_invalidation_trigger('5');
-
---
--- Name: gpu_samples ts_insert_blocker; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER ts_insert_blocker BEFORE INSERT ON public.gpu_samples FOR EACH ROW EXECUTE FUNCTION _timescaledb_functions.insert_blocker();
-
---
--- Name: system_samples ts_insert_blocker; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER ts_insert_blocker BEFORE INSERT ON public.system_samples FOR EACH ROW EXECUTE FUNCTION _timescaledb_functions.insert_blocker();
-
---
 
 -- TimescaleDB: Convert tables to hypertables
 DO $$
@@ -1231,6 +1205,9 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
   -- ignore if already exists
 END $$;
+
+-- TimescaleDB: Triggers are automatically created by TimescaleDB when converting to hypertables
+-- No need to create them manually
 
 -- TimescaleDB: Create continuous aggregates for GPU samples
 CREATE MATERIALIZED VIEW IF NOT EXISTS gpu_samples_1m
