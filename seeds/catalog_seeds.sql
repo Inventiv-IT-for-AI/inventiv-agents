@@ -4,27 +4,52 @@
 INSERT INTO providers (id, name, code, description, is_active) VALUES 
     (gen_random_uuid(), 'Mock', 'mock', 'Mock provider (dev) - no real allocations', true)
 ON CONFLICT (code) DO NOTHING;
+
+-- Deactivate old Mock regions/zones/types (if they exist)
+UPDATE regions SET is_active = false 
+WHERE provider_id = (SELECT id FROM providers WHERE code='mock' LIMIT 1) 
+  AND code != 'local';
+UPDATE zones SET is_active = false 
+WHERE region_id IN (SELECT id FROM regions WHERE provider_id = (SELECT id FROM providers WHERE code='mock' LIMIT 1))
+  AND code != 'local';
+UPDATE instance_types SET is_active = false 
+WHERE provider_id = (SELECT id FROM providers WHERE code='mock' LIMIT 1)
+  AND code != 'mock-local-instance';
+
 -- Mock Provider Regions
 INSERT INTO regions (id, provider_id, name, code, is_active) VALUES
-    (gen_random_uuid(), (SELECT id FROM providers WHERE code='mock' LIMIT 1), 'Mock EU', 'mock-eu', true)
-ON CONFLICT (provider_id, code) DO NOTHING;
+    (gen_random_uuid(), (SELECT id FROM providers WHERE code='mock' LIMIT 1), 'Local', 'local', true)
+ON CONFLICT (provider_id, code) DO UPDATE SET is_active = true, name = 'Local';
 
 -- Mock Provider Zones
 INSERT INTO zones (id, region_id, name, code, is_active) VALUES
-    (gen_random_uuid(), (SELECT id FROM regions WHERE code='mock-eu' LIMIT 1), 'Mock EU 1', 'mock-eu-1', true)
-ON CONFLICT (region_id, code) DO NOTHING;
+    (gen_random_uuid(), (SELECT id FROM regions WHERE code='local' AND provider_id = (SELECT id FROM providers WHERE code='mock' LIMIT 1) LIMIT 1), 'Local', 'local', true)
+ON CONFLICT (region_id, code) DO UPDATE SET is_active = true, name = 'Local';
 
 -- Mock Provider Instance Types
+-- mock-local-instance: configured for local CPU-only testing (vLLM CPU-only mode)
+-- GPU: 1 (simulated, for metrics compatibility)
+-- VRAM: 2GB (simulated, sufficient for Qwen2.5-0.5B testing)
+-- CPU: 4 cores (minimum recommended)
+-- RAM: 8GB (sufficient for vLLM CPU-only with Qwen2.5-0.5B)
 INSERT INTO instance_types (id, provider_id, name, code, gpu_count, vram_per_gpu_gb, cpu_count, ram_gb, bandwidth_bps, is_active, cost_per_hour) VALUES
-    (gen_random_uuid(), (SELECT id FROM providers WHERE code='mock' LIMIT 1), 'MOCK-GPU-S', 'MOCK-GPU-S', 1, 24, 8, 32, 1000000000, true, 0.2500),
-    (gen_random_uuid(), (SELECT id FROM providers WHERE code='mock' LIMIT 1), 'MOCK-4GPU-M', 'MOCK-4GPU-M', 4, 48, 16, 64, 2000000000, true, 10.0000)
-ON CONFLICT (provider_id, code) DO NOTHING;
+    (gen_random_uuid(), (SELECT id FROM providers WHERE code='mock' LIMIT 1), 'Local Instance', 'mock-local-instance', 1, 2, 4, 8, 1000000000, true, 0.0000)
+ON CONFLICT (provider_id, code) DO UPDATE SET 
+    name = 'Local Instance',
+    gpu_count = 1,
+    vram_per_gpu_gb = 2,
+    cpu_count = 4,
+    ram_gb = 8,
+    bandwidth_bps = 1000000000,
+    is_active = true,
+    cost_per_hour = 0.0000;
 
--- Availability: link ALL Mock types to zone mock-eu-1
+-- Availability: link mock-local-instance to zone local
 INSERT INTO instance_type_zones (instance_type_id, zone_id, is_available)
     SELECT it.id, z.id, true FROM instance_types it
-    JOIN zones z ON z.code = 'mock-eu-1'
+    JOIN zones z ON z.code = 'local'
     WHERE it.provider_id = (SELECT id FROM providers WHERE code='mock' LIMIT 1)
+      AND it.code = 'mock-local-instance'
 ON CONFLICT (instance_type_id, zone_id) DO NOTHING;
 
 
@@ -159,6 +184,7 @@ INSERT INTO models (
   (gen_random_uuid(), 'Mixtral 8x22B Instruct',    'mistralai/Mixtral-8x22B-Instruct-v0.1',96,  65536, true,  800, '{}'::jsonb, NOW(), NOW()),
 
   -- Qwen 2.5
+  (gen_random_uuid(), 'Qwen 2.5 0.5B Instruct',    'Qwen/Qwen2.5-0.5B-Instruct',             2,   2048, true,   50, '{}'::jsonb, NOW(), NOW()),
   (gen_random_uuid(), 'Qwen 2.5 7B Instruct',      'Qwen/Qwen2.5-7B-Instruct',              16,  32768, true,  200, '{}'::jsonb, NOW(), NOW()),
   (gen_random_uuid(), 'Qwen 2.5 14B Instruct',     'Qwen/Qwen2.5-14B-Instruct',             28,  32768, true,  300, '{}'::jsonb, NOW(), NOW()),
   (gen_random_uuid(), 'Qwen 2.5 32B Instruct',     'Qwen/Qwen2.5-32B-Instruct',             64,  32768, true,  500, '{}'::jsonb, NOW(), NOW()),
