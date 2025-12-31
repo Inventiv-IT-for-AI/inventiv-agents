@@ -20,15 +20,11 @@ PROJECT_NAME="mockrt-${ID12}"
 MOCK_VLLM_MODEL_ID="${MOCK_VLLM_MODEL_ID:-demo-model-${ID12}}"
 export MOCK_VLLM_MODEL_ID
 
-# Determine which compose file to use based on MOCK_USE_REAL_VLLM
-USE_REAL_VLLM="${MOCK_USE_REAL_VLLM:-0}"
-if [ "${USE_REAL_VLLM}" = "1" ]; then
-  COMPOSE_FILE="docker-compose.mock-runtime-real.yml"
-  echo "🚀 mock runtime up (REAL vLLM): INSTANCE_ID=${INSTANCE_ID} project=${PROJECT_NAME} model=${MOCK_VLLM_MODEL_ID}"
-else
-  COMPOSE_FILE="docker-compose.mock-runtime.yml"
-  echo "🚀 mock runtime up (SYNTHETIC): INSTANCE_ID=${INSTANCE_ID} project=${PROJECT_NAME} model=${MOCK_VLLM_MODEL_ID}"
-fi
+# Mock Provider uses synthetic mock vLLM (echo responses) for local testing
+# This validates the complete chain: provisioning, monitoring, decommissioning
+# Real vLLM will be used with real providers (Scaleway, etc.) in staging/prod
+COMPOSE_FILE="docker-compose.mock-runtime.yml"
+echo "🚀 mock runtime up (SYNTHETIC): INSTANCE_ID=${INSTANCE_ID} project=${PROJECT_NAME} model=${MOCK_VLLM_MODEL_ID}"
 
 CONTROLPLANE_NETWORK_NAME="${CONTROLPLANE_NETWORK_NAME}" \
 INSTANCE_ID="${INSTANCE_ID}" \

@@ -110,17 +110,10 @@ impl MockProvider {
         let model_id = format!("demo-model-{}", id12);
         let project_root = self.get_project_root();
         
-        // Choose between mock-vllm (simulation) or real vLLM based on environment variable
-        let use_real_vllm = std::env::var("MOCK_USE_REAL_VLLM")
-            .unwrap_or_else(|_| "0".to_string())
-            .parse::<i32>()
-            .unwrap_or(0) > 0;
-        
-        let compose_file = if use_real_vllm {
-            format!("{}/docker-compose.mock-runtime-real.yml", project_root)
-        } else {
-            format!("{}/docker-compose.mock-runtime.yml", project_root)
-        };
+        // Mock Provider uses synthetic mock vLLM (echo responses) for local testing
+        // This validates the complete chain: provisioning, monitoring, decommissioning
+        // Real vLLM will be used with real providers (Scaleway, etc.) in staging/prod
+        let compose_file = format!("{}/docker-compose.mock-runtime.yml", project_root);
 
         // Try 'docker compose' (plugin) first, fallback to 'docker-compose' (standalone)
         // Skip --build to avoid blocking (containers are built on first run or via make)
@@ -144,8 +137,7 @@ impl MockProvider {
         cmd.env("WORKER_SIMULATE_GPU_VRAM_MB", std::env::var("WORKER_SIMULATE_GPU_VRAM_MB").unwrap_or_else(|_| "24576".to_string()));
         cmd.env("WORKER_AUTH_TOKEN", std::env::var("WORKER_AUTH_TOKEN").unwrap_or_else(|_| "dev-worker-token".to_string()));
         
-        // Pass through vLLM configuration if using real vLLM
-        if use_real_vllm {
+        // Mock vLLM doesn't need model configuration (it just echoes requests)
             if let Ok(model) = std::env::var("MOCK_VLLM_MODEL") {
                 cmd.env("MOCK_VLLM_MODEL", &model);
             }
@@ -290,11 +282,9 @@ impl MockProvider {
         let network_name = self.get_controlplane_network_name().await?;
         let project_root = self.get_project_root();
         
-        // Try both compose files (mock and real) to ensure cleanup
-        // This handles cases where the runtime was started with one but we're stopping with the other
+        // Mock Provider only uses synthetic mock vLLM
         let compose_files = vec![
             format!("{}/docker-compose.mock-runtime.yml", project_root),
-            format!("{}/docker-compose.mock-runtime-real.yml", project_root),
         ];
 
         // Try stopping with each compose file (best-effort, don't fail if one doesn't exist)
