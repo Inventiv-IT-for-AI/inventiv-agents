@@ -395,12 +395,6 @@ CREATE TABLE public.global_settings (
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-CREATE VIEW public.gpu_samples_1d AS
-
-CREATE VIEW public.gpu_samples_1h AS
-
-CREATE VIEW public.gpu_samples_1m AS
-
 CREATE TABLE public.instance_state_history (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     instance_id uuid NOT NULL,
@@ -625,12 +619,6 @@ CREATE TABLE public.ssh_keys (
     provider_key_id character varying(255),
     created_at timestamp with time zone DEFAULT now()
 );
-
-CREATE VIEW public.system_samples_1d AS
-
-CREATE VIEW public.system_samples_1h AS
-
-CREATE VIEW public.system_samples_1m AS
 
 CREATE TABLE public.users (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
