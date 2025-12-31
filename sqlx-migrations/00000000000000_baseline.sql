@@ -1218,8 +1218,19 @@ CREATE TRIGGER ts_insert_blocker BEFORE INSERT ON public.system_samples FOR EACH
 --
 
 -- TimescaleDB: Convert tables to hypertables
-SELECT create_hypertable('gpu_samples', 'time', if_not_exists => true);
-SELECT create_hypertable('system_samples', 'time', if_not_exists => true);
+DO $$
+BEGIN
+  PERFORM create_hypertable('gpu_samples', 'time', if_not_exists => TRUE);
+EXCEPTION WHEN OTHERS THEN
+  -- ignore if already exists
+END $$;
+
+DO $$
+BEGIN
+  PERFORM create_hypertable('system_samples', 'time', if_not_exists => TRUE);
+EXCEPTION WHEN OTHERS THEN
+  -- ignore if already exists
+END $$;
 
 -- TimescaleDB: Create continuous aggregates for GPU samples
 CREATE MATERIALIZED VIEW IF NOT EXISTS gpu_samples_1m
@@ -1323,38 +1334,68 @@ GROUP BY bucket, instance_id
 WITH NO DATA;
 
 -- TimescaleDB: Add refresh policies for continuous aggregates
-SELECT add_continuous_aggregate_policy('gpu_samples_1m',
+DO $$
+BEGIN
+  PERFORM add_continuous_aggregate_policy('gpu_samples_1m',
     start_offset => INTERVAL '3 hours',
     end_offset => INTERVAL '1 minute',
     schedule_interval => INTERVAL '1 minute',
-    if_not_exists => true);
+    if_not_exists => TRUE);
+EXCEPTION WHEN OTHERS THEN
+  -- ignore if already exists
+END $$;
 
-SELECT add_continuous_aggregate_policy('gpu_samples_1h',
+DO $$
+BEGIN
+  PERFORM add_continuous_aggregate_policy('gpu_samples_1h',
     start_offset => INTERVAL '3 days',
     end_offset => INTERVAL '1 hour',
     schedule_interval => INTERVAL '1 hour',
-    if_not_exists => true);
+    if_not_exists => TRUE);
+EXCEPTION WHEN OTHERS THEN
+  -- ignore if already exists
+END $$;
 
-SELECT add_continuous_aggregate_policy('gpu_samples_1d',
+DO $$
+BEGIN
+  PERFORM add_continuous_aggregate_policy('gpu_samples_1d',
     start_offset => INTERVAL '30 days',
     end_offset => INTERVAL '1 day',
     schedule_interval => INTERVAL '1 day',
-    if_not_exists => true);
+    if_not_exists => TRUE);
+EXCEPTION WHEN OTHERS THEN
+  -- ignore if already exists
+END $$;
 
-SELECT add_continuous_aggregate_policy('system_samples_1m',
+DO $$
+BEGIN
+  PERFORM add_continuous_aggregate_policy('system_samples_1m',
     start_offset => INTERVAL '3 hours',
     end_offset => INTERVAL '1 minute',
     schedule_interval => INTERVAL '1 minute',
-    if_not_exists => true);
+    if_not_exists => TRUE);
+EXCEPTION WHEN OTHERS THEN
+  -- ignore if already exists
+END $$;
 
-SELECT add_continuous_aggregate_policy('system_samples_1h',
+DO $$
+BEGIN
+  PERFORM add_continuous_aggregate_policy('system_samples_1h',
     start_offset => INTERVAL '3 days',
     end_offset => INTERVAL '1 hour',
     schedule_interval => INTERVAL '1 hour',
-    if_not_exists => true);
+    if_not_exists => TRUE);
+EXCEPTION WHEN OTHERS THEN
+  -- ignore if already exists
+END $$;
 
-SELECT add_continuous_aggregate_policy('system_samples_1d',
+DO $$
+BEGIN
+  PERFORM add_continuous_aggregate_policy('system_samples_1d',
     start_offset => INTERVAL '30 days',
     end_offset => INTERVAL '1 day',
     schedule_interval => INTERVAL '1 day',
-    if_not_exists => true);
+    if_not_exists => TRUE);
+EXCEPTION WHEN OTHERS THEN
+  -- ignore if already exists
+END $$;
