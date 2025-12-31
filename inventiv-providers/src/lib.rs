@@ -94,6 +94,7 @@ pub trait CloudProvider: Send + Sync {
 }
 
 pub mod inventory {
+    #[derive(Clone, Debug)]
     pub struct CatalogItem {
         pub name: String,
         pub code: String,
@@ -105,6 +106,7 @@ pub mod inventory {
         pub bandwidth_bps: i64,
     }
 
+    #[derive(Clone, Debug)]
     pub struct DiscoveredInstance {
         pub provider_id: String,
         pub name: String,
@@ -123,3 +125,11 @@ pub mod inventory {
         pub boot: bool,
     }
 }
+
+#[cfg(feature = "mock")]
+pub mod mock;
+
+#[cfg(feature = "scaleway")]
+pub mod scaleway;
+
+

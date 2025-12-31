@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::finops_events;
 use crate::logger;
-use crate::provider::CloudProvider;
+use inventiv_providers::CloudProvider;
 use crate::provider_manager::ProviderManager;
 use crate::state_machine;
 

@@ -983,7 +983,6 @@ pub async fn check_and_transition_instance(
     failures: i32,
     db: Pool<Postgres>,
 ) {
-    // Mock provider: no real SSH. We emulate a successful startup so the rest of the platform can be tested.
     #[derive(sqlx::FromRow)]
     struct ProviderInfo {
         provider_id: uuid::Uuid,
@@ -1008,30 +1007,6 @@ pub async fn check_and_transition_instance(
             return;
         }
     };
-
-    if provider.as_ref().map(|p| p.provider_code.as_str()) == Some("mock") {
-        println!(
-            "✅ Instance {} is on mock provider: auto-ready",
-            instance_id
-        );
-        let hc_start = std::time::Instant::now();
-        let log_id = logger::log_event_with_metadata(
-            &db,
-            "HEALTH_CHECK",
-            "in_progress",
-            instance_id,
-            None,
-            Some(serde_json::json!({"ip": ip, "result": "success", "failures": failures, "mode": "mock"})),
-        )
-        .await
-        .ok();
-        let _ = state_machine::booting_to_ready(&db, instance_id, "Mock provider auto-ready").await;
-        if let Some(lid) = log_id {
-            let dur = hc_start.elapsed().as_millis() as i32;
-            let _ = logger::log_event_complete(&db, lid, "success", dur, None).await;
-        }
-        return;
-    }
 
     let Some(provider) = provider else {
         println!(
@@ -1121,8 +1096,24 @@ pub async fn check_and_transition_instance(
     }
 
     // Prefer worker readiness endpoint when available; fallback to SSH to keep backward-compat.
-    // Ports are provider-scoped (DB) -> env -> defaults.
-    let worker_port: u16 = provider_setting_i64(&db, provider.provider_id, "WORKER_HEALTH_PORT")
+    // Ports resolution order:
+    // 1) instance-specific ports (persisted from worker register/heartbeat) -> supports multi-instances behind same IP
+    // 2) provider-scoped settings (DB) -> env -> defaults
+    #[derive(sqlx::FromRow)]
+    struct InstancePorts {
+        worker_health_port: Option<i32>,
+        worker_vllm_port: Option<i32>,
+    }
+    let inst_ports: Option<InstancePorts> = sqlx::query_as(
+        "SELECT worker_health_port, worker_vllm_port FROM instances WHERE id = $1",
+    )
+    .bind(instance_id)
+    .fetch_optional(&db)
+    .await
+    .ok()
+    .flatten();
+
+    let fallback_worker_port: u16 = provider_setting_i64(&db, provider.provider_id, "WORKER_HEALTH_PORT")
         .await
         .and_then(|v| u16::try_from(v).ok())
         .or_else(|| {
@@ -1131,7 +1122,7 @@ pub async fn check_and_transition_instance(
                 .and_then(|s| s.parse::<u16>().ok())
         })
         .unwrap_or(8080);
-    let vllm_port: u16 = provider_setting_i64(&db, provider.provider_id, "WORKER_VLLM_PORT")
+    let fallback_vllm_port: u16 = provider_setting_i64(&db, provider.provider_id, "WORKER_VLLM_PORT")
         .await
         .and_then(|v| u16::try_from(v).ok())
         .or_else(|| {
@@ -1140,6 +1131,18 @@ pub async fn check_and_transition_instance(
                 .and_then(|s| s.parse::<u16>().ok())
         })
         .unwrap_or(8000);
+
+    let worker_port: u16 = inst_ports
+        .as_ref()
+        .and_then(|p| p.worker_health_port)
+        .and_then(|v| u16::try_from(v).ok())
+        .unwrap_or(fallback_worker_port);
+
+    let vllm_port: u16 = inst_ports
+        .as_ref()
+        .and_then(|p| p.worker_vllm_port)
+        .and_then(|v| u16::try_from(v).ok())
+        .unwrap_or(fallback_vllm_port);
 
     let is_ready_http = check_instance_readyz_http(&ip, worker_port).await;
     let is_ssh = check_instance_ssh(&ip).await;

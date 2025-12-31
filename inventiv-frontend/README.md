@@ -30,3 +30,11 @@ npm -w inventiv-frontend run dev
 
 - Charte & conventions: `../docs/ui_design_system.md`
 - Widgets réutilisables monorepo: `../inventiv-ui/ia-widgets` (import: `ia-widgets`)
+
+## Observability (local / mock)
+
+- Lancer la chaîne mock (API → orchestrator → worker-agent → DB) depuis la racine: `make test-worker-observability` (voir le `README.md` racine).
+- Dans l’UI:
+  - Aller sur **Observability**
+  - Tu verras les métriques **pour l’ensemble des instances actives**, avec **une couleur par instance**
+  - GPU: les séries peuvent être vides en mock local sans NVIDIA runtime

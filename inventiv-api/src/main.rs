@@ -574,8 +574,11 @@ async fn list_gpu_activity(
         .to_ascii_lowercase();
     let instance_filter = params.instance_id;
 
+    // Note: keep this handler resilient; it is frequently queried by the UI.
+
     let rows: Vec<GpuSampleRow> = match gran.as_str() {
-        "minute" => sqlx::query_as::<Postgres, GpuSampleRow>(
+        "minute" => {
+            let res = sqlx::query_as::<Postgres, GpuSampleRow>(
             r#"
                 SELECT
                   gs.bucket as time,
@@ -589,21 +592,30 @@ async fn list_gpu_activity(
                   gs.power_limit_w,
                   i.provider_instance_id::text as instance_name,
                   p.name as provider_name,
-                  i.gpu_count as gpu_count
+                  it.gpu_count as gpu_count
                 FROM gpu_samples_1m gs
                 JOIN instances i ON i.id = gs.instance_id
                 LEFT JOIN providers p ON p.id = i.provider_id
-                WHERE gs.bucket > NOW() - make_interval(secs => $1)
+                LEFT JOIN instance_types it ON it.id = i.instance_type_id
+                WHERE gs.bucket > NOW() - ($1::bigint * INTERVAL '1 second')
                   AND ($2::uuid IS NULL OR gs.instance_id = $2)
                 ORDER BY gs.instance_id, gs.gpu_index, gs.bucket ASC
                 "#,
-        )
-        .bind(window_s)
-        .bind(instance_filter)
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default(),
-        "hour" => sqlx::query_as::<Postgres, GpuSampleRow>(
+            )
+            .bind(window_s)
+            .bind(instance_filter)
+            .fetch_all(&state.db)
+            .await;
+            match res {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("❌ gpu/activity query (minute) failed: {}", e);
+                    vec![]
+                }
+            }
+        }
+        "hour" => {
+            let res = sqlx::query_as::<Postgres, GpuSampleRow>(
             r#"
                 SELECT
                   gs.bucket as time,
@@ -617,21 +629,30 @@ async fn list_gpu_activity(
                   gs.power_limit_w,
                   i.provider_instance_id::text as instance_name,
                   p.name as provider_name,
-                  i.gpu_count as gpu_count
+                  it.gpu_count as gpu_count
                 FROM gpu_samples_1h gs
                 JOIN instances i ON i.id = gs.instance_id
                 LEFT JOIN providers p ON p.id = i.provider_id
-                WHERE gs.bucket > NOW() - make_interval(secs => $1)
+                LEFT JOIN instance_types it ON it.id = i.instance_type_id
+                WHERE gs.bucket > NOW() - ($1::bigint * INTERVAL '1 second')
                   AND ($2::uuid IS NULL OR gs.instance_id = $2)
                 ORDER BY gs.instance_id, gs.gpu_index, gs.bucket ASC
                 "#,
-        )
-        .bind(window_s)
-        .bind(instance_filter)
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default(),
-        "day" => sqlx::query_as::<Postgres, GpuSampleRow>(
+            )
+            .bind(window_s)
+            .bind(instance_filter)
+            .fetch_all(&state.db)
+            .await;
+            match res {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("❌ gpu/activity query (hour) failed: {}", e);
+                    vec![]
+                }
+            }
+        }
+        "day" => {
+            let res = sqlx::query_as::<Postgres, GpuSampleRow>(
             r#"
                 SELECT
                   gs.bucket as time,
@@ -645,22 +666,31 @@ async fn list_gpu_activity(
                   gs.power_limit_w,
                   i.provider_instance_id::text as instance_name,
                   p.name as provider_name,
-                  i.gpu_count as gpu_count
+                  it.gpu_count as gpu_count
                 FROM gpu_samples_1d gs
                 JOIN instances i ON i.id = gs.instance_id
                 LEFT JOIN providers p ON p.id = i.provider_id
-                WHERE gs.bucket > NOW() - make_interval(secs => $1)
+                LEFT JOIN instance_types it ON it.id = i.instance_type_id
+                WHERE gs.bucket > NOW() - ($1::bigint * INTERVAL '1 second')
                   AND ($2::uuid IS NULL OR gs.instance_id = $2)
                 ORDER BY gs.instance_id, gs.gpu_index, gs.bucket ASC
                 "#,
-        )
-        .bind(window_s)
-        .bind(instance_filter)
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default(),
+            )
+            .bind(window_s)
+            .bind(instance_filter)
+            .fetch_all(&state.db)
+            .await;
+            match res {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("❌ gpu/activity query (day) failed: {}", e);
+                    vec![]
+                }
+            }
+        }
         // second (default): raw table (still can be sparse depending on heartbeat interval)
-        _ => sqlx::query_as::<Postgres, GpuSampleRow>(
+        _ => {
+            let res = sqlx::query_as::<Postgres, GpuSampleRow>(
             r#"
                 SELECT
                   gs.time,
@@ -674,20 +704,28 @@ async fn list_gpu_activity(
                   gs.power_limit_w,
                   i.provider_instance_id::text as instance_name,
                   p.name as provider_name,
-                  i.gpu_count as gpu_count
+                  it.gpu_count as gpu_count
                 FROM gpu_samples gs
                 JOIN instances i ON i.id = gs.instance_id
                 LEFT JOIN providers p ON p.id = i.provider_id
-                WHERE gs.time > NOW() - make_interval(secs => $1)
+                LEFT JOIN instance_types it ON it.id = i.instance_type_id
+                WHERE gs.time > NOW() - ($1::bigint * INTERVAL '1 second')
                   AND ($2::uuid IS NULL OR gs.instance_id = $2)
                 ORDER BY gs.instance_id, gs.gpu_index, gs.time ASC
                 "#,
-        )
-        .bind(window_s)
-        .bind(instance_filter)
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default(),
+            )
+            .bind(window_s)
+            .bind(instance_filter)
+            .fetch_all(&state.db)
+            .await;
+            match res {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("❌ gpu/activity query (second) failed: {}", e);
+                    vec![]
+                }
+            }
+        }
     };
 
     use std::collections::BTreeMap;

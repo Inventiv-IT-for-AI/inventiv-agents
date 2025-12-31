@@ -90,6 +90,7 @@ pub async fn run(pool: Pool<Postgres>) {
                                         .unwrap_or_else(|| {
                                             ProviderManager::current_provider_name()
                                         });
+
                                 let provider = match ProviderManager::get_provider(
                                     &provider_code,
                                     db_clone.clone(),
@@ -138,12 +139,20 @@ pub async fn run(pool: Pool<Postgres>) {
                                     Ok(None) => {
                                         if let Some(lid) = log_id {
                                             let dur = start.elapsed().as_millis() as i32;
-                                            logger::log_event_complete(
+                                            // Not an error: providers can legitimately return no IP yet.
+                                            // Mark as success but keep message for observability.
+                                            logger::log_event_complete_with_metadata(
                                                 &db_clone,
                                                 lid,
-                                                "failed",
+                                                "success",
                                                 dur,
                                                 Some("IP not available yet"),
+                                                Some(serde_json::json!({
+                                                    "ip_available": false,
+                                                    "zone": zone,
+                                                    "server_id": pid,
+                                                    "source": "job-health-check"
+                                                })),
                                             )
                                             .await
                                             .ok();

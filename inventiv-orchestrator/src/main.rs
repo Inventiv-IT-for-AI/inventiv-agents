@@ -14,9 +14,7 @@ mod finops_events;
 mod health_check_job;
 mod logger;
 mod models;
-mod provider;
 mod provider_manager; // NEW
-mod providers; // NEW
 mod provisioning_job;
 mod services; // NEW
 mod terminator_job;
@@ -38,6 +36,8 @@ struct WorkerRegisterRequest {
     model_id: Option<String>,
     vllm_port: Option<i32>,
     health_port: Option<i32>,
+    /// Optional: worker-reported reachable IP (useful for local/dev, and for providers where the worker is best source of truth).
+    ip_address: Option<String>,
     metadata: Option<serde_json::Value>,
 }
 
@@ -50,6 +50,8 @@ struct WorkerHeartbeatRequest {
     queue_depth: Option<i32>,
     gpu_utilization: Option<f64>,
     gpu_mem_used_mb: Option<f64>,
+    /// Optional: worker-reported reachable IP.
+    ip_address: Option<String>,
     metadata: Option<serde_json::Value>,
 }
 
@@ -139,7 +141,7 @@ async fn instance_bootstrap_allowed(
     // Allow bootstrap when:
     // - instance exists
     // - no token exists yet
-    // - and (provider is mock) OR client_ip matches instance.ip_address
+    // - and client_ip matches instance.ip_address
     let token_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM worker_auth_tokens WHERE instance_id = $1 AND revoked_at IS NULL)",
     )
@@ -170,10 +172,7 @@ async fn instance_bootstrap_allowed(
         return false;
     };
 
-    if provider_code_opt.as_deref() == Some("mock") {
-        return true;
-    }
-
+    let _ = provider_code_opt; // keep for future audit logging if needed
     let Some(ip) = ip_opt else {
         return false;
     };
@@ -453,7 +452,7 @@ async fn worker_register(
 
     // Either:
     // - authenticated (existing token or global token), OR
-    // - bootstrap (no token yet + IP matches instance/ip or provider=mock) -> issue token and return it.
+    // - bootstrap (no token yet + IP matches instance/ip) -> issue token and return it.
     let authed = verify_worker_auth(&state.db, &headers, payload.instance_id).await;
     let mut issued_token: Option<(String, String)> = None;
     if !authed {
@@ -494,8 +493,30 @@ async fn worker_register(
             worker_model_id = COALESCE($2, worker_model_id),
             worker_vllm_port = COALESCE($3, worker_vllm_port),
             worker_health_port = COALESCE($4, worker_health_port),
-            worker_metadata = COALESCE($5, worker_metadata),
-            worker_last_heartbeat = NOW()
+            ip_address = CASE
+              WHEN ip_address IS NULL AND $5 IS NOT NULL AND btrim($5) <> '' THEN $5::inet
+              ELSE ip_address
+            END,
+            worker_metadata = COALESCE($6, worker_metadata),
+            worker_last_heartbeat = NOW(),
+            -- Generic recovery: if a worker shows up after we timed out, allow the instance to recover.
+            status = CASE
+              WHEN status = 'startup_failed' AND error_code = 'STARTUP_TIMEOUT' THEN 'booting'
+              ELSE status
+            END,
+            boot_started_at = CASE
+              WHEN (status = 'booting' AND (boot_started_at IS NULL OR error_code = 'WAITING_FOR_WORKER_HEARTBEAT')) THEN NOW()
+              WHEN (status = 'startup_failed' AND error_code = 'STARTUP_TIMEOUT') THEN NOW()
+              ELSE boot_started_at
+            END,
+            error_code = CASE
+              WHEN error_code IN ('WAITING_FOR_WORKER_HEARTBEAT', 'STARTUP_TIMEOUT') THEN NULL
+              ELSE error_code
+            END,
+            error_message = CASE
+              WHEN error_code IN ('WAITING_FOR_WORKER_HEARTBEAT', 'STARTUP_TIMEOUT') THEN NULL
+              ELSE error_message
+            END
         WHERE id = $1
         "#,
     )
@@ -503,6 +524,7 @@ async fn worker_register(
     .bind(payload.model_id)
     .bind(payload.vllm_port)
     .bind(payload.health_port)
+    .bind(payload.ip_address)
     .bind(payload.metadata)
     .execute(&state.db)
     .await;
@@ -562,7 +584,29 @@ async fn worker_heartbeat(
             worker_model_id = COALESCE($3, worker_model_id),
             worker_queue_depth = COALESCE($4, worker_queue_depth),
             worker_gpu_utilization = COALESCE($5, worker_gpu_utilization),
-            worker_metadata = COALESCE($6, worker_metadata)
+            ip_address = CASE
+              WHEN ip_address IS NULL AND $6 IS NOT NULL AND btrim($6) <> '' THEN $6::inet
+              ELSE ip_address
+            END,
+            worker_metadata = COALESCE($7, worker_metadata),
+            -- Generic recovery: late heartbeats should be able to recover from startup timeouts.
+            status = CASE
+              WHEN status = 'startup_failed' AND error_code = 'STARTUP_TIMEOUT' THEN 'booting'
+              ELSE status
+            END,
+            boot_started_at = CASE
+              WHEN (status = 'booting' AND (boot_started_at IS NULL OR error_code = 'WAITING_FOR_WORKER_HEARTBEAT')) THEN NOW()
+              WHEN (status = 'startup_failed' AND error_code = 'STARTUP_TIMEOUT') THEN NOW()
+              ELSE boot_started_at
+            END,
+            error_code = CASE
+              WHEN error_code IN ('WAITING_FOR_WORKER_HEARTBEAT', 'STARTUP_TIMEOUT') THEN NULL
+              ELSE error_code
+            END,
+            error_message = CASE
+              WHEN error_code IN ('WAITING_FOR_WORKER_HEARTBEAT', 'STARTUP_TIMEOUT') THEN NULL
+              ELSE error_message
+            END
         WHERE id = $1
         "#,
     )
@@ -571,6 +615,7 @@ async fn worker_heartbeat(
     .bind(payload.model_id)
     .bind(payload.queue_depth)
     .bind(payload.gpu_utilization)
+    .bind(payload.ip_address.clone())
     .bind(meta_clone.clone())
     .execute(&state.db)
     .await;

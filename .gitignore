@@ -1,3 +1,5 @@
+.mock_runtime_watch.pid
+.mock_runtime_watch.log
 # Rust
 target/
 **/*.rs.bk

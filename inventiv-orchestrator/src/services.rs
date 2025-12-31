@@ -154,8 +154,8 @@ pub async fn process_termination(
                 .unwrap_or(None)
                 .unwrap_or_else(|| ProviderManager::current_provider_name());
 
-                if let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()).await
-                {
+                let provider_res = ProviderManager::get_provider(&provider_code, pool.clone()).await;
+                if let Ok(provider) = provider_res {
                     // LOG 2: PROVIDER_TERMINATE (API call to provider)
                     let api_start = Instant::now();
                     let log_id_provider = logger::log_event_with_metadata(
@@ -397,7 +397,12 @@ pub async fn process_termination(
                         return;
                     }
                 } else {
-                    println!("⚠️ Provider configuration missing or provider not found");
+                    let err = provider_res.err().unwrap_or_else(|| "unknown_error".to_string());
+                    println!(
+                        "⚠️ Provider not configured for code='{}' ({}). Hint: enable the corresponding orchestrator feature (e.g. ORCHESTRATOR_FEATURES=provider-mock)",
+                        provider_code,
+                        err
+                    );
                     if let Some(log_id) = log_id_execute {
                         let duration = start.elapsed().as_millis() as i32;
                         logger::log_event_complete(
@@ -405,7 +410,10 @@ pub async fn process_termination(
                             log_id,
                             "failed",
                             duration,
-                            Some("Provider not configured"),
+                            Some(&format!(
+                                "Provider not configured for code='{}' ({})",
+                                provider_code, err
+                            )),
                         )
                         .await
                         .ok();
@@ -1848,6 +1856,25 @@ pub async fn process_provisioning(
                     .await
                     .ok();
             }
+
+            // Immediately move the instance to BOOTING after provider start succeeds, even if IP discovery
+            // is delayed/unavailable. This prevents "stuck provisioning" when async tasks are interrupted
+            // and allows health-check convergence once the worker later reports a routable IP.
+            let _ = sqlx::query(
+                r#"
+                UPDATE instances
+                SET status = 'booting',
+                    boot_started_at = COALESCE(boot_started_at, NOW()),
+                    last_health_check = NULL
+                WHERE id = $1
+                  AND status = 'provisioning'
+                  AND provider_instance_id IS NOT NULL
+                  AND status NOT IN ('terminating', 'terminated')
+                "#,
+            )
+            .bind(instance_uuid)
+            .execute(&pool)
+            .await;
 
             // 3.5. Retrieve IP
             println!("🔍 Retrieving IP address for {}...", server_id);

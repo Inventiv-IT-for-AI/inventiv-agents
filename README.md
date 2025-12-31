@@ -2,7 +2,7 @@
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![GHCR (build + promote)](https://github.com/Inventiv-IT-for-AI/inventiv-agents/actions/workflows/ghcr.yml/badge.svg)](https://github.com/Inventiv-IT-for-AI/inventiv-agents/actions/workflows/ghcr.yml)
-[![Version](https://img.shields.io/badge/version-0.4.1-blue.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-0.4.5-blue.svg)](VERSION)
 
 **Control-plane + data-plane pour exécuter des agents/instances IA** — Infrastructure d'inférence LLM scalable, modulaire et performante, écrite en **Rust**.
 
@@ -613,8 +613,62 @@ Voir [docs/MONITORING_IMPROVEMENTS.md](docs/MONITORING_IMPROVEMENTS.md) pour les
 Un test d’intégration “mock” existe pour valider la chaîne **API → Orchestrator → Worker → API** (heartbeats + séries temporelles + proxy OpenAI):
 
 ```bash
-make test-worker-observability [PORT_OFFSET=...]
+RUST_LOG=info make test-worker-observability [PORT_OFFSET=...]
 ```
+
+**Test multi-instances** (série et parallèle):
+
+```bash
+make test-worker-observability-multi [PORT_OFFSET=...]
+```
+
+Notes (important en local) :
+- **Auth OpenAI proxy**: le test crée une **API key** (endpoint `POST /api_keys`) puis appelle `GET /v1/models` et `POST /v1/chat/completions` avec `Authorization: Bearer <key>`.
+- **Proxy OpenAI en provider=mock**: en mock, l’instance peut avoir une IP “synthetic” non routable depuis le réseau Docker. Le test fait donc un override **local-only** de `instances.ip_address` vers l’IP du conteneur `mock-vllm` pour rendre `POST /v1/chat/completions` joignable.
+- **Ports**: la stack API est exposée via `make api-expose` (loopback) pour faciliter les tunnels / worktrees.
+
+#### Provider Mock et gestion des runtimes
+
+Le provider **Mock** gère automatiquement les runtimes Docker Compose pour chaque instance Mock créée :
+
+- **Création automatique** : Lors du provisioning d'une instance Mock, un runtime Docker Compose est lancé automatiquement (`docker-compose.mock-runtime.yml`)
+- **Réseau partagé** : Les runtimes Mock se connectent au réseau Docker du control-plane pour communiquer avec l'API
+- **IP par instance** : Chaque instance Mock obtient sa propre IP sur le réseau Docker (Option A)
+- **Synchronisation** : La commande `make mock-runtime-sync` synchronise les runtimes avec les instances actives en DB
+
+**Gestion manuelle** :
+
+```bash
+# Démarrer un runtime Mock pour une instance
+INSTANCE_ID=<uuid> make worker-attach
+
+# Arrêter un runtime Mock
+INSTANCE_ID=<uuid> make worker-detach
+
+# Synchroniser tous les runtimes Mock avec les instances actives
+make mock-runtime-sync
+```
+
+**Stack locale complète** (control-plane + UI + sync Mock) :
+
+```bash
+make local-up    # Démarre tout + synchronise les runtimes Mock
+make local-down   # Arrête tout
+```
+
+#### Observabilité des instances Mock
+
+Le provider **Mock** génère automatiquement des métriques synthétiques pour les instances :
+
+- Heartbeats worker (`worker_last_heartbeat`, `worker_status`)
+- Métriques GPU (`gpu_samples` : utilisation, VRAM, température, puissance)
+- Métriques système (`system_samples` : CPU, mémoire, disque, réseau)
+
+Ces métriques sont générées par le worker-agent Mock et permettent de tester l'observabilité en local sans GPU réel.
+
+**Désactivation** :
+
+- `MOCK_OBSERVABILITY_ENABLED=false` (non utilisé actuellement, métriques toujours générées)
 
 Si ta DB Docker échoue avec `No space left on device`, tu peux nettoyer les ressources Docker **inutilisées** et **anciennes** (par défaut: > 7 jours) *scope projet compose*:
 
@@ -639,6 +693,7 @@ make test-worker-observability-clean [PORT_OFFSET=...]
 - **Secrets files** : Montés via `SECRETS_DIR` → `/run/secrets` (non commités)
 - **Env vars** : Variables sensibles dans `env/*.env` (non commitées)
 - **Bootstrap admin** : Mot de passe depuis fichier secret (`DEFAULT_ADMIN_PASSWORD_FILE`)
+- **Seed credentials provider (optionnel)** : `AUTO_SEED_PROVIDER_CREDENTIALS=1` permet d’initialiser `provider_settings` depuis des secrets montés dans `/run/secrets` (ex: Scaleway). Voir `env/staging.env.example` / `env/prod.env.example`.
 
 ### Tokens worker
 
@@ -677,11 +732,13 @@ Voir [CONTRIBUTING.md](CONTRIBUTING.md) pour les guidelines détaillées.
 ### Stable
 
 - ✅ Provisioning/Termination Scaleway réel
+- ✅ Provisioning/Termination Mock avec gestion automatique des runtimes Docker
 - ✅ Health-check & Reconciliation
 - ✅ FinOps dashboard (coûts réels/forecast/cumulatifs en EUR)
 - ✅ Auth session + gestion users
 - ✅ Worker auth (token par instance)
 - ✅ Action logs + recherche paginée
+- ✅ Architecture providers modulaire (`inventiv-providers` package)
 
 ### Expérimental
 
@@ -700,8 +757,16 @@ Voir [TODO.md](TODO.md) pour le backlog détaillé.
 
 ### Compatibilité providers
 
-- ✅ **Mock** : Provider local pour tests (stateful en DB)
+- ✅ **Mock** : Provider local pour tests (stateful en DB, gestion automatique des runtimes Docker Compose)
 - ✅ **Scaleway** : Intégration réelle (instances GPU)
+
+**Architecture providers** :
+
+Les providers sont implémentés dans le package `inventiv-providers` via le trait `CloudProvider` :
+- `inventiv-providers/src/mock.rs` : Provider Mock avec gestion Docker Compose
+- `inventiv-providers/src/scaleway.rs` : Provider Scaleway (intégration API réelle)
+
+Cette architecture permet une séparation claire entre l'orchestrator (logique métier) et les providers (spécificités cloud), facilitant l'ajout de nouveaux providers et les tests.
 
 ## Licence
 

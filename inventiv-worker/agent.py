@@ -3,6 +3,8 @@ import os
 import re
 import subprocess
 import shutil
+import socket
+import urllib.parse
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -27,6 +29,12 @@ WORKER_HEALTH_PORT = int(os.getenv("WORKER_HEALTH_PORT", "8080"))
 WORKER_VLLM_PORT = int(os.getenv("WORKER_VLLM_PORT", "8000"))
 HEARTBEAT_INTERVAL_S = float(os.getenv("WORKER_HEARTBEAT_INTERVAL_S", "4"))
 WORKER_DISK_PATH = os.getenv("WORKER_DISK_PATH", "/").strip() or "/"
+WORKER_ADVERTISE_IP = os.getenv("WORKER_ADVERTISE_IP", "").strip()
+
+# Optional: simulate GPU metrics when running in environments without nvidia-smi (local/mock).
+# This is off by default and only activates when WORKER_SIMULATE_GPU_COUNT > 0.
+WORKER_SIMULATE_GPU_COUNT = int(os.getenv("WORKER_SIMULATE_GPU_COUNT", "0") or "0")
+WORKER_SIMULATE_GPU_VRAM_MB = int(os.getenv("WORKER_SIMULATE_GPU_VRAM_MB", "24576") or "24576")
 
 # State for rate/percent calculations (best-effort)
 _PREV_CPU = None  # (total, idle)
@@ -37,6 +45,38 @@ def _auth_headers():
     if not WORKER_AUTH_TOKEN:
         return {}
     return {"Authorization": f"Bearer {WORKER_AUTH_TOKEN}"}
+
+
+def _local_ip_best_effort():
+    """
+    Best-effort container IP discovery.
+    Prefer a route-based method (UDP connect) to avoid returning 127.0.0.1.
+    """
+    if WORKER_ADVERTISE_IP:
+        return WORKER_ADVERTISE_IP
+    try:
+        if CONTROL_PLANE_URL:
+            u = urllib.parse.urlparse(CONTROL_PLANE_URL)
+            host = u.hostname
+            port = u.port or (443 if u.scheme == "https" else 80)
+            if host:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                try:
+                    s.connect((host, port))
+                    ip = s.getsockname()[0]
+                    if ip and ip != "127.0.0.1":
+                        return ip
+                finally:
+                    s.close()
+    except Exception:
+        pass
+    try:
+        ip = socket.gethostbyname(socket.gethostname())
+        if ip and ip != "127.0.0.1":
+            return ip
+    except Exception:
+        pass
+    return None
 
 
 def _load_token_from_file():
@@ -153,6 +193,60 @@ def _try_nvidia_smi():
         }
     except Exception:
         return {}
+
+
+def _fake_gpu_metrics(vllm: dict | None):
+    """
+    Synthetic GPU metrics for non-GPU environments (best-effort).
+    Enabled only when WORKER_SIMULATE_GPU_COUNT > 0.
+    """
+    if WORKER_SIMULATE_GPU_COUNT <= 0:
+        return {}
+    qd = 0.0
+    try:
+        if isinstance(vllm, dict):
+            qd = float(vllm.get("queue_depth") or 0.0)
+    except Exception:
+        qd = 0.0
+
+    # Deterministic "load" derived from queue depth.
+    base_util = max(0.0, min(95.0, 5.0 + (qd * 8.0)))
+    gpus = []
+    for idx in range(WORKER_SIMULATE_GPU_COUNT):
+        util = max(0.0, min(100.0, base_util + (idx * 3.0)))
+        mem_total = float(WORKER_SIMULATE_GPU_VRAM_MB)
+        mem_used = max(0.0, min(mem_total, mem_total * (util / 100.0)))
+        temp_c = 35.0 + (util * 0.5)
+        power_limit_w = 300.0
+        power_w = power_limit_w * (util / 100.0)
+        gpus.append(
+            {
+                "index": idx,
+                "gpu_utilization": util,
+                "gpu_mem_used_mb": mem_used,
+                "gpu_mem_total_mb": mem_total,
+                "gpu_temp_c": temp_c,
+                "gpu_power_w": power_w,
+                "gpu_power_limit_w": power_limit_w,
+            }
+        )
+    if not gpus:
+        return {}
+    avg_util = sum(x["gpu_utilization"] for x in gpus) / float(len(gpus))
+    total_used = sum(x["gpu_mem_used_mb"] for x in gpus)
+    total_total = sum(x["gpu_mem_total_mb"] for x in gpus)
+    temps = [x["gpu_temp_c"] for x in gpus]
+    powers = [x["gpu_power_w"] for x in gpus]
+    power_limits = [x["gpu_power_limit_w"] for x in gpus]
+    return {
+        "gpu_utilization": avg_util,
+        "gpu_mem_used_mb": total_used,
+        "gpu_mem_total_mb": total_total,
+        "gpu_temp_c": (sum(temps) / float(len(temps))) if temps else None,
+        "gpu_power_w": (sum(powers) / float(len(powers))) if powers else None,
+        "gpu_power_limit_w": (sum(power_limits) / float(len(power_limits))) if power_limits else None,
+        "gpus": gpus,
+    }
 
 def _read_proc_stat_cpu():
     """
@@ -532,16 +626,21 @@ def register_worker_once():
     global WORKER_AUTH_TOKEN
     if not CONTROL_PLANE_URL or not INSTANCE_ID:
         return False
+    vllm = _collect_vllm_signals()
+    gpu = _try_nvidia_smi() or {}
+    if not gpu:
+        gpu = _fake_gpu_metrics(vllm)
     payload = {
         "instance_id": INSTANCE_ID,
         "worker_id": WORKER_ID,
         "model_id": MODEL_ID or None,
         "vllm_port": WORKER_VLLM_PORT,
         "health_port": WORKER_HEALTH_PORT,
+        "ip_address": _local_ip_best_effort(),
         "metadata": {
-            **(_try_nvidia_smi() or {}),
+            **(gpu or {}),
             "system": _collect_system_metrics() or None,
-            "vllm": _collect_vllm_signals() or None,
+            "vllm": vllm or None,
         }
         or None,
     }
@@ -575,9 +674,11 @@ def register_worker_once():
 def send_heartbeat(status: str):
     if not CONTROL_PLANE_URL or not INSTANCE_ID:
         return False
-    gpu = _try_nvidia_smi()
     sysm = _collect_system_metrics()
     vllm = _collect_vllm_signals()
+    gpu = _try_nvidia_smi() or {}
+    if not gpu:
+        gpu = _fake_gpu_metrics(vllm)
     payload = {
         "instance_id": INSTANCE_ID,
         "worker_id": WORKER_ID,
@@ -586,6 +687,7 @@ def send_heartbeat(status: str):
         "queue_depth": vllm.get("queue_depth"),
         "gpu_utilization": gpu.get("gpu_utilization"),
         "gpu_mem_used_mb": gpu.get("gpu_mem_used_mb"),
+        "ip_address": _local_ip_best_effort(),
         "metadata": {
             **(gpu or {}),
             "system": sysm or None,

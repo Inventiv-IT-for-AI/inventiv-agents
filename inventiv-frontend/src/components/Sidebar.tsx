@@ -50,7 +50,7 @@ export function Sidebar() {
                         <SidebarLink href="/chat" icon={MessageSquare} label="Chat" />
                         <SidebarLink href="/instances" icon={Server} label="Instances" />
                         <SidebarLink href="/models" icon={Activity} label="Models" />
-                        <SidebarLink href="/gpu-activity" icon={Cpu} label="GPU Activity" />
+                        <SidebarLink href="/observability" icon={Cpu} label="Observability" />
                         <SidebarLink href="/workbench" icon={Terminal} label="Workbench" />
                         <SidebarLink href="/monitoring" icon={BarChart3} label="Monitoring" />
                         <SidebarLink href="/api-keys" icon={KeyRound} label="API Keys" />

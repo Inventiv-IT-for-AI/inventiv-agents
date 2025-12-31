@@ -7,7 +7,9 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 ## ✅ Réalisé (livré dans le code)
 
 ### Control-plane & provisioning
-- **Provisioning Scaleway** (orchestrator): création VM + volume data, poweron, récupération IP, transitions d’état.
+- **Provisioning Scaleway** (orchestrator): création VM + volume data, poweron, récupération IP, transitions d'état.
+- **Provisioning Mock** (inventiv-providers): gestion automatique des runtimes Docker Compose, récupération IP, transitions d'état.
+- **Architecture providers modulaire**: package `inventiv-providers` avec trait `CloudProvider`, séparation orchestrator/providers.
 - **State machine + jobs**: provisioning/health-check/terminator/watch-dog + requeue.
 - **Auto-install worker**: bootstrap via SSH avec phases `::phase::…`, logs enrichis dans `action_logs.metadata`.
 - **Sizing stockage par modèle**: taille recommandée depuis la table `models` (fallbacks contrôlés).
@@ -54,9 +56,11 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 ## 🐛 Bugs connus / dettes techniques (à suivre)
 
 - **SSE**: implémentation actuelle basée sur polling DB (efficace mais pas “event-sourced” → à améliorer via NOTIFY/LISTEN ou Redis streams).
-- **Observabilité**: pas encore de stack métriques/traces end-to-end (Prometheus/Grafana/OTel).
+- **Observabilité**: pas encore de stack métriques/traces end-to-end (Prometheus/Grafana/OTel) + alerting.
 - **FinOps**: coûts OK, mais pas encore de **comptage tokens in/out** (voir backlog).
 - **Docs**: certains documents restent “vision” (router, bare-metal) vs “implémenté”.
+- **Mock provider routing**: le test E2E OpenAI proxy override `instances.ip_address` vers `mock-vllm` (hack local). À remplacer par un mécanisme propre (voir backlog).
+- **Docker CLI version**: orchestrator utilise Docker CLI 27.4.0 (compatible API 1.44+). À documenter les prérequis Docker dans la doc.
 
 ---
 
@@ -71,13 +75,27 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 - **Streaming**: améliorer streaming E2E (Workbench + proxy + UI) + UX (annulation, TTFT, tokens/sec).
 
 ### Observability / Monitoring
-- **Metrics**: `/metrics` sur API/orchestrator/worker + dashboards.
-- **Tracing**: OTel (optionnel au début) + corrélation `correlation_id`.
-- **Monitoring infra**: GPU util, queue depth, vLLM health, erreurs, SLOs.
+- **Metrics**: `/metrics` sur API/orchestrator/worker + dashboards (CPU/Mem/Disk/Net + GPU per-index) + SLOs.
+- **Tracing**: OTel (optionnel au début) + corrélation `correlation_id` (API ↔ orchestrator ↔ worker ↔ upstream).
+- **Monitoring infra**: GPU util, queue depth, vLLM health, erreurs, saturation, qualité du load-balancing.
+- **E2E test chain (mock)**: étendre le test pour valider aussi le routing OpenAI sans hack DB (voir item “mock provider routing”).
+
+### Mock provider / tests
+- ✅ **Gestion automatique des runtimes Mock**: création/suppression via Docker Compose dans `inventiv-providers/src/mock.rs`.
+- ✅ **Scripts de synchronisation**: `mock_runtime_sync.sh` pour synchroniser les runtimes avec les instances actives.
+- ✅ **Tests E2E multi-instances**: `test_worker_observability_mock_multi.sh` pour valider le provisionnement en série et parallèle.
+- ✅ **Docker CLI/Compose dans orchestrator**: Docker CLI 27.4.0 + Docker Compose plugin v2.27.1 installés dans `Dockerfile.rust`.
+- ✅ **Réseau Docker explicite**: `CONTROLPLANE_NETWORK_NAME` configuré dans `docker-compose.yml` pour éviter les erreurs de réseau.
+- **Routage OpenAI proxy en mock**: rendre l'upstream joignable sans muter `instances.ip_address` (options: IP routable mock, ou param "upstream_base_url" par instance en DB, ou résolution "service name" côté API quand provider=mock).
+- **Tests contractuels**: ajouter des tests (Rust) des payloads `register/heartbeat` (schema/validation) + compat rétro (old heartbeat payload sans `system_samples`).
+- **Documentation Mock provider**: créer `docs/providers.md` avec architecture et guide d'utilisation.
 
 ### FinOps “full features”
 - **Comptage tokens in/out** par Worker / API_KEY / User / Tenant / Model.
 - **Validation**: consolidation dashboards + exports + séries temporelles.
+
+### Secrets & credentials
+- **AUTO_SEED_PROVIDER_CREDENTIALS**: documenter clairement le modèle “secrets in /run/secrets → provider_settings chiffré pgcrypto” + rotation/rollback + conventions de clés (`SCALEWAY_PROJECT_ID`, `SCALEWAY_SECRET_KEY_ENC`) + menace (logs/backup).
 
 ### Multi-tenant & sécurité
 - ✅ **Organisations (MVP)**: création + membership + sélection “organisation courante” (switcher UX).

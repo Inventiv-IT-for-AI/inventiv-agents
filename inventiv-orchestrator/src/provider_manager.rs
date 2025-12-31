@@ -1,11 +1,14 @@
-use crate::provider::CloudProvider;
-use crate::providers::mock::MockProvider;
-use crate::providers::scaleway::ScalewayProvider;
+use inventiv_providers::CloudProvider;
+#[cfg(feature = "provider-scaleway")]
+use inventiv_providers::scaleway::ScalewayProvider;
 // use std::collections::HashMap;
 use sqlx::{Pool, Postgres};
 use std::env;
 use std::fs;
 use std::path::Path;
+
+#[cfg(feature = "provider-mock")]
+use inventiv_providers::mock::MockProvider;
 
 pub struct ProviderManager;
 
@@ -192,6 +195,7 @@ impl ProviderManager {
         db: Pool<Postgres>,
     ) -> Result<Box<dyn CloudProvider>, String> {
         match provider_name.to_lowercase().as_str() {
+            #[cfg(feature = "provider-scaleway")]
             "scaleway" => {
                 if let Some((project_id, secret_key, ssh_public_key)) =
                     Self::scaleway_init_from_db(&db).await?
@@ -211,7 +215,15 @@ impl ProviderManager {
                     ssh_public_key,
                 )))
             }
+            #[cfg(not(feature = "provider-scaleway"))]
+            "scaleway" => Err(
+                "Scaleway provider is disabled (build without --features provider-scaleway)"
+                    .to_string(),
+            ),
+            #[cfg(feature = "provider-mock")]
             "mock" => Ok(Box::new(MockProvider::new(db))),
+            #[cfg(not(feature = "provider-mock"))]
+            "mock" => Err("Mock provider is disabled (build without --features provider-mock)".to_string()),
             // Add other providers here:
             // "ovh" => ...
             _ => Err(format!("Unknown provider '{}'", provider_name)),

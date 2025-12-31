@@ -9,6 +9,7 @@ import { useInstances } from "@/hooks/useInstances";
 import { useRealtimeEvents } from "@/hooks/useRealtimeEvents";
 import { useCatalog } from "@/hooks/useCatalog";
 import { IAStatCell } from "ia-widgets";
+import { apiUrl } from "@/lib/api";
 import { CreateInstanceModal } from "@/components/instances/CreateInstanceModal";
 import { TerminateInstanceModal } from "@/components/instances/TerminateInstanceModal";
 import { ReinstallInstanceModal } from "@/components/instances/ReinstallInstanceModal";
@@ -41,7 +42,22 @@ export default function InstancesPage() {
         setIsCreateOpen(true);
     };
 
-    const openArchiveModal = (id: string) => {
+    const openArchiveModal = async (id: string) => {
+        // If the instance is already terminated, archive immediately (no confirmation modal).
+        const inst = instances.find((i) => i.id === id) ?? null;
+        if (inst?.status?.toLowerCase() === "terminated") {
+            try {
+                const res = await fetch(apiUrl(`instances/${id}/archive`), { method: "PUT" });
+                if (!res.ok) throw new Error(`archive failed (${res.status})`);
+                refreshInstances();
+                // If no event fires (edge case), still bump the reload token.
+                setRefreshSeq((v) => v + 1);
+                return;
+            } catch (e) {
+                console.error("Failed to archive instance:", e);
+                // Fallback to modal so user can retry / see the action explicitly.
+            }
+        }
         setInstanceToArchive(id);
         setIsArchiveOpen(true);
     };

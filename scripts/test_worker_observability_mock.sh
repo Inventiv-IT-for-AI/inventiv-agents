@@ -23,6 +23,22 @@ read_env_kv() {
   return 0
 }
 
+# Ensure the compose stack uses the same secrets dir as the script (for deterministic admin login).
+# Also, if the admin already exists in a persisted DB volume, force password refresh to avoid 401.
+DEV_ENV_FILE="${DEV_ENV_FILE:-${ROOT_DIR}/env/dev.env}"
+SECRETS_DIR="${SECRETS_DIR:-}"
+if [ -z "${SECRETS_DIR}" ]; then
+  SECRETS_DIR="$(read_env_kv SECRETS_DIR "$DEV_ENV_FILE" || true)"
+fi
+SECRETS_DIR="${SECRETS_DIR:-${ROOT_DIR}/deploy/secrets}"
+if [[ "${SECRETS_DIR}" != /* ]]; then
+  SECRETS_DIR="${ROOT_DIR}/${SECRETS_DIR}"
+fi
+export SECRETS_DIR
+export BOOTSTRAP_UPDATE_ADMIN_PASSWORD="${BOOTSTRAP_UPDATE_ADMIN_PASSWORD:-1}"
+export WORKER_AUTH_TOKEN="${WORKER_AUTH_TOKEN:-dev-worker-token}"
+export ORCHESTRATOR_FEATURES="${ORCHESTRATOR_FEATURES:-provider-mock}"
+
 RESET_VOLUMES="${RESET_VOLUMES:-0}"
 if [ "$RESET_VOLUMES" = "1" ]; then
   echo "== Cleanup: docker compose down -v =="
@@ -149,16 +165,6 @@ if [ "$orch_ok" != "1" ]; then
 fi
 
 echo "== 4) Login (admin session cookie) =="
-DEV_ENV_FILE="${DEV_ENV_FILE:-${ROOT_DIR}/env/dev.env}"
-SECRETS_DIR="${SECRETS_DIR:-}"
-if [ -z "${SECRETS_DIR}" ]; then
-  SECRETS_DIR="$(read_env_kv SECRETS_DIR "$DEV_ENV_FILE" || true)"
-fi
-SECRETS_DIR="${SECRETS_DIR:-${ROOT_DIR}/deploy/secrets}"
-if [[ "${SECRETS_DIR}" != /* ]]; then
-  SECRETS_DIR="${ROOT_DIR}/${SECRETS_DIR}"
-fi
-
 ADMIN_USERNAME="${DEFAULT_ADMIN_USERNAME:-}"
 if [ -z "${ADMIN_USERNAME}" ]; then
   ADMIN_USERNAME="$(read_env_kv DEFAULT_ADMIN_USERNAME "$DEV_ENV_FILE" || true)"
@@ -264,27 +270,48 @@ PY
 )"
 echo "instance_id=$INSTANCE_ID"
 
-echo "== 6) Start worker-local profile (mock-vllm + worker-agent) =="
-export PROVIDER="${PROVIDER:-mock}"
-export WORKER_AUTH_TOKEN="${WORKER_AUTH_TOKEN:-}" # empty to exercise bootstrap token flow
-export WORKER_AGENT_HOST_PORT="${WORKER_AGENT_HOST_PORT:-18080}"
-export MOCK_VLLM_HOST_PORT="${MOCK_VLLM_HOST_PORT:-18000}"
-export MOCK_VLLM_REQUESTS_WAITING="${MOCK_VLLM_REQUESTS_WAITING:-7}"
-export MOCK_VLLM_REQUESTS_RUNNING="${MOCK_VLLM_REQUESTS_RUNNING:-1}"
-export INSTANCE_ID
-docker compose --profile worker-local up -d --build mock-vllm worker-agent
+echo "== 6) Start per-instance mock runtime (Option A) =="
+# Use a unique mock model id per run to avoid collisions when multiple instances exist in the DB.
+MOCK_VLLM_MODEL_ID="demo-model-$(echo "$INSTANCE_ID" | tr -d '-' | cut -c1-12)"
+export MOCK_VLLM_MODEL_ID
+echo "MOCK_VLLM_MODEL_ID=$MOCK_VLLM_MODEL_ID"
 
-echo "== 7) Wait for worker-agent /readyz on host =="
-for i in {1..45}; do
-  if curl -fsS "http://127.0.0.1:${WORKER_AGENT_HOST_PORT}/readyz" >/dev/null 2>&1; then
-    echo "Worker is READY"
+export WORKER_AUTH_TOKEN="${WORKER_AUTH_TOKEN:-dev-worker-token}"
+export INSTANCE_ID
+
+# Attach the per-instance runtime to the control-plane docker network so it can reach http://api:8003.
+CONTROLPLANE_NETWORK_NAME="${CONTROLPLANE_NETWORK_NAME:-"$(basename "$(pwd)")_default"}"
+export CONTROLPLANE_NETWORK_NAME
+chmod +x ./scripts/mock_runtime_up.sh 2>/dev/null || true
+./scripts/mock_runtime_up.sh
+
+echo "== 7) Wait for worker heartbeats to be persisted (poll via API) =="
+hb_ok=0
+for i in {1..60}; do
+  INST_JSON="$(curl -fsS -b /tmp/inventiv_cookies.txt "${API_BASE_URL}/instances/${INSTANCE_ID}" || true)"
+  export INST_JSON
+  if python3 - <<'PY' >/dev/null 2>&1
+import json, os
+j=json.loads(os.environ.get("INST_JSON","{}") or "{}")
+ok = bool(j.get("worker_last_heartbeat")) and bool(j.get("ip_address")) and bool(j.get("worker_health_port")) and bool(j.get("worker_vllm_port"))
+raise SystemExit(0 if ok else 1)
+PY
+  then
+    echo "✅ worker heartbeat persisted"
+    hb_ok=1
     break
   fi
   sleep 1
 done
+if [ "$hb_ok" != "1" ]; then
+  echo "❌ worker heartbeat not persisted in time" >&2
+  docker compose logs --tail=200 api >&2 || true
+  docker compose logs --tail=200 orchestrator >&2 || true
+  exit 1
+fi
 
-echo "== 8) Wait for heartbeats to be persisted =="
-sleep 15
+echo "== 8) Wait a bit for time-series samples =="
+sleep 6
 
 echo "== 9) Validate instance worker fields via API =="
 INST_JSON="$(curl -fsS -b /tmp/inventiv_cookies.txt "${API_BASE_URL}/instances/${INSTANCE_ID}")"
@@ -314,8 +341,9 @@ set -e
 if [ $rc -ne 0 ]; then
   echo "---- instance JSON (debug) ----" >&2
   echo "${INST_JSON}" >&2
-  echo "---- worker-agent logs (tail) ----" >&2
-  docker compose --profile worker-local logs --tail=200 worker-agent >&2 || true
+  echo "---- mock runtime logs (tail) ----" >&2
+  # Best-effort: show any mockrt-* containers
+  docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep -E 'mockrt-|NAME' >&2 || true
   echo "---- orchestrator logs (tail) ----" >&2
   docker compose logs --tail=200 orchestrator >&2 || true
   echo "---- api logs (tail) ----" >&2
@@ -323,6 +351,35 @@ if [ $rc -ne 0 ]; then
   echo "---- db instance row ----" >&2
   docker compose exec -T db psql -U postgres -d llminfra -c \
     "select id, status, worker_status, worker_last_heartbeat, worker_model_id, worker_queue_depth from instances where id='${INSTANCE_ID}';" >&2 || true
+  exit 1
+fi
+
+echo "== 9b) Wait for instance status=ready (health-check convergence) =="
+ready_ok=0
+for i in {1..60}; do
+  INST_JSON="$(curl -fsS -b /tmp/inventiv_cookies.txt "${API_BASE_URL}/instances/${INSTANCE_ID}" || true)"
+  export INST_JSON
+  if python3 - <<'PY'
+import json, os, sys
+j=json.loads(os.environ.get("INST_JSON") or "{}")
+st=str(j.get("status","")).lower()
+sys.exit(0 if st == "ready" else 1)
+PY
+  then
+    echo "Instance is READY"
+    ready_ok=1
+    break
+  fi
+  sleep 1
+done
+if [ "$ready_ok" != "1" ]; then
+  echo "❌ Instance did not reach READY in time." >&2
+  echo "---- instance JSON (debug) ----" >&2
+  echo "${INST_JSON}" >&2
+  echo "---- orchestrator logs (tail) ----" >&2
+  docker compose logs --tail=200 orchestrator >&2 || true
+  echo "---- mock runtime logs (tail) ----" >&2
+  docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep -E 'mockrt-|NAME' >&2 || true
   exit 1
 fi
 
@@ -334,19 +391,8 @@ curl -fsS -o /dev/null -b /tmp/inventiv_cookies.txt \
   "${API_BASE_URL}/system/activity?window_s=600&instance_id=${INSTANCE_ID}&granularity=second"
 echo "✅ gpu/activity + system/activity reachable"
 
-echo "== 10b) Ensure OpenAI upstream is reachable in local mock setup =="
-# In the mock provider, instances may get a synthetic RFC1918 IP that is not routable from the docker-compose network.
-# For this E2E test, route OpenAI proxy traffic to the mock-vllm container IP.
-MOCK_VLLM_CONTAINER="inventiv-agents-worker-fixes-mock-vllm-1"
-MOCK_VLLM_IP="$(docker inspect "${MOCK_VLLM_CONTAINER}" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null || true)"
-if [ -z "${MOCK_VLLM_IP}" ]; then
-  echo "❌ Could not determine mock-vllm container IP (${MOCK_VLLM_CONTAINER})" >&2
-  docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep -E 'mock-vllm|NAME' >&2 || true
-  exit 1
-fi
-docker compose exec -T db psql -U postgres -d llminfra -c \
-  "UPDATE instances SET ip_address='${MOCK_VLLM_IP}'::inet WHERE id='${INSTANCE_ID}';" >/dev/null
-echo "✅ instance ip_address set to mock-vllm (${MOCK_VLLM_IP}) for OpenAI proxy"
+echo "== 10b) OpenAI upstream routing =="
+echo "✅ Using instance.ip_address + worker_vllm_port from worker heartbeats (no DB mutation)"
 
 echo "== 11) Validate OpenAI proxy endpoints (models + chat) =="
 echo "Creating a short-lived API key for OpenAI proxy auth..."
@@ -388,14 +434,18 @@ if [ "${MODELS_CODE}" != "200" ]; then
   exit 1
 fi
 python3 - <<'PY'
-import json,sys
+import json,sys,os
 with open("/tmp/inventiv_openai_models.json","r",encoding="utf-8") as f:
     j=json.load(f)
 ids=[x.get("id") for x in (j.get("data") or []) if isinstance(x,dict)]
-if "demo-model" not in ids:
-    print("❌ demo-model not present in /v1/models: " + str(ids))
+want = os.environ.get("MOCK_VLLM_MODEL_ID","").strip()
+if not want:
+    print("❌ MOCK_VLLM_MODEL_ID env is missing")
     sys.exit(1)
-print("✅ /v1/models contains demo-model")
+if want not in ids:
+    print(f"❌ {want} not present in /v1/models: " + str(ids))
+    sys.exit(1)
+print(f"✅ /v1/models contains {want}")
 PY
 
 CHAT_RESP_FILE="/tmp/inventiv_openai_chat.json"
@@ -405,7 +455,7 @@ CHAT_CODE="$(curl -sS \
   -X POST "${API_BASE_URL}/v1/chat/completions" \
   -H "Authorization: Bearer ${OPENAI_API_KEY}" \
   -H "Content-Type: application/json" \
-  -d '{"model":"demo-model","messages":[{"role":"user","content":"ping"}],"stream":false}' || true)"
+  -d "{\"model\":\"${MOCK_VLLM_MODEL_ID}\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"stream\":false}" || true)"
 if [ "${CHAT_CODE}" != "200" ]; then
   echo "❌ /v1/chat/completions failed (status=${CHAT_CODE})" >&2
   cat "${CHAT_RESP_FILE}" >&2 || true

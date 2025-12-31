@@ -7,6 +7,19 @@ GIT_SHA := $(shell git rev-parse --short=12 HEAD)
 #   make PORT_OFFSET=10000 up ui      -> UI on 13000 (no collisions)
 PORT_OFFSET ?= 0
 
+# Orchestrator Cargo features (dev/local).
+# We compile both Scaleway + Mock so the orchestrator can always operate on instances from either provider
+# (otherwise termination/reconciliation can get stuck with "Provider not configured").
+ORCHESTRATOR_FEATURES ?= provider-scaleway,provider-mock
+
+# Docker network name used by the control-plane compose project (api/orchestrator/db/redis).
+# Per-instance mock runtimes attach to this network so they can reach http://api:8003.
+CONTROLPLANE_NETWORK_NAME ?= $(shell echo "$$(basename "$$(pwd)")_default")
+
+# Background external watcher (host process) that auto-attaches mock runtimes for new mock instances.
+MOCK_RUNTIME_WATCH_PIDFILE ?= .mock_runtime_watch.pid
+MOCK_RUNTIME_WATCH_LOG ?= .mock_runtime_watch.log
+
 # UI host port (computed from PORT_OFFSET by default)
 UI_HOST_PORT ?= $(shell off="$(PORT_OFFSET)"; if [ -z "$$off" ]; then off=0; fi; echo $$((3000 + $$off)))
 
@@ -235,16 +248,105 @@ nuke: dev-delete
 ui:
 	@$(MAKE) check-dev-env
 	@echo "🖥️  UI (Docker) on http://localhost:$(UI_HOST_PORT)  [PORT_OFFSET=$(PORT_OFFSET)]"
-	@UI_HOST_PORT=$(UI_HOST_PORT) PORT_OFFSET=$(PORT_OFFSET) \
+	@ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" UI_HOST_PORT=$(UI_HOST_PORT) PORT_OFFSET=$(PORT_OFFSET) \
 	  $(COMPOSE_LOCAL) --profile ui up -d --remove-orphans frontend
 
 .PHONY: ui-down
 ui-down:
 	@$(MAKE) check-dev-env
 	@echo "🛑 Stopping UI (Docker)  [PORT_OFFSET=$(PORT_OFFSET)]"
-	@UI_HOST_PORT=$(UI_HOST_PORT) PORT_OFFSET=$(PORT_OFFSET) \
+	@ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" UI_HOST_PORT=$(UI_HOST_PORT) PORT_OFFSET=$(PORT_OFFSET) \
 	  $(COMPOSE_LOCAL) --profile ui stop frontend >/dev/null 2>&1 || true
 	@echo "✅ UI (Docker) stopped"
+
+# Local “mock worker” stack (for observability + OpenAI proxy local tests).
+# It starts mock-vllm + worker-agent along with the rest of the stack.
+.PHONY: worker-local-up worker-local-down
+worker-local-up:
+	@echo "🤖 DEV worker-local up (mock-vllm + worker-agent)"
+	@$(MAKE) check-dev-env
+	@ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" PORT_OFFSET="$(PORT_OFFSET)" \
+	  $(COMPOSE_LOCAL) --profile worker-local up -d --build --remove-orphans
+
+worker-local-down:
+	@echo "🤖 DEV worker-local down (mock-vllm + worker-agent)"
+	@$(MAKE) check-dev-env
+	@ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" PORT_OFFSET="$(PORT_OFFSET)" \
+	  $(COMPOSE_LOCAL) --profile worker-local stop mock-vllm worker-agent >/dev/null 2>&1 || true
+	@echo "✅ worker-local stopped"
+
+# Attach the local worker-agent to a specific instance (required for Mock instances to leave BOOTING).
+# Usage:
+#   make worker-attach INSTANCE_ID=<uuid> [MOCK_VLLM_MODEL_ID=demo-model-...]
+.PHONY: worker-attach worker-detach
+worker-attach:
+	@$(MAKE) check-dev-env
+	@if [ -z "$(INSTANCE_ID)" ]; then \
+	  echo "❌ INSTANCE_ID is required (example: make worker-attach INSTANCE_ID=<uuid>)"; \
+	  exit 2; \
+	fi
+	@chmod +x ./scripts/mock_runtime_up.sh 2>/dev/null || true
+	@MID="$${MOCK_VLLM_MODEL_ID:-demo-model-$$(echo "$(INSTANCE_ID)" | tr -d '-' | cut -c1-12)}"; \
+	echo "🔗 Attaching mock runtime to INSTANCE_ID=$(INSTANCE_ID) (MOCK_VLLM_MODEL_ID=$${MID})"; \
+	INSTANCE_ID="$(INSTANCE_ID)" MOCK_VLLM_MODEL_ID="$${MID}" CONTROLPLANE_NETWORK_NAME="$(CONTROLPLANE_NETWORK_NAME)" \
+	  ./scripts/mock_runtime_up.sh
+
+worker-detach:
+	@$(MAKE) check-dev-env
+	@chmod +x ./scripts/mock_runtime_down.sh 2>/dev/null || true
+	@echo "🔌 Detaching mock runtime for INSTANCE_ID=$(INSTANCE_ID)"
+	@INSTANCE_ID="$(INSTANCE_ID)" CONTROLPLANE_NETWORK_NAME="$(CONTROLPLANE_NETWORK_NAME)" \
+	  ./scripts/mock_runtime_down.sh
+	@echo "✅ worker detached"
+
+.PHONY: mock-runtime-sync
+mock-runtime-sync:
+	@$(MAKE) check-dev-env
+	@chmod +x ./scripts/mock_runtime_sync.sh 2>/dev/null || true
+	@CONTROLPLANE_NETWORK_NAME="$(CONTROLPLANE_NETWORK_NAME)" ./scripts/mock_runtime_sync.sh
+
+.PHONY: mock-runtime-watch-up mock-runtime-watch-down
+mock-runtime-watch-up:
+	@$(MAKE) check-dev-env
+	@chmod +x ./scripts/mock_runtime_watch.sh 2>/dev/null || true
+	@if [ -f "$(MOCK_RUNTIME_WATCH_PIDFILE)" ] && kill -0 $$(cat "$(MOCK_RUNTIME_WATCH_PIDFILE)" 2>/dev/null) >/dev/null 2>&1; then \
+	  echo "👀 mock-runtime-watch already running (pid=$$(cat $(MOCK_RUNTIME_WATCH_PIDFILE)))"; \
+	  exit 0; \
+	fi
+	@rm -f "$(MOCK_RUNTIME_WATCH_PIDFILE)" >/dev/null 2>&1 || true
+	@echo "👀 starting mock-runtime-watch (logs: $(MOCK_RUNTIME_WATCH_LOG))"
+	@nohup env CONTROLPLANE_NETWORK_NAME="$(CONTROLPLANE_NETWORK_NAME)" WATCH_INTERVAL_S="$${WATCH_INTERVAL_S:-5}" \
+	  ./scripts/mock_runtime_watch.sh >"$(MOCK_RUNTIME_WATCH_LOG)" 2>&1 & echo $$! >"$(MOCK_RUNTIME_WATCH_PIDFILE)"
+	@echo "✅ mock-runtime-watch started (pid=$$(cat $(MOCK_RUNTIME_WATCH_PIDFILE)))"
+
+mock-runtime-watch-down:
+	@$(MAKE) check-dev-env
+	@if [ ! -f "$(MOCK_RUNTIME_WATCH_PIDFILE)" ]; then echo "ℹ️  mock-runtime-watch not running"; exit 0; fi
+	@PID=$$(cat "$(MOCK_RUNTIME_WATCH_PIDFILE)" 2>/dev/null || true); \
+	if [ -n "$$PID" ] && kill -0 $$PID >/dev/null 2>&1; then \
+	  echo "🛑 stopping mock-runtime-watch (pid=$$PID)"; \
+	  kill $$PID >/dev/null 2>&1 || true; \
+	fi
+	@rm -f "$(MOCK_RUNTIME_WATCH_PIDFILE)" >/dev/null 2>&1 || true
+	@echo "✅ mock-runtime-watch stopped"
+
+# All-in-one local stack (control-plane + UI + local mock worker).
+.PHONY: local-up local-down
+local-up:
+	@echo "🚀 LOCAL up (api+orchestrator+db+redis + ui)  [PORT_OFFSET=$(PORT_OFFSET)]"
+	@$(MAKE) check-dev-env
+	@ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" UI_HOST_PORT="$(UI_HOST_PORT)" PORT_OFFSET="$(PORT_OFFSET)" \
+	  $(COMPOSE_LOCAL) --profile ui up -d --build --remove-orphans
+	@# Mock provider now manages runtimes automatically (no external watcher needed)
+
+local-down:
+	@echo "🛑 LOCAL down (stop all local services)  [PORT_OFFSET=$(PORT_OFFSET)]"
+	@$(MAKE) check-dev-env
+	@ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" UI_HOST_PORT="$(UI_HOST_PORT)" PORT_OFFSET="$(PORT_OFFSET)" \
+	  $(COMPOSE_LOCAL) --profile ui stop >/dev/null 2>&1 || true
+	@# Mock provider manages runtimes, but we can do a best-effort cleanup of orphaned runtimes
+	@docker ps -a --filter "name=mockrt-" --format "{{.Names}}" | xargs -r docker rm -f >/dev/null 2>&1 || true
+	@echo "✅ LOCAL stopped"
 
 # Optional: run UI locally on host (kept for convenience / debugging).
 # Note: requires the API to be exposed on the host (not the default anymore).
@@ -300,14 +402,16 @@ api-unexpose:
 dev-create:
 	@echo "🚀 DEV create (docker-compose.yml, hot reload)"
 	@$(MAKE) check-dev-env
-	$(COMPOSE_LOCAL) up -d --build --remove-orphans
+	ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" PORT_OFFSET="$(PORT_OFFSET)" \
+	  $(COMPOSE_LOCAL) up -d --build --remove-orphans
 
 dev-create-edge:
 	@$(MAKE) edge-create
 
 dev-start:
 	@$(MAKE) check-dev-env
-	$(COMPOSE_LOCAL) up -d --remove-orphans
+	ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" PORT_OFFSET="$(PORT_OFFSET)" \
+	  $(COMPOSE_LOCAL) up -d --remove-orphans
 
 dev-start-edge:
 	@$(MAKE) edge-start
@@ -732,6 +836,13 @@ docker-prune-old:
 .PHONY: test-worker-observability-clean
 test-worker-observability-clean: docker-prune-old
 	@$(MAKE) test-worker-observability PORT_OFFSET=$(PORT_OFFSET)
+
+# Multi-instance integration test (mock provider): serial + parallel create/observability/terminate.
+.PHONY: test-worker-observability-multi
+test-worker-observability-multi:
+	@chmod +x ./scripts/test_worker_observability_mock_multi.sh 2>/dev/null || true
+	@PORT_OFFSET=$(PORT_OFFSET) N_SERIAL=$${N_SERIAL:-2} N_PARALLEL=$${N_PARALLEL:-2} \
+	  ./scripts/test_worker_observability_mock_multi.sh
 
 # Cargo check (fast compile-only)
 check:

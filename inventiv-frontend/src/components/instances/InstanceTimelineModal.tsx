@@ -347,8 +347,8 @@ export function InstanceTimelineModal({
   return (
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent showCloseButton={false} className="w-[calc(100vw-2rem)] max-w-5xl sm:max-w-5xl p-0 overflow-hidden">
-        <div className="flex flex-col max-h-[85vh]">
-          <DialogHeader className="px-5 py-4 border-b">
+        <div className="flex flex-col h-[85vh] overflow-hidden">
+          <DialogHeader className="px-5 py-4 border-b flex-shrink-0">
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
@@ -510,105 +510,105 @@ export function InstanceTimelineModal({
             </div>
           </DialogHeader>
 
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] flex-1 min-h-0">
-            <div className="min-w-0">
-              <IADataTable<ActionLog>
-                // Use a stable listId so column prefs persist across instances (localStorage key is derived from listId).
-                listId="monitoring:instance_actions"
-                dataKey={queryKey}
-                title="Actions"
-                height={520}
-                rowHeight={40}
-                columns={columns}
-                loadRange={loadRange}
-                onCountsChange={handleCountsChange}
-                rightHeader={
-                  counts.filtered > 0 ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-8"
-                      onClick={copyAllActionsToClipboard}
-                      disabled={copyingActions}
-                      title="Copier toutes les actions en JSON"
-                    >
-                      {copiedActions ? (
-                        <>
-                          <Check className="h-4 w-4 mr-2 text-green-600" />
-                          Copié
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="h-4 w-4 mr-2" />
-                          {copyingActions ? "Copie..." : "Copier JSON"}
-                        </>
-                      )}
-                    </Button>
-                  ) : null
-                }
-                onRowClick={(row) => setSelectedLog(row)}
-              />
-            </div>
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] flex-1 min-h-0 overflow-hidden">
+                <div className="min-w-0 flex flex-col overflow-hidden">
+                  <IADataTable<ActionLog>
+                    // Use a stable listId so column prefs persist across instances (localStorage key is derived from listId).
+                    listId="monitoring:instance_actions"
+                    dataKey={queryKey}
+                    title="Actions"
+                    height={400}
+                    autoHeight={true}
+                    autoHeightOffset={100}
+                    rowHeight={40}
+                    columns={columns}
+                    loadRange={loadRange}
+                    onCountsChange={handleCountsChange}
+                    rightHeader={
+                      counts.filtered > 0 ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8"
+                          onClick={copyAllActionsToClipboard}
+                          disabled={copyingActions}
+                          title="Copier toutes les actions en JSON"
+                        >
+                          {copiedActions ? (
+                            <>
+                              <Check className="h-4 w-4 mr-2 text-green-600" />
+                              Copié
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-4 w-4 mr-2" />
+                              {copyingActions ? "Copie..." : "Copier JSON"}
+                            </>
+                          )}
+                        </Button>
+                      ) : null
+                    }
+                    onRowClick={(row) => setSelectedLog(row)}
+                  />
+                </div>
 
-            <div className="hidden lg:block border-l bg-muted/10 min-w-0">
-              <div className="p-4 h-full overflow-y-auto">
-                {!selectedLog ? (
-                  <div className="text-sm text-muted-foreground">
-                    Clique une action pour voir le détail.
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2">
-                      <div className="p-2 rounded-md bg-background border">
-                        {(() => {
-                          const Icon = getActionIcon(selectedLog.action_type);
-                          return <Icon className="h-4 w-4" />;
-                        })()}
-                      </div>
-                      <div className="min-w-0">
-                        <div className="font-semibold truncate">{formatActionLabel(selectedLog.action_type)}</div>
-                        <div className="text-xs text-muted-foreground font-mono">{selectedLog.id}</div>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2 text-xs">
-                      <div className="text-muted-foreground">Statut</div>
-                      <div className="font-medium">{selectedLog.status}</div>
-                      <div className="text-muted-foreground">Composant</div>
-                      <div className="font-medium">{selectedLog.component}</div>
-                      <div className="text-muted-foreground">Créé</div>
-                      <div className="font-medium">{formatTimestamp(selectedLog.created_at)}</div>
-                      <div className="text-muted-foreground">Durée</div>
-                      <div className="font-medium font-mono">{formatDuration(selectedLog.duration_ms)}</div>
-                      <div className="text-muted-foreground">Transition</div>
-                      <div className="font-medium font-mono">
-                        {selectedLog.instance_status_before ?? "-"} → {selectedLog.instance_status_after ?? "-"}
-                      </div>
-                    </div>
-
-                    {selectedLog.error_message ? (
-                      <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md p-2">
-                        {selectedLog.error_message}
-                      </div>
-                    ) : null}
-
-                    {selectedLog.metadata && Object.keys(selectedLog.metadata).length > 0 ? (
-                      <div className="text-xs">
-                        <div className="text-muted-foreground mb-1">Métadonnées</div>
-                        <pre className="text-[11px] leading-snug bg-background border rounded-md p-2 overflow-x-auto">
-{JSON.stringify(selectedLog.metadata, null, 2)}
-                        </pre>
-                      </div>
+                <div className="hidden lg:block border-l bg-muted/10 min-w-0 flex flex-col overflow-hidden">
+                  <div className="p-4 flex-1 overflow-y-auto">
+                    {!selectedLog ? (
+                      <div className="text-sm text-muted-foreground">Clique une action pour voir le détail.</div>
                     ) : (
-                      <div className="text-xs text-muted-foreground">Aucune métadonnée.</div>
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-2">
+                          <div className="p-2 rounded-md bg-background border">
+                            {(() => {
+                              const Icon = getActionIcon(selectedLog.action_type);
+                              return <Icon className="h-4 w-4" />;
+                            })()}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="font-semibold truncate">{formatActionLabel(selectedLog.action_type)}</div>
+                            <div className="text-xs text-muted-foreground font-mono">{selectedLog.id}</div>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          <div className="text-muted-foreground">Statut</div>
+                          <div className="font-medium">{selectedLog.status}</div>
+                          <div className="text-muted-foreground">Composant</div>
+                          <div className="font-medium">{selectedLog.component}</div>
+                          <div className="text-muted-foreground">Créé</div>
+                          <div className="font-medium">{formatTimestamp(selectedLog.created_at)}</div>
+                          <div className="text-muted-foreground">Durée</div>
+                          <div className="font-medium font-mono">{formatDuration(selectedLog.duration_ms)}</div>
+                          <div className="text-muted-foreground">Transition</div>
+                          <div className="font-medium font-mono">
+                            {selectedLog.instance_status_before ?? "-"} → {selectedLog.instance_status_after ?? "-"}
+                          </div>
+                        </div>
+
+                        {selectedLog.error_message ? (
+                          <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md p-2">
+                            {selectedLog.error_message}
+                          </div>
+                        ) : null}
+
+                        {selectedLog.metadata && Object.keys(selectedLog.metadata).length > 0 ? (
+                          <div className="text-xs">
+                            <div className="text-muted-foreground mb-1">Métadonnées</div>
+                            <pre className="text-[11px] leading-snug bg-background border rounded-md p-2 overflow-x-auto">
+{JSON.stringify(selectedLog.metadata, null, 2)}
+                            </pre>
+                          </div>
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Aucune métadonnée.</div>
+                        )}
+                      </div>
                     )}
                   </div>
-                )}
-              </div>
-            </div>
+                </div>
           </div>
 
-          <DialogFooter className="px-5 py-3 border-t sm:justify-between">
+          <DialogFooter className="px-5 py-3 border-t sm:justify-between flex-shrink-0">
             <div className="text-xs text-muted-foreground">
               {counts.filtered > 0 ? `${counts.filtered} action(s) pour cette instance` : null}
             </div>
