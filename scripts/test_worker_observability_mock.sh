@@ -271,10 +271,13 @@ PY
 echo "instance_id=$INSTANCE_ID"
 
 echo "== 6) Start per-instance mock runtime (Option A) =="
-# Use a unique mock model id per run to avoid collisions when multiple instances exist in the DB.
-MOCK_VLLM_MODEL_ID="demo-model-$(echo "$INSTANCE_ID" | tr -d '-' | cut -c1-12)"
+# Use real vLLM with Qwen for functional testing
+export MOCK_USE_REAL_VLLM="${MOCK_USE_REAL_VLLM:-1}"
+# Use the actual Qwen model ID from the catalog
+MOCK_VLLM_MODEL_ID="${MOCK_VLLM_MODEL_ID:-Qwen/Qwen2.5-0.5B-Instruct}"
 export MOCK_VLLM_MODEL_ID
-echo "MOCK_VLLM_MODEL_ID=$MOCK_VLLM_MODEL_ID"
+echo "MOCK_USE_REAL_VLLM=${MOCK_USE_REAL_VLLM}"
+echo "MOCK_VLLM_MODEL_ID=${MOCK_VLLM_MODEL_ID}"
 
 export WORKER_AUTH_TOKEN="${WORKER_AUTH_TOKEN:-dev-worker-token}"
 export INSTANCE_ID
