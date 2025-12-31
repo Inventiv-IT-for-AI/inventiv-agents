@@ -326,13 +326,13 @@ CREATE TABLE finops.token_purchases (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-CREATE TABLE public._sqlx_migrations (
-    version bigint NOT NULL,
-    description text NOT NULL,
-    installed_on timestamp with time zone DEFAULT now() NOT NULL,
-    success boolean NOT NULL,
-    checksum bytea NOT NULL,
-    execution_time bigint NOT NULL
+CREATE TABLE IF NOT EXISTS public._sqlx_migrations (
+  version bigint NOT NULL,
+  description text NOT NULL,
+  installed_on timestamp with time zone DEFAULT now() NOT NULL,
+  success boolean NOT NULL,
+  checksum bytea NOT NULL,
+  execution_time bigint NOT NULL
 );
 
 CREATE TABLE public.action_logs (
