@@ -271,10 +271,19 @@ PY
 echo "instance_id=$INSTANCE_ID"
 
 echo "== 6) Start per-instance mock runtime (Option A) =="
-# Use real vLLM with Qwen for functional testing
-export MOCK_USE_REAL_VLLM="${MOCK_USE_REAL_VLLM:-1}"
-# Use the actual Qwen model ID from the catalog
-MOCK_VLLM_MODEL_ID="${MOCK_VLLM_MODEL_ID:-Qwen/Qwen2.5-0.5B-Instruct}"
+# Detect platform: vLLM requires CUDA/NVIDIA GPU and doesn't work on Mac CPU-only
+# On Mac, use synthetic mock by default unless explicitly requested
+if [ "$(uname)" = "Darwin" ] && [ "${MOCK_USE_REAL_VLLM:-}" != "1" ]; then
+  echo "⚠️  Detected macOS: vLLM requires CUDA/NVIDIA GPU and won't work on CPU-only."
+  echo "   Using synthetic mock vLLM (set MOCK_USE_REAL_VLLM=1 to force real vLLM, but it will fail)."
+  export MOCK_USE_REAL_VLLM=0
+  MOCK_VLLM_MODEL_ID="demo-model-$(echo "$INSTANCE_ID" | tr -d '-' | cut -c1-12)"
+else
+  # Use real vLLM with Qwen for functional testing (Linux with GPU or if explicitly requested)
+  export MOCK_USE_REAL_VLLM="${MOCK_USE_REAL_VLLM:-1}"
+  # Use the actual Qwen model ID from the catalog
+  MOCK_VLLM_MODEL_ID="${MOCK_VLLM_MODEL_ID:-Qwen/Qwen2.5-0.5B-Instruct}"
+fi
 export MOCK_VLLM_MODEL_ID
 echo "MOCK_USE_REAL_VLLM=${MOCK_USE_REAL_VLLM}"
 echo "MOCK_VLLM_MODEL_ID=${MOCK_VLLM_MODEL_ID}"
