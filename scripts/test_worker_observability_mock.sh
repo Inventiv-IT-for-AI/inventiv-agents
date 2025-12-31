@@ -259,7 +259,7 @@ echo "model_id=$MODEL_ID_UUID"
 CREATE_JSON="$(curl -fsS -b /tmp/inventiv_cookies.txt \
   -X POST "${API_BASE_URL}/deployments" \
   -H "Content-Type: application/json" \
-  -d "{\"provider_code\":\"mock\",\"zone\":\"mock-eu-1\",\"instance_type\":\"MOCK-GPU-S\",\"model_id\":\"${MODEL_ID_UUID}\"}")"
+  -d "{\"provider_code\":\"mock\",\"zone\":\"local\",\"instance_type\":\"mock-local-instance\",\"model_id\":\"${MODEL_ID_UUID}\"}")"
 
 export CREATE_JSON
 INSTANCE_ID="$(python3 - <<'PY'
