@@ -495,11 +495,12 @@ for REQ_CONTENT in "${REQUESTS[@]}"; do
     cat "${CHAT_RESP_FILE}" >&2 || true
     exit 1
   fi
-  export CHAT_RESP_FILE REQ_NUM
+  export CHAT_RESP_FILE REQ_NUM REQ_CONTENT
   python3 - <<'PY'
 import json,sys,os
 resp_file=os.environ.get("CHAT_RESP_FILE","")
 req_num=os.environ.get("REQ_NUM","")
+req_content=os.environ.get("REQ_CONTENT","")
 if not resp_file:
     print("❌ CHAT_RESP_FILE env missing")
     sys.exit(1)
@@ -513,7 +514,8 @@ content=chs[0].get("message",{}).get("content","")
 if not content:
     print(f"❌ Request {req_num}: empty response content")
     sys.exit(1)
-print(f"✅ Request {req_num} OK: {content[:50]}...")
+print(f"  → Response: {content}")
+print(f"✅ Request {req_num} OK")
 PY
   REQ_NUM=$((REQ_NUM + 1))
   sleep 1
