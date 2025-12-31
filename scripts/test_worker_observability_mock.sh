@@ -473,6 +473,53 @@ if not ok:
 print("✅ /v1/chat/completions end-to-end OK")
 PY
 
+echo "== 12) Execute 3 test requests on local worker =="
+REQUESTS=(
+  "What is 2+2?"
+  "Say hello in French"
+  "What is the capital of France?"
+)
+REQ_NUM=1
+for REQ_CONTENT in "${REQUESTS[@]}"; do
+  echo "Request ${REQ_NUM}/3: ${REQ_CONTENT}"
+  CHAT_RESP_FILE="/tmp/inventiv_openai_chat_${REQ_NUM}.json"
+  CHAT_CODE="$(curl -sS \
+    -o "${CHAT_RESP_FILE}" \
+    -w '%{http_code}' \
+    -X POST "${API_BASE_URL}/v1/chat/completions" \
+    -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+    -H "Content-Type: application/json" \
+    -d "{\"model\":\"${MOCK_VLLM_MODEL_ID}\",\"messages\":[{\"role\":\"user\",\"content\":\"${REQ_CONTENT}\"}],\"stream\":false,\"max_tokens\":50}" || true)"
+  if [ "${CHAT_CODE}" != "200" ]; then
+    echo "❌ Request ${REQ_NUM} failed (status=${CHAT_CODE})" >&2
+    cat "${CHAT_RESP_FILE}" >&2 || true
+    exit 1
+  fi
+  export CHAT_RESP_FILE REQ_NUM
+  python3 - <<'PY'
+import json,sys,os
+resp_file=os.environ.get("CHAT_RESP_FILE","")
+req_num=os.environ.get("REQ_NUM","")
+if not resp_file:
+    print("❌ CHAT_RESP_FILE env missing")
+    sys.exit(1)
+with open(resp_file,"r",encoding="utf-8") as f:
+    j=json.load(f)
+chs=j.get("choices") or []
+if not isinstance(chs,list) or len(chs)==0:
+    print(f"❌ Request {req_num}: invalid response")
+    sys.exit(1)
+content=chs[0].get("message",{}).get("content","")
+if not content:
+    print(f"❌ Request {req_num}: empty response content")
+    sys.exit(1)
+print(f"✅ Request {req_num} OK: {content[:50]}...")
+PY
+  REQ_NUM=$((REQ_NUM + 1))
+  sleep 1
+done
+echo "✅ All 3 test requests completed successfully"
+
 echo "== ✅ PASS: worker observability chain (mock) =="
 
 
