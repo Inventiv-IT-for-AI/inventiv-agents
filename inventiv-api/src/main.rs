@@ -210,6 +210,7 @@ async fn main() {
         .route("/events/stream", get(events_stream))
         // Models (catalog)
         .route("/models", get(list_models).post(create_model))
+        .route("/instance_types/:instance_type_id/models", get(list_compatible_models))
         .route(
             "/models/:id",
             get(get_model).put(update_model).delete(delete_model),
@@ -2123,6 +2124,40 @@ async fn list_models(
 
 #[utoipa::path(
     get,
+    path = "/instance_types/{instance_type_id}/models",
+    params(
+        ("instance_type_id" = Uuid, Path, description = "Instance type UUID")
+    ),
+    responses(
+        (status = 200, description = "List compatible models for this instance type", body = [inventiv_common::LlmModel])
+    )
+)]
+async fn list_compatible_models(
+    State(state): State<Arc<AppState>>,
+    Path(instance_type_id): Path<uuid::Uuid>,
+) -> Json<Vec<inventiv_common::LlmModel>> {
+    // List all active models compatible with this instance type
+    let models = sqlx::query_as::<Postgres, inventiv_common::LlmModel>(
+        r#"
+        SELECT DISTINCT
+            m.id, m.name, m.model_id, m.required_vram_gb, m.context_length,
+            m.is_active, m.data_volume_gb, m.metadata, m.created_at, m.updated_at
+        FROM models m
+        WHERE m.is_active = true
+          AND check_model_instance_compatibility(m.id, $1) = true
+        ORDER BY m.name
+        "#
+    )
+    .bind(instance_type_id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or(vec![]);
+    
+    Json(models)
+}
+
+#[utoipa::path(
+    get,
     path = "/models/{id}",
     responses((status = 200, description = "Get model", body = inventiv_common::LlmModel))
 )]
@@ -2592,7 +2627,33 @@ async fn create_deployment(
         match m {
             None => validation_error = Some(("INVALID_MODEL", "Invalid model_id (not found)")),
             Some(false) => validation_error = Some(("INACTIVE_MODEL", "Model is inactive")),
-            Some(true) => {}
+            Some(true) => {
+                // Check model-instance type compatibility
+                let instance_type_id_uuid = sqlx::query_scalar::<_, uuid::Uuid>(
+                    "SELECT id FROM instance_types WHERE provider_id = $1 AND code = $2 LIMIT 1"
+                )
+                .bind(provider_id)
+                .bind(&payload.instance_type)
+                .fetch_optional(&state.db)
+                .await
+                .unwrap_or(None);
+                
+                if let Some(it_id) = instance_type_id_uuid {
+                    let is_compatible: Option<bool> = sqlx::query_scalar(
+                        "SELECT check_model_instance_compatibility($1, $2)"
+                    )
+                    .bind(mid)
+                    .bind(it_id)
+                    .fetch_optional(&state.db)
+                    .await
+                    .unwrap_or(None);
+                    
+                    if !is_compatible.unwrap_or(false) {
+                        validation_error = Some(("MODEL_INSTANCE_INCOMPATIBLE", 
+                            "Model is not compatible with this instance type (insufficient VRAM or provider restriction)"));
+                    }
+                }
+            }
         }
     }
 

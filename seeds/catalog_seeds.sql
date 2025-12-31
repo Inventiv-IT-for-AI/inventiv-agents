@@ -183,6 +183,9 @@ INSERT INTO models (
   (gen_random_uuid(), 'Mixtral 8x7B Instruct',     'mistralai/Mixtral-8x7B-Instruct-v0.1', 48,  32768, true,  400, '{}'::jsonb, NOW(), NOW()),
   (gen_random_uuid(), 'Mixtral 8x22B Instruct',    'mistralai/Mixtral-8x22B-Instruct-v0.1',96,  65536, true,  800, '{}'::jsonb, NOW(), NOW()),
 
+  -- Mock echo model (for Mock Provider synthetic testing)
+  (gen_random_uuid(), 'Mock Echo Model',            'mock-echo-model',                        0,   2048, true,    0, '{"provider_restriction": "mock", "description": "Synthetic echo model for Mock Provider local testing"}'::jsonb, NOW(), NOW()),
+  
   -- Qwen 2.5
   (gen_random_uuid(), 'Qwen 2.5 0.5B Instruct',    'Qwen/Qwen2.5-0.5B-Instruct',             2,   2048, true,   50, '{}'::jsonb, NOW(), NOW()),
   (gen_random_uuid(), 'Qwen 2.5 7B Instruct',      'Qwen/Qwen2.5-7B-Instruct',              16,  32768, true,  200, '{}'::jsonb, NOW(), NOW()),
