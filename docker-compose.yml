@@ -73,7 +73,8 @@ services:
     environment:
       # Frontend server-side proxy target (docker network)
       - API_INTERNAL_URL=http://api:8003
-      # Improve file watching reliability on macOS/docker bind mounts
+      # Improve file watching reliability on macOS/Windows with Docker bind mounts
+      # Also helps on Linux in some cases
       - CHOKIDAR_USEPOLLING=1
       - WATCHPACK_POLLING=true
       - NODE_ENV=development

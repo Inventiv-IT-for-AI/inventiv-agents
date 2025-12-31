@@ -1,9 +1,9 @@
 import type { LucideIcon } from "lucide-react";
-import { Server, Zap, Cloud, Database, Archive, AlertTriangle, Clock, CheckCircle, RefreshCcw, Copy, Check } from "lucide-react";
+import { Server, Zap, Cloud, Database, Archive, AlertTriangle, Clock, CheckCircle, RefreshCcw, Copy, Check, ChevronLeft, ChevronRight } from "lucide-react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { apiUrl } from "@/lib/api";
 import type { ActionLog, ActionType, Instance } from "@/lib/types";
 import type { LoadRangeResult } from "ia-widgets";
@@ -15,12 +15,16 @@ interface InstanceTimelineModalProps {
   open: boolean;
   onClose: () => void;
   instanceId: string;
+  instances?: Instance[];
+  onInstanceChange?: (instanceId: string) => void;
 }
 
 export function InstanceTimelineModal({
   open,
   onClose,
   instanceId,
+  instances = [],
+  onInstanceChange,
 }: InstanceTimelineModalProps) {
   useRealtimeEvents();
   const [instance, setInstance] = useState<Instance | null>(null);
@@ -32,6 +36,8 @@ export function InstanceTimelineModal({
   const [copyingActions, setCopyingActions] = useState(false);
   const [copiedActions, setCopiedActions] = useState(false);
   const [recentLogs, setRecentLogs] = useState<ActionLog[]>([]);
+  const tableContainerRef = useRef<HTMLDivElement>(null);
+  const [tableHeight, setTableHeight] = useState(400);
 
   useEffect(() => {
     if (open && instanceId) {
@@ -42,6 +48,46 @@ export function InstanceTimelineModal({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, instanceId, refreshToken]);
+
+  // Calculer la hauteur disponible pour le tableau en fonction de l'espace dans le conteneur flex
+  useEffect(() => {
+    if (!open) return;
+
+    const updateHeight = () => {
+      const container = tableContainerRef.current;
+      if (!container) {
+        // Fallback si le conteneur n'est pas encore monté
+        setTableHeight(400);
+        return;
+      }
+
+      const rect = container.getBoundingClientRect();
+      // Hauteur disponible = hauteur du conteneur
+      // Le tableau IADataTable gère son propre header, donc on utilise toute la hauteur disponible
+      // On soustrait juste un peu pour éviter les débordements (environ 60px pour le header du tableau)
+      const availableHeight = Math.max(300, rect.height - 60);
+      setTableHeight(availableHeight);
+    };
+
+    // Mettre à jour immédiatement et après un délai pour s'assurer que le layout est stabilisé
+    const timeoutId1 = setTimeout(updateHeight, 0);
+    const timeoutId2 = setTimeout(updateHeight, 100);
+    const timeoutId3 = setTimeout(updateHeight, 300);
+
+    // Observer les changements de taille du conteneur
+    let resizeObserver: ResizeObserver | null = null;
+    if (tableContainerRef.current && typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(updateHeight);
+      resizeObserver.observe(tableContainerRef.current);
+    }
+
+    return () => {
+      clearTimeout(timeoutId1);
+      clearTimeout(timeoutId2);
+      clearTimeout(timeoutId3);
+      resizeObserver?.disconnect();
+    };
+  }, [open, refreshToken]);
 
   useEffect(() => {
     const handler = () => setActionsRefreshSeq((v) => v + 1);
@@ -221,7 +267,7 @@ export function InstanceTimelineModal({
         label: "Heure",
         width: 110,
         cell: ({ row }) => (
-          <span className="font-mono text-xs text-muted-foreground whitespace-nowrap">
+          <span className="font-mono text-[11px] text-muted-foreground whitespace-nowrap">
             {new Date(row.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
           </span>
         ),
@@ -236,8 +282,8 @@ export function InstanceTimelineModal({
           return (
             <div className="min-w-0 flex items-center gap-2">
               <span className={`h-2 w-2 rounded-full ${dotClass}`} />
-              <span className="truncate font-medium">{actionLabel}</span>
-              {row.error_message ? <span className="ml-auto text-xs text-red-600">Erreur</span> : null}
+              <span className="truncate text-xs font-medium">{actionLabel}</span>
+              {row.error_message ? <span className="ml-auto text-[10px] text-red-600">Erreur</span> : null}
             </div>
           );
         },
@@ -247,7 +293,7 @@ export function InstanceTimelineModal({
         label: "Statut",
         width: 140,
         cell: ({ row }) => (
-          <Badge variant="outline" className="text-[11px]">
+          <Badge variant="outline" className="text-[10px]">
             {row.status}
           </Badge>
         ),
@@ -257,7 +303,7 @@ export function InstanceTimelineModal({
         label: "Durée",
         width: 110,
         align: "right",
-        cell: ({ row }) => <span className="font-mono text-xs text-muted-foreground">{formatDuration(row.duration_ms)}</span>,
+        cell: ({ row }) => <span className="font-mono text-[11px] text-muted-foreground">{formatDuration(row.duration_ms)}</span>,
       },
       {
         id: "transition",
@@ -265,7 +311,7 @@ export function InstanceTimelineModal({
         width: 220,
         cellClassName: "truncate",
         cell: ({ row }) => (
-          <span className="font-mono text-[11px] text-muted-foreground truncate">
+          <span className="font-mono text-[10px] text-muted-foreground truncate">
             {(row.instance_status_before || row.instance_status_after)
               ? `${row.instance_status_before ?? "-"} → ${row.instance_status_after ?? "-"}`
               : "-"}
@@ -344,13 +390,38 @@ export function InstanceTimelineModal({
     }
   }, [copyingActions, fetchAllActions, instanceId, instance, lastPing, readiness, vllmMode]);
 
+  // Navigation entre instances
+  const currentInstanceIndex = useMemo(() => {
+    if (!instances.length) return -1;
+    return instances.findIndex((inst) => inst.id === instanceId);
+  }, [instances, instanceId]);
+
+  const hasPreviousInstance = currentInstanceIndex > 0;
+  const hasNextInstance = currentInstanceIndex >= 0 && currentInstanceIndex < instances.length - 1;
+
+  const navigateToPreviousInstance = useCallback(() => {
+    if (!hasPreviousInstance || !onInstanceChange) return;
+    const prevInstance = instances[currentInstanceIndex - 1];
+    if (prevInstance) {
+      onInstanceChange(prevInstance.id);
+    }
+  }, [hasPreviousInstance, instances, currentInstanceIndex, onInstanceChange]);
+
+  const navigateToNextInstance = useCallback(() => {
+    if (!hasNextInstance || !onInstanceChange) return;
+    const nextInstance = instances[currentInstanceIndex + 1];
+    if (nextInstance) {
+      onInstanceChange(nextInstance.id);
+    }
+  }, [hasNextInstance, instances, currentInstanceIndex, onInstanceChange]);
+
   return (
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent showCloseButton={false} className="w-[calc(100vw-2rem)] max-w-5xl sm:max-w-5xl p-0 overflow-hidden">
         <div className="flex flex-col h-[85vh] overflow-hidden">
           <DialogHeader className="px-5 py-4 border-b flex-shrink-0">
             <div className="flex items-start justify-between gap-4">
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <DialogTitle className="truncate">Actions de l&apos;instance</DialogTitle>
                   <Badge variant="outline" className="text-xs">{displayOrDash(instance?.status)}</Badge>
@@ -361,6 +432,30 @@ export function InstanceTimelineModal({
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                {instances.length > 1 && (
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={navigateToPreviousInstance}
+                      disabled={!hasPreviousInstance}
+                      title="Instance précédente"
+                    >
+                      <ChevronLeft className="h-4 w-4 mr-1" />
+                      Précédente
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={navigateToNextInstance}
+                      disabled={!hasNextInstance}
+                      title="Instance suivante"
+                    >
+                      Suivante
+                      <ChevronRight className="h-4 w-4 ml-1" />
+                    </Button>
+                  </>
+                )}
                 <Button
                   variant="outline"
                   size="sm"
@@ -511,42 +606,49 @@ export function InstanceTimelineModal({
           </DialogHeader>
 
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] flex-1 min-h-0 overflow-hidden">
-                <div className="min-w-0 flex flex-col overflow-hidden">
+                <div ref={tableContainerRef} className="min-w-0 flex flex-col overflow-hidden px-3 pt-2">
                   <IADataTable<ActionLog>
                     // Use a stable listId so column prefs persist across instances (localStorage key is derived from listId).
                     listId="monitoring:instance_actions"
                     dataKey={queryKey}
-                    title="Actions"
-                    height={400}
-                    autoHeight={true}
-                    autoHeightOffset={100}
+                    title={<span className="text-sm font-medium pl-1">Actions</span>}
+                    height={tableHeight}
                     rowHeight={40}
                     columns={columns}
                     loadRange={loadRange}
                     onCountsChange={handleCountsChange}
+                    leftMeta={
+                      <span className="text-xs text-muted-foreground font-mono">
+                        {counts.filtered !== counts.total
+                          ? `Filtré ${counts.filtered} - Total ${counts.total}`
+                          : `Total ${counts.total}`}
+                      </span>
+                    }
                     rightHeader={
-                      counts.filtered > 0 ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-8"
-                          onClick={copyAllActionsToClipboard}
-                          disabled={copyingActions}
-                          title="Copier toutes les actions en JSON"
-                        >
-                          {copiedActions ? (
-                            <>
-                              <Check className="h-4 w-4 mr-2 text-green-600" />
-                              Copié
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="h-4 w-4 mr-2" />
-                              {copyingActions ? "Copie..." : "Copier JSON"}
-                            </>
-                          )}
-                        </Button>
-                      ) : null
+                      <div className="flex items-center gap-2">
+                        {counts.filtered > 0 ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-xs"
+                            onClick={copyAllActionsToClipboard}
+                            disabled={copyingActions}
+                            title="Copier toutes les actions en JSON"
+                          >
+                            {copiedActions ? (
+                              <>
+                                <Check className="h-3 w-3 mr-1 text-green-600" />
+                                Copié
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="h-3 w-3 mr-1" />
+                                {copyingActions ? "Copie..." : "Copier JSON"}
+                              </>
+                            )}
+                          </Button>
+                        ) : null}
+                      </div>
                     }
                     onRowClick={(row) => setSelectedLog(row)}
                   />

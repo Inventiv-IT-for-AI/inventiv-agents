@@ -863,93 +863,114 @@ async fn list_system_activity(
     let instance_filter = params.instance_id;
 
     let rows: Vec<SystemSampleRow> = match gran.as_str() {
-        "minute" => sqlx::query_as::<Postgres, SystemSampleRow>(
-            r#"
-            SELECT
-              time_bucket(INTERVAL '1 minute', s.time) as time,
-              s.instance_id,
-              AVG(s.cpu_usage_pct) as cpu_usage_pct,
-              AVG(s.load1) as load1,
-              AVG(s.mem_used_bytes)::bigint as mem_used_bytes,
-              MAX(s.mem_total_bytes)::bigint as mem_total_bytes,
-              AVG(s.disk_used_bytes)::bigint as disk_used_bytes,
-              MAX(s.disk_total_bytes)::bigint as disk_total_bytes,
-              AVG(s.net_rx_bps) as net_rx_bps,
-              AVG(s.net_tx_bps) as net_tx_bps,
-              i.provider_instance_id::text as instance_name,
-              p.name as provider_name
-            FROM system_samples s
-            JOIN instances i ON i.id = s.instance_id
-            LEFT JOIN providers p ON p.id = i.provider_id
-            WHERE s.time > NOW() - make_interval(secs => $1)
-              AND ($2::uuid IS NULL OR s.instance_id = $2)
-            GROUP BY time, s.instance_id, i.provider_instance_id, p.name
-            ORDER BY s.instance_id, time ASC
-            "#,
-        )
-        .bind(window_s)
-        .bind(instance_filter)
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default(),
-        "hour" => sqlx::query_as::<Postgres, SystemSampleRow>(
-            r#"
-            SELECT
-              time_bucket(INTERVAL '1 hour', s.time) as time,
-              s.instance_id,
-              AVG(s.cpu_usage_pct) as cpu_usage_pct,
-              AVG(s.load1) as load1,
-              AVG(s.mem_used_bytes)::bigint as mem_used_bytes,
-              MAX(s.mem_total_bytes)::bigint as mem_total_bytes,
-              AVG(s.disk_used_bytes)::bigint as disk_used_bytes,
-              MAX(s.disk_total_bytes)::bigint as disk_total_bytes,
-              AVG(s.net_rx_bps) as net_rx_bps,
-              AVG(s.net_tx_bps) as net_tx_bps,
-              i.provider_instance_id::text as instance_name,
-              p.name as provider_name
-            FROM system_samples s
-            JOIN instances i ON i.id = s.instance_id
-            LEFT JOIN providers p ON p.id = i.provider_id
-            WHERE s.time > NOW() - make_interval(secs => $1)
-              AND ($2::uuid IS NULL OR s.instance_id = $2)
-            GROUP BY time, s.instance_id, i.provider_instance_id, p.name
-            ORDER BY s.instance_id, time ASC
-            "#,
-        )
-        .bind(window_s)
-        .bind(instance_filter)
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default(),
-        "day" => sqlx::query_as::<Postgres, SystemSampleRow>(
-            r#"
-            SELECT
-              time_bucket(INTERVAL '1 day', s.time) as time,
-              s.instance_id,
-              AVG(s.cpu_usage_pct) as cpu_usage_pct,
-              AVG(s.load1) as load1,
-              AVG(s.mem_used_bytes)::bigint as mem_used_bytes,
-              MAX(s.mem_total_bytes)::bigint as mem_total_bytes,
-              AVG(s.disk_used_bytes)::bigint as disk_used_bytes,
-              MAX(s.disk_total_bytes)::bigint as disk_total_bytes,
-              AVG(s.net_rx_bps) as net_rx_bps,
-              AVG(s.net_tx_bps) as net_tx_bps,
-              i.provider_instance_id::text as instance_name,
-              p.name as provider_name
-            FROM system_samples s
-            JOIN instances i ON i.id = s.instance_id
-            LEFT JOIN providers p ON p.id = i.provider_id
-            WHERE s.time > NOW() - make_interval(secs => $1)
-              AND ($2::uuid IS NULL OR s.instance_id = $2)
-            GROUP BY time, s.instance_id, i.provider_instance_id, p.name
-            ORDER BY s.instance_id, time ASC
-            "#,
-        )
-        .bind(window_s)
-        .bind(instance_filter)
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default(),
+        "minute" => {
+            let res = sqlx::query_as::<Postgres, SystemSampleRow>(
+                r#"
+                SELECT
+                  ss.bucket as time,
+                  ss.instance_id,
+                  ss.cpu_usage_pct,
+                  ss.load1,
+                  ss.mem_used_bytes,
+                  ss.mem_total_bytes,
+                  ss.disk_used_bytes,
+                  ss.disk_total_bytes,
+                  ss.net_rx_bps,
+                  ss.net_tx_bps,
+                  i.provider_instance_id::text as instance_name,
+                  p.name as provider_name
+                FROM system_samples_1m ss
+                JOIN instances i ON i.id = ss.instance_id
+                LEFT JOIN providers p ON p.id = i.provider_id
+                WHERE ss.bucket > NOW() - ($1::bigint * INTERVAL '1 second')
+                  AND ($2::uuid IS NULL OR ss.instance_id = $2)
+                ORDER BY ss.instance_id, ss.bucket ASC
+                "#,
+            )
+            .bind(window_s)
+            .bind(instance_filter)
+            .fetch_all(&state.db)
+            .await;
+            match res {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("❌ system/activity query (minute) failed: {}", e);
+                    vec![]
+                }
+            }
+        }
+        "hour" => {
+            let res = sqlx::query_as::<Postgres, SystemSampleRow>(
+                r#"
+                SELECT
+                  ss.bucket as time,
+                  ss.instance_id,
+                  ss.cpu_usage_pct,
+                  ss.load1,
+                  ss.mem_used_bytes,
+                  ss.mem_total_bytes,
+                  ss.disk_used_bytes,
+                  ss.disk_total_bytes,
+                  ss.net_rx_bps,
+                  ss.net_tx_bps,
+                  i.provider_instance_id::text as instance_name,
+                  p.name as provider_name
+                FROM system_samples_1h ss
+                JOIN instances i ON i.id = ss.instance_id
+                LEFT JOIN providers p ON p.id = i.provider_id
+                WHERE ss.bucket > NOW() - ($1::bigint * INTERVAL '1 second')
+                  AND ($2::uuid IS NULL OR ss.instance_id = $2)
+                ORDER BY ss.instance_id, ss.bucket ASC
+                "#,
+            )
+            .bind(window_s)
+            .bind(instance_filter)
+            .fetch_all(&state.db)
+            .await;
+            match res {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("❌ system/activity query (hour) failed: {}", e);
+                    vec![]
+                }
+            }
+        }
+        "day" => {
+            let res = sqlx::query_as::<Postgres, SystemSampleRow>(
+                r#"
+                SELECT
+                  ss.bucket as time,
+                  ss.instance_id,
+                  ss.cpu_usage_pct,
+                  ss.load1,
+                  ss.mem_used_bytes,
+                  ss.mem_total_bytes,
+                  ss.disk_used_bytes,
+                  ss.disk_total_bytes,
+                  ss.net_rx_bps,
+                  ss.net_tx_bps,
+                  i.provider_instance_id::text as instance_name,
+                  p.name as provider_name
+                FROM system_samples_1d ss
+                JOIN instances i ON i.id = ss.instance_id
+                LEFT JOIN providers p ON p.id = i.provider_id
+                WHERE ss.bucket > NOW() - ($1::bigint * INTERVAL '1 second')
+                  AND ($2::uuid IS NULL OR ss.instance_id = $2)
+                ORDER BY ss.instance_id, ss.bucket ASC
+                "#,
+            )
+            .bind(window_s)
+            .bind(instance_filter)
+            .fetch_all(&state.db)
+            .await;
+            match res {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("❌ system/activity query (day) failed: {}", e);
+                    vec![]
+                }
+            }
+        }
         // second (default): raw samples
         _ => sqlx::query_as::<Postgres, SystemSampleRow>(
             r#"

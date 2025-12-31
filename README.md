@@ -4,29 +4,29 @@
 [![GHCR (build + promote)](https://github.com/Inventiv-IT-for-AI/inventiv-agents/actions/workflows/ghcr.yml/badge.svg)](https://github.com/Inventiv-IT-for-AI/inventiv-agents/actions/workflows/ghcr.yml)
 [![Version](https://img.shields.io/badge/version-0.4.5-blue.svg)](VERSION)
 
-**Control-plane + data-plane pour exécuter des agents/instances IA** — Infrastructure d'inférence LLM scalable, modulaire et performante, écrite en **Rust**.
+**Control-plane + data-plane to run AI agents/instances** — Scalable, modular, and performant LLM inference infrastructure, written in **Rust**.
 
-## TL;DR (30 secondes)
+## TL;DR (30 seconds)
 
-**Inventiv Agents** est une plateforme open-source (AGPL v3) qui orchestre le cycle de vie complet des instances GPU pour l'inférence LLM : provisioning automatique, health-check, scaling, monitoring FinOps, et gestion multi-provider (Scaleway, Mock).
+**Inventiv Agents** is an open-source platform (AGPL v3) that orchestrates the complete lifecycle of GPU instances for LLM inference: automatic provisioning, health-check, scaling, FinOps monitoring, and multi-provider management (Scaleway, Mock).
 
-**Pourquoi c'est utile** : Permet de déployer et scaler des modèles LLM (vLLM) de manière standardisée, avec suivi financier intégré et contrôle granulaire sur les ressources cloud.
+**Why it's useful**: Enables standardized deployment and scaling of LLM models (vLLM), with integrated financial tracking and granular control over cloud resources.
 
-📘 **Documentation détaillée** : [Architecture](docs/architecture.md) | [Domain Design & CQRS](docs/domain_design.md) | [Spécifications Générales](docs/specification_generale.md) | [UI Design System](docs/ui_design_system.md) | [`ia-widgets`](docs/ia_widgets.md) | [Engineering Guidelines](docs/engineering_guidelines.md)
+📘 **Detailed documentation**: [Architecture](docs/architecture.md) | [Domain Design & CQRS](docs/domain_design.md) | [General Specifications](docs/specification_generale.md) | [UI Design System](docs/ui_design_system.md) | [`ia-widgets`](docs/ia_widgets.md) | [Engineering Guidelines](docs/engineering_guidelines.md)
 
-## Fonctionnalités clés
+## Key Features
 
-- ✅ **Provisioning / Termination** : Création et destruction automatique d'instances GPU via providers (Scaleway, Mock)
-- ✅ **Health-check & Reconciliation** : Surveillance continue des instances, détection d'orphans, retry automatique
-- ✅ **Bus d'événements Redis** : Architecture event-driven avec `CMD:*` (commandes) et `EVT:*` (événements)
-- ✅ **Orchestrator (jobs + state machine)** : Gestion asynchrone du cycle de vie (booting → ready → terminating → terminated)
-- ✅ **Worker (agent runtime)** : Agent Python déployé sur instances GPU, heartbeat, readiness (`/readyz`), métriques
-- ✅ **FinOps (coûts/forecast)** : Tracking des coûts réels et prévisionnels par instance/type/région/provider, fenêtres temporelles (minute/heure/jour/30j/365j)
-- ✅ **Frontend (console web)** : Dashboard Next.js avec monitoring FinOps, gestion des instances, settings (providers/zones/types), action logs
-- ✅ **Auth (session JWT + users)** : Authentification par session cookie, gestion des utilisateurs, bootstrap admin automatique
-- ✅ **Worker Auth (token par instance)** : Authentification sécurisée des workers avec tokens hashés en DB, bootstrap automatique
+- ✅ **Provisioning / Termination**: Automatic creation and destruction of GPU instances via providers (Scaleway, Mock)
+- ✅ **Health-check & Reconciliation**: Continuous monitoring of instances, orphan detection, automatic retry
+- ✅ **Redis Event Bus**: Event-driven architecture with `CMD:*` (commands) and `EVT:*` (events)
+- ✅ **Orchestrator (jobs + state machine)**: Asynchronous lifecycle management (booting → ready → terminating → terminated)
+- ✅ **Worker (agent runtime)**: Python agent deployed on GPU instances, heartbeat, readiness (`/readyz`), metrics
+- ✅ **FinOps (costs/forecast)**: Tracking of real and forecasted costs by instance/type/region/provider, time windows (minute/hour/day/30d/365d)
+- ✅ **Frontend (web console)**: Next.js dashboard with FinOps monitoring, instance management, settings (providers/zones/types), action logs
+- ✅ **Auth (JWT session + users)**: Cookie-based session authentication, user management, automatic admin bootstrap
+- ✅ **Worker Auth (token per instance)**: Secure worker authentication with hashed tokens in DB, automatic bootstrap
 
-## Architecture (vue d'ensemble)
+## Architecture (Overview)
 
 ```
 ┌─────────────┐
@@ -63,351 +63,355 @@
                     └─────────────────┘
 ```
 
-### Composants (repo layout)
+### Components (repo layout)
 
-- **`inventiv-api`** (Rust) : API HTTP synchrone, endpoints protégés par session, Swagger UI
-- **`inventiv-orchestrator`** (Rust) : Control plane asynchrone, jobs de fond, state machine
-- **`inventiv-finops`** (Rust) : Service de calcul des coûts réels et prévisionnels (tables TimescaleDB)
-- **`inventiv-worker`** (Python) : Agent sidecar déployé sur instances GPU, heartbeat, readiness
-- **`inventiv-frontend`** (Next.js) : UI dashboard avec Tailwind + shadcn/ui
-- **`inventiv-common`** (Rust) : Bibliothèque partagée (types, DTOs, événements)
+- **`inventiv-api`** (Rust): Synchronous HTTP API, session-protected endpoints, Swagger UI
+- **`inventiv-orchestrator`** (Rust): Asynchronous control plane, background jobs, state machine
+- **`inventiv-finops`** (Rust): Service for calculating real and forecasted costs (TimescaleDB tables)
+- **`inventiv-worker`** (Python): Sidecar agent deployed on GPU instances, heartbeat, readiness
+- **`inventiv-frontend`** (Next.js): UI dashboard with Tailwind + shadcn/ui
+- **`inventiv-common`** (Rust): Shared library (types, DTOs, events)
 
-**Références** :
-- [Architecture détaillée](docs/architecture.md)
+**References**:
+- [Detailed Architecture](docs/architecture.md)
 - [Domain Design & CQRS](docs/domain_design.md)
 - [Worker & Router Phase 0.2](docs/worker_and_router_phase_0_2.md)
-- [Multi-tenant: Organisations + partage de modèles + billing tokens](docs/MULTI_TENANT_MODEL_SHARING_BILLING.md)
+- [Multi-tenant: Organizations + model sharing + billing tokens](docs/MULTI_TENANT_MODEL_SHARING_BILLING.md)
 
-## Prérequis
+## Prerequisites
 
-- **Docker** & **Docker Compose** (pour la stack complète)
-- **Rust toolchain** (si build local des services Rust)
-- **Node.js** (v18+) et **npm** (si frontend local)
-- **Make** (optionnel, pour l'automatisation)
-- **Accès provider** (ex: Scaleway) si test infra réel
+- **Docker** & **Docker Compose** v2.0+ (for the complete stack)
+- **Git**
+- **Make** (optional, but recommended for using `make` commands)
 
-## Quickstart (dev local)
+**Compatibility**: Windows (WSL2 recommended), Linux, macOS (Intel and Apple Silicon)
+
+**Note**: Rust and Node.js are not required for local development — everything runs in Docker.
+
+See [docs/DEVELOPMENT_SETUP.md](docs/DEVELOPMENT_SETUP.md) for the detailed configuration guide by platform.
+
+## Quickstart (local dev)
 
 ### 1. Configuration
 
 ```bash
-# Créer le fichier d'env local (non commité)
+# Create local env file (not committed)
 cp env/dev.env.example env/dev.env
 
-# Créer le secret admin (non commité)
+# Create admin secret (not committed)
 mkdir -p deploy/secrets
 echo "<your-admin-password>" > deploy/secrets/default_admin_password
 ```
 
-> Note: si tu utilises un modèle Hugging Face **privé**, préfère `WORKER_HF_TOKEN_FILE` (secret file) plutôt qu’un token en clair dans `env/*.env`.
+> Note: if you use a **private** Hugging Face model, prefer `WORKER_HF_TOKEN_FILE` (secret file) rather than a token in plain text in `env/*.env`.
 
-### 2. Lancement de la stack
+### 2. Start the stack
 
 ```bash
-# Compiler et lancer tous les services (Postgres, Redis, API, Orchestrator, FinOps)
+# Compile and start all services (Postgres, Redis, API, Orchestrator, FinOps)
 make up
 ```
 
-**URLs locales** :
-- **Frontend (UI)** : `http://localhost:3000` (ou `3000 + PORT_OFFSET`, voir étape 3)
-- **API / Orchestrator / DB / Redis** : **non exposés sur le host par défaut** (communication via réseau Docker)
+**Local URLs**:
+- **Frontend (UI)**: `http://localhost:3000` (or `3000 + PORT_OFFSET`, see step 3)
+- **API / Orchestrator / DB / Redis**: **not exposed on host by default** (communication via Docker network)
 
-Si tu as besoin d’accéder à l’API depuis le host (ex: tunnel Cloudflare), utilise :
+If you need to access the API from the host (e.g., Cloudflare tunnel), use:
 
 ```bash
-make api-expose   # expose l’API en loopback 127.0.0.1:(8003 + PORT_OFFSET)
+make api-expose   # exposes API on loopback 127.0.0.1:(8003 + PORT_OFFSET)
 ```
 
-Pour arrêter la stack **sans perdre l’état DB/Redis** :
+To stop the stack **without losing DB/Redis state**:
 
 ```bash
 make down
 ```
 
-Pour repartir de zéro (**wipe les volumes db/redis**) :
+To start from scratch (**wipe db/redis volumes**):
 
 ```bash
 make nuke
 ```
 
-### 3. Lancer le Frontend (UI)
+### 3. Start the Frontend (UI)
 
-**Option recommandée** (via Makefile) :
+**Recommended option** (via Makefile):
 
 ```bash
 make ui
 ```
 
-Cela démarre Next.js dans Docker, exposé sur `http://localhost:3000` (ou `3000 + PORT_OFFSET`).
-Les appels backend passent via des routes same-origin `/api/backend/*` côté frontend (proxy server-side vers `API_INTERNAL_URL=http://api:8003` dans le réseau Docker).
+This starts Next.js in Docker, exposed on `http://localhost:3000` (or `3000 + PORT_OFFSET`).
+Backend calls go through same-origin routes `/api/backend/*` on the frontend (server-side proxy to `API_INTERNAL_URL=http://api:8003` in the Docker network).
 
-> Note (monorepo): les packages JS/TS (ex: `inventiv-frontend`, `inventiv-ui/ia-widgets`) cohabitent avec les services Rust/Python.
-> Le repo utilise **npm workspaces** pour gérer uniquement ces dossiers — le reste (Rust/Python/infra) n’est pas impacté.
+> Note (monorepo): JS/TS packages (e.g., `inventiv-frontend`, `inventiv-ui/ia-widgets`) coexist with Rust/Python services.
+> The repo uses **npm workspaces** to manage only these directories — the rest (Rust/Python/infra) is not affected.
 
 ## UI / Design system
 
-Nous maintenons un design system basé sur **Tailwind v4 + shadcn/ui**, avec une règle simple:
-**pas de nouveaux widgets/components inventés sans validation du besoin et du style**.
+We maintain a design system based on **Tailwind v4 + shadcn/ui**, with a simple rule:
+**no new widgets/components invented without validating the need and style**.
 
-- Charte & conventions: [UI Design System](docs/ui_design_system.md)
-- Primitives UI centralisées (shadcn-style): `inventiv-ui/ia-designsys` (import: `ia-designsys`)
-- Widgets réutilisables: [`ia-widgets`](docs/ia_widgets.md) (`inventiv-ui/ia-widgets`, import: `ia-widgets`)
+- Charter & conventions: [UI Design System](docs/ui_design_system.md)
+- Centralized UI primitives (shadcn-style): `inventiv-ui/ia-designsys` (import: `ia-designsys`)
+- Reusable widgets: [`ia-widgets`](docs/ia_widgets.md) (`inventiv-ui/ia-widgets`, import: `ia-widgets`)
 
-## Clean code / maintenabilité
+## Clean code / maintainability
 
-Important: éviter de transformer les fichiers pivots (`main.rs`, `page.tsx`, …) en “god files”.
-On applique SRP (*un fichier / un module / une mission*) et on garde les entrypoints “thin” pour rendre le code lisible et testable.
+Important: avoid turning pivot files (`main.rs`, `page.tsx`, …) into "god files".
+We apply SRP (*one file / one module / one mission*) and keep entrypoints "thin" to make code readable and testable.
 
-Référence: [Engineering Guidelines](docs/engineering_guidelines.md)
+Reference: [Engineering Guidelines](docs/engineering_guidelines.md)
 
-**Option “UI sur le host” (debug)** :
+**Option "UI on host" (debug)**:
 
 ```bash
-# 0) Démarrer la stack (API dans Docker)
+# 0) Start the stack (API in Docker)
 make up
 
-# 1) Exposer l’API en loopback (si tu veux lancer l’UI hors Docker)
+# 1) Expose API on loopback (if you want to run UI outside Docker)
 make api-expose
 
-# 2) Installer les dépendances JS (monorepo) à la racine
+# 2) Install JS dependencies (monorepo) at root
 npm install --no-audit --no-fund
 
-# 3) Démarrer Next.js (host) en mode webpack (watch fiable workspaces)
+# 3) Start Next.js (host) in webpack mode (reliable watch for workspaces)
 API_INTERNAL_URL="http://127.0.0.1:8003" \
   npm -w inventiv-frontend run dev -- --webpack --port 3000
 ```
 
-Arrêter rapidement l’UI :
+Quickly stop the UI:
 
 ```bash
-make ui-down        # stop UI dans Docker
-make ui-local-down  # kill process local sur le port UI
+make ui-down        # stop UI in Docker
+make ui-local-down  # kill local process on UI port
 ```
 
-### 4. Authentification
+### 4. Authentication
 
-- **Login** : Accéder à `http://localhost:3000/login`
-- **Bootstrap admin** : Un utilisateur `admin` est créé automatiquement au démarrage si absent
-  - Username : `admin` (ou `DEFAULT_ADMIN_USERNAME`)
-  - Email : `admin@inventiv.local` (ou `DEFAULT_ADMIN_EMAIL`)
-  - Password : lu depuis `deploy/secrets/default_admin_password` (ou `DEFAULT_ADMIN_PASSWORD_FILE`)
+- **Login**: Access `http://localhost:3000/login`
+- **Bootstrap admin**: An `admin` user is automatically created at startup if absent
+  - Username: `admin` (or `DEFAULT_ADMIN_USERNAME`)
+  - Email: `admin@inventiv.local` (or `DEFAULT_ADMIN_EMAIL`)
+  - Password: read from `deploy/secrets/default_admin_password` (or `DEFAULT_ADMIN_PASSWORD_FILE`)
 
-### 5. Seeding (catalogue)
+### 5. Seeding (catalog)
 
-En dev local, le seeding automatique peut être activé via :
+In local dev, automatic seeding can be enabled via:
 
 ```bash
-# Dans env/dev.env
+# In env/dev.env
 AUTO_SEED_CATALOG=1
 SEED_CATALOG_PATH=/app/seeds/catalog_seeds.sql
 ```
 
-**Manuel** :
+**Manual**:
 
 ```bash
 docker compose --env-file env/dev.env exec -T db \
   psql -U postgres -d llminfra -f /app/seeds/catalog_seeds.sql
 ```
 
-> Le seed est **idempotent** (via `ON CONFLICT`) et peut être re-joué.
+> The seed is **idempotent** (via `ON CONFLICT`) and can be re-run.
 
 ## Configuration (env vars)
 
-### Fichiers de référence
+### Reference files
 
-Les fichiers d'exemple sont dans `env/*.env.example` :
-- `env/dev.env.example` : développement local
-- `env/staging.env.example` : environnement staging
-- `env/prod.env.example` : production
+Example files are in `env/*.env.example`:
+- `env/dev.env.example`: local development
+- `env/staging.env.example`: staging environment
+- `env/prod.env.example`: production
 
-### URLs API
+### API URLs
 
-Voir [docs/API_URL_CONFIGURATION.md](docs/API_URL_CONFIGURATION.md) pour la configuration détaillée du frontend.
+See [docs/API_URL_CONFIGURATION.md](docs/API_URL_CONFIGURATION.md) for detailed frontend configuration.
 
-**Frontend** : `NEXT_PUBLIC_API_URL` dans `inventiv-frontend/.env.local`
+**Frontend**: `NEXT_PUBLIC_API_URL` in `inventiv-frontend/.env.local`
 
 ### Secrets
 
-Les secrets runtime sont montés dans les conteneurs via `SECRETS_DIR` → `/run/secrets` :
+Runtime secrets are mounted in containers via `SECRETS_DIR` → `/run/secrets`:
 
-- `default_admin_password` : mot de passe admin (bootstrap)
-- `jwt_secret` : secret JWT pour les sessions (optionnel, fallback dev)
-- `scaleway_secret_key` : clé secrète Scaleway (si provider réel)
+- `default_admin_password`: admin password (bootstrap)
+- `jwt_secret`: JWT secret for sessions (optional, dev fallback)
+- `scaleway_secret_key`: Scaleway secret key (if real provider)
 
-**En dev local** : créer `deploy/secrets/` et y placer les fichiers secrets.
+**In local dev**: create `deploy/secrets/` and place secret files there.
 
-**En staging/prod** : utiliser `make stg-secrets-sync` / `make prod-secrets-sync` pour synchroniser depuis la VM.
+**In staging/prod**: use `make stg-secrets-sync` / `make prod-secrets-sync` to sync from the VM.
 
 ### Modes (dev / staging / prod)
 
-- **Dev** : `make dev-*` utilise `env/dev.env` (obligatoire)
-- **Staging** : `make stg-*` utilise `env/staging.env`
-- **Prod** : `make prod-*` utilise `env/prod.env`
+- **Dev**: `make dev-*` uses `env/dev.env` (required)
+- **Staging**: `make stg-*` uses `env/staging.env`
+- **Prod**: `make prod-*` uses `env/prod.env`
 
-### Scaleway (provisioning réel)
+### Scaleway (real provisioning)
 
-Pour activer le provisioning Scaleway réel :
+To enable real Scaleway provisioning:
 
 ```bash
-# Dans env/dev.env (local) ou env/staging.env / env/prod.env (remote)
+# In env/dev.env (local) or env/staging.env / env/prod.env (remote)
 SCALEWAY_PROJECT_ID=<your-project-id>
-# Recommandé (secret file monté dans les conteneurs)
+# Recommended (secret file mounted in containers)
 SCALEWAY_SECRET_KEY_FILE=/run/secrets/scaleway_secret_key
 #
-# Alternative (moins recommandé): secret en clair via env var
+# Alternative (less recommended): secret in plain text via env var
 SCALEWAY_SECRET_KEY=<your-secret-key>
-# Alias supportés (si tu utilises déjà ces noms ailleurs):
+# Supported aliases (if you already use these names elsewhere):
 # - SCALEWAY_API_TOKEN
 # - SCW_SECRET_KEY
-# Optionnel selon besoin
+# Optional as needed
 SCALEWAY_ACCESS_KEY=<your-access-key>
 ```
 
-En staging/prod, les secrets sont synchronisés sur la VM via `SECRETS_DIR` (voir `make stg-secrets-sync` / `make prod-secrets-sync`).
+In staging/prod, secrets are synchronized on the VM via `SECRETS_DIR` (see `make stg-secrets-sync` / `make prod-secrets-sync`).
 
-## Modèle de données (DB)
+## Data Model (DB)
 
-### Tables principales
+### Main tables
 
-- **`instances`** : État des instances GPU (status, IP, provider, zone, type)
-- **`providers`** / **`regions`** / **`zones`** / **`instance_types`** : Catalogue des ressources disponibles
-- **`instance_type_zones`** : Associations zone ↔ type d'instance
-- **`users`** : Utilisateurs (username, email, password_hash, role)
-- **`worker_auth_tokens`** : Tokens d'authentification des workers (hashé, par instance)
-- **`action_logs`** : Logs d'actions (provisioning, termination, sync, etc.)
-- **`finops.cost_*_minute`** : Tables TimescaleDB pour les coûts (actual, forecast, cumulative)
+- **`instances`**: State of GPU instances (status, IP, provider, zone, type)
+- **`providers`** / **`regions`** / **`zones`** / **`instance_types`**: Catalog of available resources
+- **`instance_type_zones`**: Zone ↔ instance type associations
+- **`users`**: Users (username, email, password_hash, role)
+- **`worker_auth_tokens`**: Worker authentication tokens (hashed, per instance)
+- **`action_logs`**: Action logs (provisioning, termination, sync, etc.)
+- **`finops.cost_*_minute`**: TimescaleDB tables for costs (actual, forecast, cumulative)
 
 ### Migrations
 
-**Migrations SQLx** : `sqlx-migrations/` (exécutées automatiquement au boot par `inventiv-api` et `inventiv-orchestrator`)
+**SQLx Migrations**: `sqlx-migrations/` (automatically executed at boot by `inventiv-api` and `inventiv-orchestrator`)
 
-**Principe** :
-- Chaque migration est un fichier SQL avec timestamp : `YYYYMMDDHHMMSS_description.sql`
-- Les migrations sont appliquées automatiquement au démarrage des services Rust
-- Checksum validé pour éviter les modifications accidentelles
+**Principle**:
+- Each migration is a SQL file with timestamp: `YYYYMMDDHHMMSS_description.sql`
+- Migrations are automatically applied at Rust service startup
+- Checksum validated to avoid accidental modifications
 
-**Migrations récentes** :
-- `20251215000000_add_worker_heartbeat_columns.sql` : Colonnes heartbeat pour instances
-- `20251215001000_add_finops_forecast_horizons.sql` : Horizons de forecast FinOps (1h, 365j)
-- `20251215002000_finops_use_eur.sql` : Conversion USD → EUR pour tous les champs FinOps
-- `20251215010000_create_worker_auth_tokens.sql` : Table tokens workers
-- `20251215020000_users_add_first_last_name.sql` : Champs first_name/last_name users
-- `20251215021000_users_add_username.sql` : Username unique pour login
+**Recent migrations**:
+- `20251215000000_add_worker_heartbeat_columns.sql`: Heartbeat columns for instances
+- `20251215001000_add_finops_forecast_horizons.sql`: FinOps forecast horizons (1h, 365d)
+- `20251215002000_finops_use_eur.sql`: USD → EUR conversion for all FinOps fields
+- `20251215010000_create_worker_auth_tokens.sql`: Worker tokens table
+- `20251215020000_users_add_first_last_name.sql`: first_name/last_name fields for users
+- `20251215021000_users_add_username.sql`: Unique username for login
 
 ### Seeds
 
-**Seeds catalogue** : `seeds/catalog_seeds.sql` (providers, regions, zones, instance_types, associations)
+**Catalog seeds**: `seeds/catalog_seeds.sql` (providers, regions, zones, instance_types, associations)
 
-**Automatique (dev)** : activer via `AUTO_SEED_CATALOG=1` dans `env/dev.env`
+**Automatic (dev)**: enable via `AUTO_SEED_CATALOG=1` in `env/dev.env`
 
-**Manuel** :
+**Manual**:
 
 ```bash
 psql "postgresql://postgres:password@localhost:5432/llminfra" -f seeds/catalog_seeds.sql
 ```
 
-## Événements & jobs background (orchestrator)
+## Events & background jobs (orchestrator)
 
-### Bus Redis
+### Redis Bus
 
-**Canaux** :
-- `orchestrator_events` : commandes `CMD:*` publiées par l'API
-- `finops_events` : événements `EVT:*` pour FinOps (coûts, tokens)
+**Channels**:
+- `orchestrator_events`: `CMD:*` commands published by the API
+- `finops_events`: `EVT:*` events for FinOps (costs, tokens)
 
-**Garanties** : Pub/Sub non durable → requeue si orchestrator down
+**Guarantees**: Non-durable Pub/Sub → requeue if orchestrator down
 
-**Commandes** :
-- `CMD:PROVISION` : Provisionner une instance
-- `CMD:TERMINATE` : Terminer une instance
-- `CMD:SYNC_CATALOG` : Synchroniser le catalogue (providers)
-- `CMD:RECONCILE` : Réconciliation manuelle
+**Commands**:
+- `CMD:PROVISION`: Provision an instance
+- `CMD:TERMINATE`: Terminate an instance
+- `CMD:SYNC_CATALOG`: Synchronize catalog (providers)
+- `CMD:RECONCILE`: Manual reconciliation
 
 ### Jobs (orchestrator)
 
-- **Health-check loop** : Transition `booting` → `ready` (check SSH:22 ou `/readyz` worker)
-- **Provisioning** : Gestion des instances "stuck", retry automatique
-- **Terminator** : Nettoyage des instances en `terminating`
-- **Watch-dog** : Détection d'instances "orphan" (supprimées par le provider)
+- **Health-check loop**: Transition `booting` → `ready` (check SSH:22 or `/readyz` worker)
+- **Provisioning**: Management of "stuck" instances, automatic retry
+- **Terminator**: Cleanup of instances in `terminating`
+- **Watch-dog**: Detection of "orphan" instances (deleted by provider)
 
-**Handlers** : `services::*` + state machine (voir [docs/specification_generale.md](docs/specification_generale.md))
+**Handlers**: `services::*` + state machine (see [docs/specification_generale.md](docs/specification_generale.md))
 
 ## API (inventiv-api)
 
 ### Auth
 
-**Session JWT** (cookie) :
-- `POST /auth/login` : Login (username ou email)
-- `POST /auth/logout` : Logout
-- `GET /auth/me` : Profil utilisateur
-- `PUT /auth/me` : Mise à jour profil
-- `PUT /auth/me/password` : Changement mot de passe
+**JWT Session** (cookie):
+- `POST /auth/login`: Login (username or email)
+- `POST /auth/logout`: Logout
+- `GET /auth/me`: User profile
+- `PUT /auth/me`: Update profile
+- `PUT /auth/me/password`: Change password
 
-**Gestion users** (admin uniquement) :
-- `GET /users` : Liste des utilisateurs
-- `POST /users` : Créer un utilisateur
-- `GET /users/:id` : Détails utilisateur
-- `PUT /users/:id` : Mettre à jour utilisateur
-- `DELETE /users/:id` : Supprimer utilisateur
+**User management** (admin only):
+- `GET /users`: List users
+- `POST /users`: Create a user
+- `GET /users/:id`: User details
+- `PUT /users/:id`: Update user
+- `DELETE /users/:id`: Delete user
 
-### Endpoints internes (worker)
+### Internal endpoints (worker)
 
-**Proxy vers orchestrator** (via API domain) :
-- `POST /internal/worker/register` : Enregistrement worker (bootstrap token)
-- `POST /internal/worker/heartbeat` : Heartbeat worker (token requis)
+**Proxy to orchestrator** (via API domain):
+- `POST /internal/worker/register`: Worker registration (bootstrap token)
+- `POST /internal/worker/heartbeat`: Worker heartbeat (token required)
 
-**Auth worker** : Token par instance (`Authorization: Bearer <token>`), vérifié en DB (`worker_auth_tokens`)
+**Worker auth**: Token per instance (`Authorization: Bearer <token>`), verified in DB (`worker_auth_tokens`)
 
-### Endpoints métier (protégés par session)
+### Business endpoints (session-protected)
 
-**Instances** :
-- `GET /instances` : Liste (filtre `archived`)
-- `GET /instances/:id` : Détails
-- `DELETE /instances/:id` : Terminer (status `terminating` + event)
-- `PUT /instances/:id/archive` : Archiver
+**Instances**:
+- `GET /instances`: List (filter `archived`)
+- `GET /instances/:id`: Details
+- `DELETE /instances/:id`: Terminate (status `terminating` + event)
+- `PUT /instances/:id/archive`: Archive
 
-**Deployments** :
-- `POST /deployments` : Créer une instance (publie `CMD:PROVISION`)
-  - `model_id` est **obligatoire** (la requête est rejetée sinon)
+**Deployments**:
+- `POST /deployments`: Create an instance (publishes `CMD:PROVISION`)
+  - `model_id` is **required** (request is rejected otherwise)
 
-**Settings** :
+**Settings**:
 - `GET/PUT /providers`, `/regions`, `/zones`, `/instance_types`
-- `GET/PUT /instance_types/:id/zones` : Associations zone ↔ type
-- `GET /zones/:zone_id/instance_types` : Types disponibles pour une zone
+- `GET/PUT /instance_types/:id/zones`: Zone ↔ type associations
+- `GET /zones/:zone_id/instance_types`: Available types for a zone
 
-**Action logs** :
-- `GET /action_logs` : Liste (filtrage, limit)
-- `GET /action_logs/search` : Recherche paginée + stats (UI virtualisée)
-- `GET /action_types` : Catalogue des types d'actions (badge/couleur/icon)
+**Action logs**:
+- `GET /action_logs`: List (filtering, limit)
+- `GET /action_logs/search`: Paginated search + stats (virtualized UI)
+- `GET /action_types`: Action types catalog (badge/color/icon)
 
-**FinOps** :
-- `GET /finops/cost/current` : Coût actuel
-- `GET /finops/dashboard/costs/summary` : Résumé dashboard (allocation, totals)
-- `GET /finops/dashboard/costs/window` : Détails par fenêtre (minute/heure/jour/30j/365j)
-- `GET /finops/cost/actual/minute` : Série temporelle coûts réels
-- `GET /finops/cost/cumulative/minute` : Série temporelle coûts cumulatifs
+**FinOps**:
+- `GET /finops/cost/current`: Current cost
+- `GET /finops/dashboard/costs/summary`: Dashboard summary (allocation, totals)
+- `GET /finops/dashboard/costs/window`: Details by window (minute/hour/day/30d/365d)
+- `GET /finops/cost/actual/minute`: Real costs time series
+- `GET /finops/cost/cumulative/minute`: Cumulative costs time series
 
-**Commands** :
-- `POST /reconcile` : Réconciliation manuelle
-- `POST /catalog/sync` : Synchronisation catalogue manuelle
+**Commands**:
+- `POST /reconcile`: Manual reconciliation
+- `POST /catalog/sync`: Manual catalog synchronization
 
-### Documentation API
+### API Documentation
 
-Par défaut l’API n’est **pas exposée** sur le host en dev (UI-only). Pour consulter Swagger depuis le navigateur :
+By default the API is **not exposed** on the host in dev (UI-only). To view Swagger from the browser:
 
 ```bash
 make api-expose
 ```
 
-Puis :
+Then:
 
-- **Swagger UI** : `http://127.0.0.1:8003/swagger-ui` (ou `8003 + PORT_OFFSET`)
+- **Swagger UI**: `http://127.0.0.1:8003/swagger-ui` (or `8003 + PORT_OFFSET`)
 
-- **OpenAPI spec** : `http://127.0.0.1:8003/api-docs/openapi.json` (ou `8003 + PORT_OFFSET`)
+- **OpenAPI spec**: `http://127.0.0.1:8003/api-docs/openapi.json` (or `8003 + PORT_OFFSET`)
 
-### Exemples curl
+### curl Examples
 
 ```bash
-# (Option 1) Depuis le host : exposer l'API en loopback
+# (Option 1) From host: expose API on loopback
 make api-expose
 
 # Login (session cookie)
@@ -416,132 +420,132 @@ curl -X POST http://127.0.0.1:8003/auth/login \
   -d '{"email":"admin@inventiv.local","password":"<password>"}' \
   -c cookies.txt
 
-# Créer une instance (avec session cookie)
+# Create an instance (with session cookie)
 curl -X POST http://127.0.0.1:8003/deployments \
   -H "Content-Type: application/json" \
   -b cookies.txt \
   -d '{"instance_type_id":"<uuid>","zone_id":"<uuid>","model_id":"<uuid>"}'
 
-# Lister les instances
+# List instances
 curl http://127.0.0.1:8003/instances -b cookies.txt
 
-# Terminer une instance
+# Terminate an instance
 curl -X DELETE http://127.0.0.1:8003/instances/<id> -b cookies.txt
 ```
 
 ### OpenAI-compatible API (proxy)
 
-L’API expose un proxy OpenAI-compatible (sélection d’un worker READY pour le modèle demandé) :
+The API exposes an OpenAI-compatible proxy (selects a READY worker for the requested model):
 
 - `GET /v1/models`
-- `POST /v1/chat/completions` (streaming supporté)
+- `POST /v1/chat/completions` (streaming supported)
 - `POST /v1/completions`
 - `POST /v1/embeddings`
 
 Auth:
-- session user **ou**
+- session user **or**
 - API key (Bearer)
 
 ## Worker (inventiv-worker)
 
-### Rôle
+### Role
 
-Agent Python déployé sur instances GPU qui :
-- Expose des endpoints HTTP : `/healthz`, `/readyz`, `/metrics`
-- Gère le moteur d'inférence (vLLM)
-- Communique avec le control-plane via `/internal/worker/register` et `/internal/worker/heartbeat`
+Python agent deployed on GPU instances that:
+- Exposes HTTP endpoints: `/healthz`, `/readyz`, `/metrics`
+- Manages the inference engine (vLLM)
+- Communicates with the control-plane via `/internal/worker/register` and `/internal/worker/heartbeat`
 
 ### Auth token
 
-**Bootstrap** : Au premier `register`, l'orchestrator génère un token et le renvoie (plaintext uniquement dans la réponse).
+**Bootstrap**: On first `register`, the orchestrator generates a token and returns it (plaintext only in the response).
 
-**Stockage** : Token hashé en DB (`worker_auth_tokens`), utilisé ensuite via `Authorization: Bearer <token>`.
+**Storage**: Token hashed in DB (`worker_auth_tokens`), then used via `Authorization: Bearer <token>`.
 
-### Exécution locale (sans GPU)
+### Local execution (without GPU)
 
-Un harness local est disponible pour valider "Worker ready" sans GPU :
+A local harness is available to validate "Worker ready" without GPU:
 
 ```bash
 bash scripts/dev_worker_local.sh
 ```
 
-**Composants** :
-- `mock-vllm` : Mock serveur vLLM (sert `GET /v1/models`)
-- `worker-agent` : Agent Python qui expose `/healthz`, `/readyz`, `/metrics` et parle au control-plane
+**Components**:
+- `mock-vllm`: Mock vLLM server (serves `GET /v1/models`)
+- `worker-agent`: Python agent that exposes `/healthz`, `/readyz`, `/metrics` and talks to the control-plane
 
-**Notes** :
-- Par défaut le script reset les volumes (migrations déterministes). Pour éviter : `RESET_VOLUMES=0 bash scripts/dev_worker_local.sh`
-- Le worker contacte le control-plane via l'API (`CONTROL_PLANE_URL=http://api:8003`) qui proxy `/internal/worker/*` vers l'orchestrator
+**Notes**:
+- By default the script resets volumes (deterministic migrations). To avoid: `RESET_VOLUMES=0 bash scripts/dev_worker_local.sh`
+- The worker contacts the control-plane via the API (`CONTROL_PLANE_URL=http://api:8003`) which proxies `/internal/worker/*` to the orchestrator
 
 ### Flavors / Providers
 
-Dossier `inventiv-worker/flavors/` : configurations par provider/environnement.
+Folder `inventiv-worker/flavors/`: configurations by provider/environment.
 
 ## Frontend (inventiv-frontend)
 
-### Stack UI
+### UI Stack
 
 - **Next.js** (App Router)
 - **Tailwind CSS** (styling)
-- **shadcn/ui** (composants : Card, Tabs, Button, etc.)
-- **React Hooks** : `useFinops`, `useInstances`, etc.
+- **shadcn/ui** (components: Card, Tabs, Button, etc.)
+- **React Hooks**: `useFinops`, `useInstances`, etc.
 
-### Configuration API
+### API Configuration
 
-Le navigateur parle **uniquement** à l’UI, qui proxy ensuite vers le backend via `/api/backend/*`.
+The browser talks **only** to the UI, which then proxies to the backend via `/api/backend/*`.
 
-- **Mode recommandé (UI dans Docker)** : pas besoin de `NEXT_PUBLIC_API_URL`, l’UI utilise `API_INTERNAL_URL=http://api:8003`.
-- **Mode UI sur le host** : définir `NEXT_PUBLIC_API_URL` et exposer l’API via `make api-expose`.
+- **Recommended mode (UI in Docker)**: no need for `NEXT_PUBLIC_API_URL`, the UI uses `API_INTERNAL_URL=http://api:8003`.
+- **UI on host mode**: set `NEXT_PUBLIC_API_URL` and expose the API via `make api-expose`.
 
-Voir [docs/API_URL_CONFIGURATION.md](docs/API_URL_CONFIGURATION.md).
+See [docs/API_URL_CONFIGURATION.md](docs/API_URL_CONFIGURATION.md).
 
 ### Dev
 
 ```bash
 cd inventiv-frontend
-npm install          # Première fois
+npm install          # First time
 npm run dev -- --port 3000
 ```
 
-**Via Makefile** : `make ui` (crée `.env.local` si absent)
+**Via Makefile**: `make ui` (creates `.env.local` if absent)
 
-## Déploiement (dev/dev-edge/staging/prod)
+## Deployment (dev/dev-edge/staging/prod)
 
-### Déploiement local "prod-like" (edge)
+### Local "prod-like" deployment (edge)
 
-**Fichier** : `deploy/docker-compose.nginx.yml`
+**File**: `deploy/docker-compose.nginx.yml`
 
-**Composants** :
+**Components**:
 - Nginx (reverse proxy + SSL via Let's Encrypt)
-- Services : `inventiv-api`, `inventiv-orchestrator`, `inventiv-finops`, `postgres`, `redis`
+- Services: `inventiv-api`, `inventiv-orchestrator`, `inventiv-finops`, `postgres`, `redis`
 
-**Commandes** :
+**Commands**:
 
 ```bash
-make edge-create    # Créer la stack edge
-make edge-start     # Démarrer
-make edge-stop      # Arrêter
-make edge-cert      # Générer/renew certificats SSL
+make edge-create    # Create edge stack
+make edge-start     # Start
+make edge-stop      # Stop
+make edge-cert      # Generate/renew SSL certificates
 ```
 
 ### Remote (Scaleway)
 
-**Staging** :
+**Staging**:
 
-DNS cible (prévu) : `https://studio-stg.inventiv-agents.fr`
+Target DNS (planned): `https://studio-stg.inventiv-agents.fr`
 
 ```bash
-make stg-provision      # Provisionner la VM
-make stg-bootstrap      # Bootstrap initial
-make stg-secrets-sync   # Synchroniser les secrets
-make stg-create         # Créer la stack
-make stg-start          # Démarrer
-make stg-cert           # Générer/renew certificats
+make stg-provision      # Provision VM
+make stg-bootstrap      # Initial bootstrap
+make stg-secrets-sync   # Sync secrets
+make stg-create         # Create stack
+make stg-start          # Start
+make stg-cert           # Generate/renew certificates
 ```
 
-**Production** :
+**Production**:
 
-DNS cible (prévu) : `https://studio-prd.inventiv-agents.fr`
+Target DNS (planned): `https://studio-prd.inventiv-agents.fr`
 
 ```bash
 make prod-provision
@@ -552,39 +556,39 @@ make prod-start
 make prod-cert
 ```
 
-### Certificats
+### Certificates
 
-**Lego volume** : Export/import via `deploy/certs/lego_data_*.tar.gz`
+**Lego volume**: Export/import via `deploy/certs/lego_data_*.tar.gz`
 
-**Configuration** : Variables `ROOT_DOMAIN`, `LEGO_DOMAINS`, `LEGO_APPEND_ROOT_DOMAIN` dans `env/*.env`
+**Configuration**: Variables `ROOT_DOMAIN`, `LEGO_DOMAINS`, `LEGO_APPEND_ROOT_DOMAIN` in `env/*.env`
 
 ### Images
 
-**Stratégie de tags** :
-- SHA : `ghcr.io/<org>/<service>:<sha>`
-- Version : `ghcr.io/<org>/<service>:v0.3.0`
-- Latest : `ghcr.io/<org>/<service>:latest`
+**Tagging strategy**:
+- SHA: `ghcr.io/<org>/<service>:<sha>`
+- Version: `ghcr.io/<org>/<service>:v0.3.0`
+- Latest: `ghcr.io/<org>/<service>:latest`
 
-**Promotion** : Par digest (SHA) pour garantir la reproductibilité
+**Promotion**: By digest (SHA) to guarantee reproducibility
 
-**GHCR login** : `make ghcr-login` (non-interactif via `scripts/ghcr_login.sh`)
+**GHCR login**: `make ghcr-login` (non-interactive via `scripts/ghcr_login.sh`)
 
-## Observabilité & ops
+## Observability & ops
 
 ### Logs
 
-**Structurés** : JSON (ou texte selon configuration)
+**Structured**: JSON (or text depending on configuration)
 
-**Lire les logs** :
+**Read logs**:
 
 ```bash
-make logs              # Tous les services
-make dev-logs          # Dev local
-make stg-logs          # Staging remote
-make prod-logs         # Production remote
+make logs              # All services
+make dev-logs          # Local dev
+make stg-logs          # Remote staging
+make prod-logs         # Remote production
 ```
 
-**Services individuels** :
+**Individual services**:
 
 ```bash
 docker compose logs -f api
@@ -594,182 +598,205 @@ docker compose logs -f finops
 
 ### Healthchecks
 
-**Orchestrator** : `GET http://localhost:8001/admin/status`
+**Orchestrator**: `GET http://localhost:8001/admin/status`
 
-**API** : Swagger UI (`/swagger-ui`) + endpoints métier
+**API**: Swagger UI (`/swagger-ui`) + business endpoints
 
-**Worker** : `/healthz` (liveness), `/readyz` (readiness)
+**Worker**: `/healthz` (liveness), `/readyz` (readiness)
 
 ### Monitoring
 
-Voir [docs/MONITORING_IMPROVEMENTS.md](docs/MONITORING_IMPROVEMENTS.md) pour les améliorations prévues.
+See [docs/MONITORING_IMPROVEMENTS.md](docs/MONITORING_IMPROVEMENTS.md) for planned improvements.
 
-**Action logs** : Endpoint `/action_logs/search` avec pagination et stats
+**Action logs**: `/action_logs/search` endpoint with pagination and stats
 
-**FinOps** : Dashboard frontend avec coûts réels/forecast/cumulatifs
+**FinOps**: Frontend dashboard with real/forecast/cumulative costs
 
-### Tests E2E (mock) + nettoyage Docker
+### E2E Tests (mock) + Docker cleanup
 
-Un test d’intégration “mock” existe pour valider la chaîne **API → Orchestrator → Worker → API** (heartbeats + séries temporelles + proxy OpenAI):
+A "mock" integration test exists to validate the **API → Orchestrator → Worker → API** chain (heartbeats + time series + OpenAI proxy):
 
 ```bash
 RUST_LOG=info make test-worker-observability [PORT_OFFSET=...]
 ```
 
-**Test multi-instances** (série et parallèle):
+**Multi-instance test** (serial and parallel):
 
 ```bash
 make test-worker-observability-multi [PORT_OFFSET=...]
 ```
 
-Notes (important en local) :
-- **Auth OpenAI proxy**: le test crée une **API key** (endpoint `POST /api_keys`) puis appelle `GET /v1/models` et `POST /v1/chat/completions` avec `Authorization: Bearer <key>`.
-- **Proxy OpenAI en provider=mock**: en mock, l’instance peut avoir une IP “synthetic” non routable depuis le réseau Docker. Le test fait donc un override **local-only** de `instances.ip_address` vers l’IP du conteneur `mock-vllm` pour rendre `POST /v1/chat/completions` joignable.
-- **Ports**: la stack API est exposée via `make api-expose` (loopback) pour faciliter les tunnels / worktrees.
+Notes (important locally):
+- **OpenAI proxy auth**: the test creates an **API key** (endpoint `POST /api_keys`) then calls `GET /v1/models` and `POST /v1/chat/completions` with `Authorization: Bearer <key>`.
+- **OpenAI proxy with provider=mock**: in mock, the instance may have a "synthetic" IP not routable from the Docker network. The test therefore does a **local-only** override of `instances.ip_address` to the `mock-vllm` container IP to make `POST /v1/chat/completions` reachable.
+- **Ports**: the API stack is exposed via `make api-expose` (loopback) to facilitate tunnels / worktrees.
 
-#### Provider Mock et gestion des runtimes
+#### Mock Provider and runtime management
 
-Le provider **Mock** gère automatiquement les runtimes Docker Compose pour chaque instance Mock créée :
+The **Mock** provider automatically manages Docker Compose runtimes for each Mock instance created:
 
-- **Création automatique** : Lors du provisioning d'une instance Mock, un runtime Docker Compose est lancé automatiquement (`docker-compose.mock-runtime.yml`)
-- **Réseau partagé** : Les runtimes Mock se connectent au réseau Docker du control-plane pour communiquer avec l'API
-- **IP par instance** : Chaque instance Mock obtient sa propre IP sur le réseau Docker (Option A)
-- **Synchronisation** : La commande `make mock-runtime-sync` synchronise les runtimes avec les instances actives en DB
+- **Automatic creation**: When provisioning a Mock instance, a Docker Compose runtime is automatically launched (`docker-compose.mock-runtime.yml`)
+- **Shared network**: Mock runtimes connect to the control-plane Docker network to communicate with the API
+- **IP per instance**: Each Mock instance gets its own IP on the Docker network (Option A)
+- **Synchronization**: The `make mock-runtime-sync` command synchronizes runtimes with active instances in DB
 
-**Gestion manuelle** :
+**Manual management**:
 
 ```bash
-# Démarrer un runtime Mock pour une instance
+# Start a Mock runtime for an instance
 INSTANCE_ID=<uuid> make worker-attach
 
-# Arrêter un runtime Mock
+# Stop a Mock runtime
 INSTANCE_ID=<uuid> make worker-detach
 
-# Synchroniser tous les runtimes Mock avec les instances actives
+# Synchronize all Mock runtimes with active instances
 make mock-runtime-sync
 ```
 
-**Stack locale complète** (control-plane + UI + sync Mock) :
+**Complete local stack** (control-plane + UI + Mock sync):
 
 ```bash
-make local-up    # Démarre tout + synchronise les runtimes Mock
-make local-down   # Arrête tout
+make local-up    # Start everything + synchronize Mock runtimes
+make local-down   # Stop everything
 ```
 
-#### Observabilité des instances Mock
+#### Mock instance observability
 
-Le provider **Mock** génère automatiquement des métriques synthétiques pour les instances :
+The **Mock** provider automatically generates synthetic metrics for instances:
 
-- Heartbeats worker (`worker_last_heartbeat`, `worker_status`)
-- Métriques GPU (`gpu_samples` : utilisation, VRAM, température, puissance)
-- Métriques système (`system_samples` : CPU, mémoire, disque, réseau)
+- Worker heartbeats (`worker_last_heartbeat`, `worker_status`)
+- GPU metrics (`gpu_samples`: utilization, VRAM, temperature, power)
+- System metrics (`system_samples`: CPU, memory, disk, network)
 
-Ces métriques sont générées par le worker-agent Mock et permettent de tester l'observabilité en local sans GPU réel.
+These metrics are generated by the Mock worker-agent and allow testing observability locally without a real GPU.
 
-**Désactivation** :
+**Disable**:
 
-- `MOCK_OBSERVABILITY_ENABLED=false` (non utilisé actuellement, métriques toujours générées)
+- `MOCK_OBSERVABILITY_ENABLED=false` (not currently used, metrics always generated)
 
-Si ta DB Docker échoue avec `No space left on device`, tu peux nettoyer les ressources Docker **inutilisées** et **anciennes** (par défaut: > 7 jours) *scope projet compose*:
+#### Real vLLM on Mock (optional)
+
+The Mock provider can use a **real LLM model** (vLLM) instead of the simulated mock-vllm to test the **complete cycle** of provisioning:
+
+```bash
+# Enable real vLLM (CPU-only, works on Windows/Linux/macOS)
+export MOCK_USE_REAL_VLLM=1
+export MOCK_VLLM_MODEL="Qwen/Qwen2.5-0.5B-Instruct"
+
+# Create a Mock instance (will use real vLLM)
+```
+
+**Objective**: Test the complete cycle (creation → routing → request processing → destruction) with real inference responses, **not to measure performance**.
+
+**Performance**: vLLM runs in CPU-only mode locally (5-15s per request). Performance tests are done with real GPU VMs in production (Scaleway, etc.).
+
+**Required resources**:
+- RAM: 6-8GB (Docker)
+- CPU: 4+ cores
+- Compatible: Windows, Linux, macOS (Intel and Apple Silicon)
+
+See [docs/MOCK_REAL_VLLM_USAGE.md](docs/MOCK_REAL_VLLM_USAGE.md) for more details.
+
+If your Docker DB fails with `No space left on device`, you can clean up **unused** and **old** Docker resources (default: > 7 days) *project compose scope*:
 
 ```bash
 make docker-prune-old
 ```
 
 Options:
-- `OLDER_THAN_HOURS=168` (défaut = 7 jours)
-- `CLEAN_ALL_UNUSED_IMAGES_OLD=1` (plus agressif: prune global des images inutilisées > N heures)
+- `OLDER_THAN_HOURS=168` (default = 7 days)
+- `CLEAN_ALL_UNUSED_IMAGES_OLD=1` (more aggressive: global prune of unused images > N hours)
 
-Commande “one-shot” (nettoyage + test):
+"One-shot" command (cleanup + test):
 
 ```bash
 make test-worker-observability-clean [PORT_OFFSET=...]
 ```
 
-## Sécurité
+## Security
 
-### Gestion des secrets
+### Secret management
 
-- **Secrets files** : Montés via `SECRETS_DIR` → `/run/secrets` (non commités)
-- **Env vars** : Variables sensibles dans `env/*.env` (non commitées)
-- **Bootstrap admin** : Mot de passe depuis fichier secret (`DEFAULT_ADMIN_PASSWORD_FILE`)
-- **Seed credentials provider (optionnel)** : `AUTO_SEED_PROVIDER_CREDENTIALS=1` permet d’initialiser `provider_settings` depuis des secrets montés dans `/run/secrets` (ex: Scaleway). Voir `env/staging.env.example` / `env/prod.env.example`.
+- **Secret files**: Mounted via `SECRETS_DIR` → `/run/secrets` (not committed)
+- **Env vars**: Sensitive variables in `env/*.env` (not committed)
+- **Bootstrap admin**: Password from secret file (`DEFAULT_ADMIN_PASSWORD_FILE`)
+- **Seed provider credentials (optional)**: `AUTO_SEED_PROVIDER_CREDENTIALS=1` allows initializing `provider_settings` from secrets mounted in `/run/secrets` (e.g., Scaleway). See `env/staging.env.example` / `env/prod.env.example`.
 
-### Tokens worker
+### Worker tokens
 
-- **Stockage** : Hash SHA-256 en DB (`worker_auth_tokens.token_hash`)
-- **Bootstrap** : Token plaintext uniquement dans la réponse HTTP (jamais loggé)
-- **Rotation** : Champs `rotated_at`, `revoked_at` présents (rotation non implémentée encore)
+- **Storage**: SHA-256 hash in DB (`worker_auth_tokens.token_hash`)
+- **Bootstrap**: Plaintext token only in HTTP response (never logged)
+- **Rotation**: `rotated_at`, `revoked_at` fields present (rotation not yet implemented)
 
-### Bonnes pratiques
+### Best practices
 
-- **X-Forwarded-For** : Gateway doit écraser ou ne faire confiance qu'au réseau interne
-- **JWT secret** : Utiliser `JWT_SECRET` fort en prod (fallback dev insecure)
-- **Cookie Secure** : Activer `COOKIE_SECURE=1` en prod (HTTPS requis)
-- **Session TTL** : Configurable via `JWT_TTL_SECONDS` (défaut 12h)
+- **X-Forwarded-For**: Gateway must override or only trust internal network
+- **JWT secret**: Use strong `JWT_SECRET` in prod (insecure dev fallback)
+- **Cookie Secure**: Enable `COOKIE_SECURE=1` in prod (HTTPS required)
+- **Session TTL**: Configurable via `JWT_TTL_SECONDS` (default 12h)
 
-Voir [SECURITY.md](SECURITY.md) pour les reports de sécurité.
+See [SECURITY.md](SECURITY.md) for security reports.
 
-## Contribution
+## Contributing
 
 ### Dev setup
 
-**Format / Lint** :
+**Format / Lint**:
 
 ```bash
 make check       # cargo check
-make test        # Tests unitaires
+make test        # Unit tests
 ```
 
-**Conventions** :
-- **Commits** : Conventional commits (`feat:`, `fix:`, `chore:`, etc.)
-- **PR** : Description claire, référence issues si applicable
+**Conventions**:
+- **Commits**: Conventional commits (`feat:`, `fix:`, `chore:`, etc.)
+- **PR**: Clear description, reference issues if applicable
 
-Voir [CONTRIBUTING.md](CONTRIBUTING.md) pour les guidelines détaillées.
+See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for detailed guidelines and [docs/DEVELOPMENT_SETUP.md](docs/DEVELOPMENT_SETUP.md) for the multi-platform configuration guide.
 
-## Roadmap / état du projet
+## Roadmap / project status
 
 ### Stable
 
-- ✅ Provisioning/Termination Scaleway réel
-- ✅ Provisioning/Termination Mock avec gestion automatique des runtimes Docker
+- ✅ Real Scaleway Provisioning/Termination
+- ✅ Mock Provisioning/Termination with automatic Docker runtime management
 - ✅ Health-check & Reconciliation
-- ✅ FinOps dashboard (coûts réels/forecast/cumulatifs en EUR)
-- ✅ Auth session + gestion users
-- ✅ Worker auth (token par instance)
-- ✅ Action logs + recherche paginée
-- ✅ Architecture providers modulaire (`inventiv-providers` package)
+- ✅ FinOps dashboard (real/forecast/cumulative costs in EUR)
+- ✅ Session auth + user management
+- ✅ Worker auth (token per instance)
+- ✅ Action logs + paginated search
+- ✅ Modular provider architecture (`inventiv-providers` package)
 
-### Expérimental
+### Experimental
 
-- 🧪 Worker ready (harness local fonctionnel, déploiement réel en cours)
-- 🧪 FinOps service (calculs automatiques, dépend de `inventiv-finops` running)
+- 🧪 Worker ready (local harness functional, real deployment in progress)
+- 🧪 FinOps service (automatic calculations, depends on `inventiv-finops` running)
 
-### À venir
+### Upcoming
 
-- 🚧 **Router** (OpenAI-compatible) : Réintroduction prévue, non présent actuellement
-- 🚧 **Autoscaling** : Basé sur signaux router/worker (queue depth, latence, GPU util)
-- 🚧 **Tokens tracking** : Consommation et forecast de tokens (priorités 4-5 FinOps)
-- 🚧 **RBAC fin** : Au-delà de `admin`, politiques d'accès par endpoint
-- 🚧 **API Keys** : Gestion backend + router/gateway
+- 🚧 **Router** (OpenAI-compatible): Reintroduction planned, not currently present
+- 🚧 **Autoscaling**: Based on router/worker signals (queue depth, latency, GPU util)
+- 🚧 **Token tracking**: Token consumption and forecast (priorities 4-5 FinOps)
+- 🚧 **Fine RBAC**: Beyond `admin`, access policies per endpoint
+- 🚧 **API Keys**: Backend management + router/gateway
 
-Voir [TODO.md](TODO.md) pour le backlog détaillé.
+See [TODO.md](TODO.md) for detailed backlog.
 
-### Compatibilité providers
+### Provider compatibility
 
-- ✅ **Mock** : Provider local pour tests (stateful en DB, gestion automatique des runtimes Docker Compose)
-- ✅ **Scaleway** : Intégration réelle (instances GPU)
+- ✅ **Mock**: Local provider for tests (stateful in DB, automatic Docker Compose runtime management)
+- ✅ **Scaleway**: Real integration (GPU instances)
 
-**Architecture providers** :
+**Provider architecture**:
 
-Les providers sont implémentés dans le package `inventiv-providers` via le trait `CloudProvider` :
-- `inventiv-providers/src/mock.rs` : Provider Mock avec gestion Docker Compose
-- `inventiv-providers/src/scaleway.rs` : Provider Scaleway (intégration API réelle)
+Providers are implemented in the `inventiv-providers` package via the `CloudProvider` trait:
+- `inventiv-providers/src/mock.rs`: Mock provider with Docker Compose management
+- `inventiv-providers/src/scaleway.rs`: Scaleway provider (real API integration)
 
-Cette architecture permet une séparation claire entre l'orchestrator (logique métier) et les providers (spécificités cloud), facilitant l'ajout de nouveaux providers et les tests.
+This architecture allows clear separation between the orchestrator (business logic) and providers (cloud specifics), facilitating the addition of new providers and testing.
 
-## Licence
+## License
 
-Ce projet est sous licence **AGPL v3**. Voir le fichier [LICENSE](LICENSE) pour plus de détails.
+This project is licensed under **AGPL v3**. See the [LICENSE](LICENSE) file for more details.
 
-**Copyright** : © 2025 Inventiv Agents Contributors
+**Copyright**: © 2025 Inventiv Agents Contributors

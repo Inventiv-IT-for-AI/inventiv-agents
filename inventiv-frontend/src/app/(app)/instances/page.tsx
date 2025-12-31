@@ -230,6 +230,10 @@ export default function InstancesPage() {
                     open={isTimelineOpen}
                     onClose={() => setIsTimelineOpen(false)}
                     instanceId={selectedInstanceId}
+                    instances={instances}
+                    onInstanceChange={(newInstanceId) => {
+                        setSelectedInstanceId(newInstanceId);
+                    }}
                 />
             ) : null}
         </div>

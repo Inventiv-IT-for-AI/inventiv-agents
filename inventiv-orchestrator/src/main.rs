@@ -623,17 +623,49 @@ async fn worker_heartbeat(
     // Insert time series GPU samples (nvtop-like dashboard).
     // Prefer per-GPU list in metadata.gpus, fallback to aggregate fields.
     // Best-effort only: do not fail heartbeat on metrics insert.
+    // Helper function to validate and clamp GPU metrics.
+    let validate_gpu_util = |v: Option<f64>| v.map(|x| x.clamp(0.0, 100.0));
+    let validate_temp = |v: Option<f64>| {
+        v.and_then(|x| {
+            // Accept temperatures between -50°C and 150°C (reasonable range for GPUs)
+            if x >= -50.0 && x <= 150.0 {
+                Some(x)
+            } else {
+                eprintln!(
+                    "⚠️ Invalid GPU temperature for instance {}: {}°C (clamping to valid range)",
+                    payload.instance_id, x
+                );
+                Some(x.clamp(-50.0, 150.0))
+            }
+        })
+    };
+    let validate_power = |v: Option<f64>| v.map(|x| x.max(0.0)); // Power cannot be negative
+    let validate_vram = |v: Option<f64>| v.map(|x| x.max(0.0)); // VRAM cannot be negative
+
     if let Some(meta) = meta_clone.as_ref() {
         if let Some(gpus) = meta.get("gpus").and_then(|v| v.as_array()) {
             for g in gpus {
                 let idx = g.get("index").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                let util = g.get("gpu_utilization").and_then(|v| v.as_f64());
-                let used = g.get("gpu_mem_used_mb").and_then(|v| v.as_f64());
-                let total = g.get("gpu_mem_total_mb").and_then(|v| v.as_f64());
-                let temp = g.get("gpu_temp_c").and_then(|v| v.as_f64());
-                let power = g.get("gpu_power_w").and_then(|v| v.as_f64());
-                let power_limit = g.get("gpu_power_limit_w").and_then(|v| v.as_f64());
-                let _ = sqlx::query(
+                let util = validate_gpu_util(g.get("gpu_utilization").and_then(|v| v.as_f64()));
+                let used = validate_vram(g.get("gpu_mem_used_mb").and_then(|v| v.as_f64()));
+                let total = validate_vram(g.get("gpu_mem_total_mb").and_then(|v| v.as_f64()));
+                let temp = validate_temp(g.get("gpu_temp_c").and_then(|v| v.as_f64()));
+                let power = validate_power(g.get("gpu_power_w").and_then(|v| v.as_f64()));
+                let power_limit = validate_power(g.get("gpu_power_limit_w").and_then(|v| v.as_f64()));
+
+                // Validate VRAM used <= total if both are present
+                let used_final = match (used, total) {
+                    (Some(u), Some(t)) if u > t => {
+                        eprintln!(
+                            "⚠️ GPU {} VRAM used ({:.1}MB) > total ({:.1}MB) for instance {}, clamping",
+                            idx, u, t, payload.instance_id
+                        );
+                        Some(t)
+                    }
+                    _ => used,
+                };
+
+                if let Err(e) = sqlx::query(
                     r#"
                     INSERT INTO gpu_samples (instance_id, gpu_index, gpu_utilization, vram_used_mb, vram_total_mb, temp_c, power_w, power_limit_w)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -642,74 +674,139 @@ async fn worker_heartbeat(
                 .bind(payload.instance_id)
                 .bind(idx)
                 .bind(util)
-                .bind(used)
+                .bind(used_final)
                 .bind(total)
                 .bind(temp)
                 .bind(power)
                 .bind(power_limit)
                 .execute(&state.db)
-                .await;
+                .await
+                {
+                    eprintln!(
+                        "⚠️ Failed to insert gpu_samples for instance {} GPU {}: {}",
+                        payload.instance_id, idx, e
+                    );
+                }
             }
         } else {
             // Fallback aggregate
-            let total = meta.get("gpu_mem_total_mb").and_then(|v| v.as_f64());
-            let temp = meta.get("gpu_temp_c").and_then(|v| v.as_f64());
-            let power = meta.get("gpu_power_w").and_then(|v| v.as_f64());
-            let power_limit = meta.get("gpu_power_limit_w").and_then(|v| v.as_f64());
-            let _ = sqlx::query(
+            let total = validate_vram(meta.get("gpu_mem_total_mb").and_then(|v| v.as_f64()));
+            let temp = validate_temp(meta.get("gpu_temp_c").and_then(|v| v.as_f64()));
+            let power = validate_power(meta.get("gpu_power_w").and_then(|v| v.as_f64()));
+            let power_limit = validate_power(meta.get("gpu_power_limit_w").and_then(|v| v.as_f64()));
+            let util = validate_gpu_util(payload.gpu_utilization);
+            let used = validate_vram(payload.gpu_mem_used_mb);
+
+            // Validate VRAM used <= total if both are present
+            let used_final = match (used, total) {
+                (Some(u), Some(t)) if u > t => {
+                    eprintln!(
+                        "⚠️ GPU aggregate VRAM used ({:.1}MB) > total ({:.1}MB) for instance {}, clamping",
+                        u, t, payload.instance_id
+                    );
+                    Some(t)
+                }
+                _ => used,
+            };
+
+            if let Err(e) = sqlx::query(
                 r#"
                 INSERT INTO gpu_samples (instance_id, gpu_index, gpu_utilization, vram_used_mb, vram_total_mb, temp_c, power_w, power_limit_w)
                 VALUES ($1, 0, $2, $3, $4, $5, $6, $7)
                 "#,
             )
             .bind(payload.instance_id)
-            .bind(payload.gpu_utilization)
-            .bind(payload.gpu_mem_used_mb)
+            .bind(util)
+            .bind(used_final)
             .bind(total)
             .bind(temp)
             .bind(power)
             .bind(power_limit)
             .execute(&state.db)
-            .await;
+            .await
+            {
+                eprintln!(
+                    "⚠️ Failed to insert gpu_samples (aggregate) for instance {}: {}",
+                    payload.instance_id, e
+                );
+            }
         }
     } else {
-        let _ = sqlx::query(
+        // No metadata, use payload fields only
+        let util = validate_gpu_util(payload.gpu_utilization);
+        let used = validate_vram(payload.gpu_mem_used_mb);
+
+        if let Err(e) = sqlx::query(
             r#"
             INSERT INTO gpu_samples (instance_id, gpu_index, gpu_utilization, vram_used_mb, vram_total_mb, temp_c, power_w, power_limit_w)
             VALUES ($1, 0, $2, $3, NULL, NULL, NULL, NULL)
             "#,
         )
         .bind(payload.instance_id)
-        .bind(payload.gpu_utilization)
-        .bind(payload.gpu_mem_used_mb)
+        .bind(util)
+        .bind(used)
         .execute(&state.db)
-        .await;
+        .await
+        {
+            eprintln!(
+                "⚠️ Failed to insert gpu_samples (minimal) for instance {}: {}",
+                payload.instance_id, e
+            );
+        }
     }
 
     // Insert time series system samples (CPU/Mem/Disk/Network) from metadata.system.
     // Best-effort only: do not fail heartbeat on metrics insert.
+    // Helper functions to validate system metrics.
+    let validate_cpu_pct = |v: Option<f64>| v.map(|x| x.clamp(0.0, 100.0));
+    let validate_load = |v: Option<f64>| v.map(|x| x.max(0.0)); // Load cannot be negative
+    let validate_bytes = |v: Option<i64>| v.map(|x| x.max(0)); // Bytes cannot be negative
+    let validate_bps = |v: Option<f64>| v.map(|x| x.max(0.0)); // Network rates cannot be negative
+
     if let Some(meta) = meta_clone.as_ref() {
         if let Some(sys) = meta.get("system") {
-            let cpu = sys.get("cpu_usage_pct").and_then(|v| v.as_f64());
-            let load1 = sys.get("load1").and_then(|v| v.as_f64());
-            let mem_used = sys.get("mem_used_bytes").and_then(|v| v.as_i64());
-            let mem_total = sys.get("mem_total_bytes").and_then(|v| v.as_i64());
-            let disk_used = sys.get("disk_used_bytes").and_then(|v| v.as_i64());
-            let disk_total = sys.get("disk_total_bytes").and_then(|v| v.as_i64());
-            let rx_bps = sys.get("net_rx_bps").and_then(|v| v.as_f64());
-            let tx_bps = sys.get("net_tx_bps").and_then(|v| v.as_f64());
+            let cpu = validate_cpu_pct(sys.get("cpu_usage_pct").and_then(|v| v.as_f64()));
+            let load1 = validate_load(sys.get("load1").and_then(|v| v.as_f64()));
+            let mem_used = validate_bytes(sys.get("mem_used_bytes").and_then(|v| v.as_i64()));
+            let mem_total = validate_bytes(sys.get("mem_total_bytes").and_then(|v| v.as_i64()));
+            let disk_used = validate_bytes(sys.get("disk_used_bytes").and_then(|v| v.as_i64()));
+            let disk_total = validate_bytes(sys.get("disk_total_bytes").and_then(|v| v.as_i64()));
+            let rx_bps = validate_bps(sys.get("net_rx_bps").and_then(|v| v.as_f64()));
+            let tx_bps = validate_bps(sys.get("net_tx_bps").and_then(|v| v.as_f64()));
+
+            // Validate used <= total for memory and disk
+            let mem_used_final = match (mem_used, mem_total) {
+                (Some(u), Some(t)) if u > t => {
+                    eprintln!(
+                        "⚠️ Memory used ({}) > total ({}) for instance {}, clamping",
+                        u, t, payload.instance_id
+                    );
+                    Some(t)
+                }
+                _ => mem_used,
+            };
+            let disk_used_final = match (disk_used, disk_total) {
+                (Some(u), Some(t)) if u > t => {
+                    eprintln!(
+                        "⚠️ Disk used ({}) > total ({}) for instance {}, clamping",
+                        u, t, payload.instance_id
+                    );
+                    Some(t)
+                }
+                _ => disk_used,
+            };
 
             // Insert only when at least one meaningful field is present.
             if cpu.is_some()
                 || load1.is_some()
-                || mem_used.is_some()
+                || mem_used_final.is_some()
                 || mem_total.is_some()
-                || disk_used.is_some()
+                || disk_used_final.is_some()
                 || disk_total.is_some()
                 || rx_bps.is_some()
                 || tx_bps.is_some()
             {
-                let _ = sqlx::query(
+                if let Err(e) = sqlx::query(
                     r#"
                     INSERT INTO system_samples (
                       instance_id,
@@ -728,14 +825,20 @@ async fn worker_heartbeat(
                 .bind(payload.instance_id)
                 .bind(cpu)
                 .bind(load1)
-                .bind(mem_used)
+                .bind(mem_used_final)
                 .bind(mem_total)
-                .bind(disk_used)
+                .bind(disk_used_final)
                 .bind(disk_total)
                 .bind(rx_bps)
                 .bind(tx_bps)
                 .execute(&state.db)
-                .await;
+                .await
+                {
+                    eprintln!(
+                        "⚠️ Failed to insert system_samples for instance {}: {}",
+                        payload.instance_id, e
+                    );
+                }
             }
         }
     }

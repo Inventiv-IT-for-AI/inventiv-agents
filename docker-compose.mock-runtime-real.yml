@@ -1,0 +1,75 @@
+services:
+  # Real vLLM server with Qwen2.5-0.5B-Instruct (or other lightweight model).
+  # This replaces mock-vllm for end-to-end inference testing.
+  mock-vllm-real:
+    image: vllm/vllm-openai:latest
+    environment:
+      # Model to load (default: Qwen2.5-0.5B-Instruct)
+      - MODEL=${MOCK_VLLM_MODEL:-Qwen/Qwen2.5-0.5B-Instruct}
+      # Quantization: awq, gptq, or "" for FP16 (requires more VRAM)
+      # For CPU-only or low VRAM, use quantized models
+      - QUANTIZATION=${MOCK_VLLM_QUANTIZATION:-}
+      # Tensor parallelism (1 for single GPU/CPU)
+      - TENSOR_PARALLEL_SIZE=1
+      # Max context length (reduce for lower memory usage)
+      # Reduced to 1024 for CPU-only usage (works on Windows/Linux/macOS)
+      - MAX_MODEL_LEN=${MOCK_VLLM_MAX_LEN:-1024}
+      # Port
+      - PORT=8000
+      - HOST=0.0.0.0
+      # Optional: Hugging Face token if using private models
+      - HF_TOKEN=${WORKER_HF_TOKEN:-}
+      # Optional: Trust remote code (required for some models)
+      - TRUST_REMOTE_CODE=${MOCK_VLLM_TRUST_REMOTE_CODE:-true}
+    # GPU if available (optional, vLLM can run on CPU but slower)
+    # Uncomment if you have GPU available:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    networks:
+      - controlplane
+    # Healthcheck: wait for model to load (can take 30-90s)
+    # Note: vLLM image includes curl, but if not available, use python instead
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/v1/models').read()\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 90s  # Give 90s for model loading
+    # Increase memory limit if needed (default Docker limit may be too low)
+    # vLLM CPU-only needs 6-8GB RAM (works on Windows/Linux/macOS)
+    mem_limit: 8g
+
+  worker-agent:
+    build:
+      context: ./inventiv-worker
+      dockerfile: Dockerfile.agent
+    # Same IP as mock-vllm-real: vLLM on :8000, health/metrics on :8080.
+    network_mode: "service:mock-vllm-real"
+    environment:
+      - CONTROL_PLANE_URL=http://api:8003
+      - WORKER_AUTH_TOKEN=${WORKER_AUTH_TOKEN:-dev-worker-token}
+      - INSTANCE_ID=${INSTANCE_ID:?INSTANCE_ID is required}
+      - MODEL_ID=${MOCK_VLLM_MODEL_ID:-demo-model}
+      # Enable synthetic GPU metrics in mock runtimes (no nvidia-smi in local/docker).
+      # Note: With real vLLM, you might want to disable simulation if GPU is available.
+      - WORKER_SIMULATE_GPU_COUNT=${WORKER_SIMULATE_GPU_COUNT:-1}
+      - WORKER_SIMULATE_GPU_VRAM_MB=${WORKER_SIMULATE_GPU_VRAM_MB:-24576}
+      - VLLM_BASE_URL=http://127.0.0.1:8000
+      - WORKER_HEALTH_PORT=8080
+      - WORKER_VLLM_PORT=8000
+      - WORKER_HEARTBEAT_INTERVAL_S=5
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      mock-vllm-real:
+        condition: service_healthy
+
+networks:
+  controlplane:
+    external: true
+    name: ${CONTROLPLANE_NETWORK_NAME:?CONTROLPLANE_NETWORK_NAME is required (e.g. inventiv-agents-worker-fixes_default)}
+

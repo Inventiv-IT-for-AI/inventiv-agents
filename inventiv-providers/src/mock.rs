@@ -109,7 +109,18 @@ impl MockProvider {
         let network_name = self.get_controlplane_network_name().await?;
         let model_id = format!("demo-model-{}", id12);
         let project_root = self.get_project_root();
-        let compose_file = format!("{}/docker-compose.mock-runtime.yml", project_root);
+        
+        // Choose between mock-vllm (simulation) or real vLLM based on environment variable
+        let use_real_vllm = std::env::var("MOCK_USE_REAL_VLLM")
+            .unwrap_or_else(|_| "0".to_string())
+            .parse::<i32>()
+            .unwrap_or(0) > 0;
+        
+        let compose_file = if use_real_vllm {
+            format!("{}/docker-compose.mock-runtime-real.yml", project_root)
+        } else {
+            format!("{}/docker-compose.mock-runtime.yml", project_root)
+        };
 
         // Try 'docker compose' (plugin) first, fallback to 'docker-compose' (standalone)
         // Skip --build to avoid blocking (containers are built on first run or via make)
@@ -132,6 +143,25 @@ impl MockProvider {
         cmd.env("WORKER_SIMULATE_GPU_COUNT", std::env::var("WORKER_SIMULATE_GPU_COUNT").unwrap_or_else(|_| "1".to_string()));
         cmd.env("WORKER_SIMULATE_GPU_VRAM_MB", std::env::var("WORKER_SIMULATE_GPU_VRAM_MB").unwrap_or_else(|_| "24576".to_string()));
         cmd.env("WORKER_AUTH_TOKEN", std::env::var("WORKER_AUTH_TOKEN").unwrap_or_else(|_| "dev-worker-token".to_string()));
+        
+        // Pass through vLLM configuration if using real vLLM
+        if use_real_vllm {
+            if let Ok(model) = std::env::var("MOCK_VLLM_MODEL") {
+                cmd.env("MOCK_VLLM_MODEL", &model);
+            }
+            if let Ok(quantization) = std::env::var("MOCK_VLLM_QUANTIZATION") {
+                cmd.env("MOCK_VLLM_QUANTIZATION", &quantization);
+            }
+            if let Ok(max_len) = std::env::var("MOCK_VLLM_MAX_LEN") {
+                cmd.env("MOCK_VLLM_MAX_LEN", &max_len);
+            }
+            if let Ok(hf_token) = std::env::var("WORKER_HF_TOKEN") {
+                cmd.env("WORKER_HF_TOKEN", &hf_token);
+            }
+            if let Ok(trust_remote) = std::env::var("MOCK_VLLM_TRUST_REMOTE_CODE") {
+                cmd.env("MOCK_VLLM_TRUST_REMOTE_CODE", &trust_remote);
+            }
+        }
 
         // Execute with timeout (30 seconds max for docker compose up)
         // Use spawn + select to allow killing the process on timeout
@@ -259,72 +289,72 @@ impl MockProvider {
         let project_name = format!("mockrt-{}", id12);
         let network_name = self.get_controlplane_network_name().await?;
         let project_root = self.get_project_root();
-        let compose_file = format!("{}/docker-compose.mock-runtime.yml", project_root);
+        
+        // Try both compose files (mock and real) to ensure cleanup
+        // This handles cases where the runtime was started with one but we're stopping with the other
+        let compose_files = vec![
+            format!("{}/docker-compose.mock-runtime.yml", project_root),
+            format!("{}/docker-compose.mock-runtime-real.yml", project_root),
+        ];
 
-        // Try 'docker compose' (plugin) first, fallback to 'docker-compose' (standalone)
-        let mut cmd = Command::new("docker");
-        cmd.args([
-            "compose",
-            "-f",
-            &compose_file,
-            "-p",
-            &project_name,
-            "down",
-            "-v",
-            "--remove-orphans",
-        ]);
-        cmd.current_dir(&project_root);
-        cmd.env("CONTROLPLANE_NETWORK_NAME", &network_name);
+        // Try stopping with each compose file (best-effort, don't fail if one doesn't exist)
+        for compose_file in compose_files {
+            let mut cmd = Command::new("docker");
+            cmd.args([
+                "compose",
+                "-f",
+                &compose_file,
+                "-p",
+                &project_name,
+                "down",
+                "-v",
+                "--remove-orphans",
+            ]);
+            cmd.current_dir(&project_root);
+            cmd.env("CONTROLPLANE_NETWORK_NAME", &network_name);
 
-        // Execute with timeout (10 seconds max for docker compose down)
-        // Use spawn + wait_with_output to allow killing the process on timeout
-        // Try 'docker compose' first, fallback to 'docker-compose' if not available
-        let mut child = match cmd
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                // Best-effort: if docker compose fails, just log and return OK (don't block termination)
-                eprintln!("⚠️ Failed to spawn 'docker compose down' for {}: {}. Continuing anyway.", project_name, e);
-                return Ok(());
-            }
-        };
+            // Execute with timeout (10 seconds max for docker compose down)
+            let mut child = match cmd
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(_) => {
+                    // Skip if spawn fails (file might not exist)
+                    continue;
+                }
+            };
 
-        // Use select! to handle timeout and process completion concurrently
-        // Get child ID before select! since wait_with_output() takes ownership
-        let child_id_opt = child.id();
-        let output = tokio::select! {
-            result = child.wait_with_output() => {
-                match result {
-                    Ok(output) => output,
-                    Err(e) => {
-                        // Best-effort: log but don't fail termination
-                        eprintln!("⚠️ docker compose down failed for {}: {}", project_name, e);
-                        return Ok(());
+            let child_id_opt = child.id();
+            let output = tokio::select! {
+                result = child.wait_with_output() => {
+                    match result {
+                        Ok(output) => output,
+                        Err(_) => {
+                            continue;
+                        }
                     }
                 }
-            }
-            _ = tokio::time::sleep(tokio::time::Duration::from_secs(10)) => {
-                // Timeout: kill by PID (best-effort)
-                if let Some(pid) = child_id_opt {
-                    let _ = Command::new("kill")
-                        .args(["-9", &pid.to_string()])
-                        .output()
-                        .await;
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(10)) => {
+                    // Timeout: kill by PID (best-effort)
+                    if let Some(pid) = child_id_opt {
+                        let _ = Command::new("kill")
+                            .args(["-9", &pid.to_string()])
+                            .output()
+                            .await;
+                    }
+                    continue;
                 }
-                eprintln!("⚠️ docker compose down timed out for {}, continuing anyway", project_name);
-                return Ok(());
-            }
-        };
+            };
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            // Don't fail if runtime doesn't exist (idempotent)
-            if !stderr.contains("No such project") && !stderr.contains("not found") {
-                // Best-effort: log but don't fail termination
-                eprintln!("⚠️ docker-compose down failed for {}: {}", project_name, stderr);
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                // Don't fail if runtime doesn't exist (idempotent)
+                if !stderr.contains("No such project") && !stderr.contains("not found") {
+                    // Best-effort: log but don't fail termination
+                    eprintln!("⚠️ docker-compose down failed for {} ({}): {}", project_name, compose_file, stderr);
+                }
             }
         }
 
