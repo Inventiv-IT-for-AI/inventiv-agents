@@ -192,7 +192,8 @@ curl -fsS -c /tmp/inventiv_cookies.txt \
   -d "{\"email\":\"${ADMIN_USERNAME}\",\"password\":\"${ADMIN_PASSWORD}\"}" >/dev/null
 
 echo "== 5) Create mock deployment (get instance_id) =="
-echo "Fetching a model_id to deploy..."
+echo "Fetching mock-echo-model for Mock Provider..."
+# Mock Provider requires mock-echo-model specifically (compatibility check)
 MODELS_JSON="$(curl -fsS -b /tmp/inventiv_cookies.txt "${API_BASE_URL}/models" || true)"
 export MODELS_JSON
 MODEL_ID_UUID="$(python3 - <<'PY' || true
@@ -211,14 +212,24 @@ def pick_id(item):
     if not isinstance(item, dict):
         return None
     mid=item.get("id")
+    model_id_str=item.get("model_id","")
     if isinstance(mid,str) and mid:
         # prefer active if present
         if item.get("is_active") is False:
             return None
+        # For Mock Provider, prefer mock-echo-model
+        if model_id_str == "mock-echo-model":
+            return mid
         return mid
     return None
 
+# First pass: look for mock-echo-model
 if isinstance(j, list):
+    for it in j:
+        if isinstance(it, dict) and it.get("model_id") == "mock-echo-model" and it.get("is_active"):
+            print(it.get("id",""))
+            raise SystemExit(0)
+    # Fallback: use first active model
     for it in j:
         v=pick_id(it)
         if v:
@@ -227,6 +238,12 @@ elif isinstance(j, dict):
     for key in ("data","models","items"):
         arr=j.get(key)
         if isinstance(arr,list):
+            # First pass: look for mock-echo-model
+            for it in arr:
+                if isinstance(it, dict) and it.get("model_id") == "mock-echo-model" and it.get("is_active"):
+                    print(it.get("id",""))
+                    raise SystemExit(0)
+            # Fallback: use first active model
             for it in arr:
                 v=pick_id(it)
                 if v:
@@ -236,11 +253,11 @@ PY
 )"
 
 if [ -z "${MODEL_ID_UUID}" ]; then
-  echo "No models found; creating a minimal demo model..."
+  echo "No models found; creating mock-echo-model for Mock Provider..."
   CREATE_MODEL_JSON="$(curl -fsS -b /tmp/inventiv_cookies.txt \
     -X POST "${API_BASE_URL}/models" \
     -H "Content-Type: application/json" \
-    -d '{"name":"Demo model","model_id":"demo-model","required_vram_gb":1,"context_length":2048,"is_active":true}')"
+    -d '{"name":"Mock Echo Model","model_id":"mock-echo-model","required_vram_gb":0,"context_length":2048,"is_active":true}')"
   export CREATE_MODEL_JSON
   MODEL_ID_UUID="$(python3 - <<'PY'
 import json, os
