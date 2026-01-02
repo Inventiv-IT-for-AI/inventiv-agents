@@ -366,6 +366,7 @@ psql "postgresql://postgres:password@localhost:5432/llminfra" -f seeds/catalog_s
 **Instances**:
 - `GET /instances`: List (filter `archived`)
 - `GET /instances/:id`: Details
+- `GET /instances/:id/metrics`: Request and token metrics for an instance
 - `DELETE /instances/:id`: Terminate (status `terminating` + event)
 - `PUT /instances/:id/archive`: Archive
 
@@ -441,6 +442,10 @@ The API exposes an OpenAI-compatible proxy (selects a READY worker for the reque
 - `POST /v1/chat/completions` (streaming supported)
 - `POST /v1/completions`
 - `POST /v1/embeddings`
+
+**Token tracking**: The API automatically extracts token usage (`prompt_tokens`, `completion_tokens`, `total_tokens`) from responses (both streaming SSE and non-streaming JSON) and stores them in:
+- `instance_request_metrics` table (aggregated per instance)
+- `finops.inference_usage` table (detailed records with dimensions)
 
 Auth:
 - session user **or**
@@ -611,6 +616,20 @@ See [docs/MONITORING_IMPROVEMENTS.md](docs/MONITORING_IMPROVEMENTS.md) for plann
 **Action logs**: `/action_logs/search` endpoint with pagination and stats
 
 **FinOps**: Frontend dashboard with real/forecast/cumulative costs
+
+**Instance metrics**: Request and token metrics per instance
+
+- **Endpoint**: `GET /instances/:instance_id/metrics`
+- **Dashboard**: Observability page (`/observability`) displays:
+  - Total requests received
+  - Successful requests (with success rate)
+  - Failed requests
+  - Input tokens (tokens received)
+  - Output tokens (tokens returned)
+  - Total tokens
+  - First and last request timestamps
+
+**Token extraction**: Automatically extracted from OpenAI-compatible API responses (both streaming SSE and non-streaming JSON) and stored in `instance_request_metrics` and `finops.inference_usage` tables.
 
 ### E2E Tests (mock) + Docker cleanup
 

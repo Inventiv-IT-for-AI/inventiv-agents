@@ -10,13 +10,28 @@ REQUESTS_RUNNING = float(os.getenv("VLLM_NUM_REQUESTS_RUNNING", os.getenv("MOCK_
 
 
 class Handler(BaseHTTPRequestHandler):
+    def handle_one_request(self):
+        """Override to catch ValueError when connection is closed during flush."""
+        try:
+            super().handle_one_request()
+        except (ValueError, BrokenPipeError, OSError) as e:
+            # Connection closed by client during/after response - this is normal for SSE
+            if "closed file" not in str(e).lower() and "broken pipe" not in str(e).lower():
+                # Only log unexpected errors
+                import sys
+                print(f"Unexpected error: {e}", file=sys.stderr)
+    
     def _json(self, code: int, payload: dict):
         body = json.dumps(payload).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+            self.wfile.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
 
     def _text(self, code: int, body: str, content_type: str = "text/plain; version=0.0.4"):
         raw = body.encode("utf-8")
@@ -69,6 +84,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         # Minimal OpenAI-compatible responses so /v1/chat/completions can be tested end-to-end.
         if self.path == "/v1/chat/completions":
+            import time
+            request_start = time.time()
+            request_id = f"{int(time.time() * 1000)}-{id(self) % 10000}"
+            
             data = self._read_json()
             model = (data.get("model") or MODEL_ID) if isinstance(data, dict) else MODEL_ID
             user_msg = ""
@@ -80,39 +99,108 @@ class Handler(BaseHTTPRequestHandler):
                         user_msg = str(last.get("content") or "")
             except Exception:
                 pass
-            self._json(
-                200,
-                {
+            
+            stream = data.get("stream") if isinstance(data, dict) else False
+            content = f"mock-vllm ok (echo): {user_msg[:200]}"
+            
+            # Estimate tokens: roughly 1 token per 4 characters (approximation)
+            prompt_tokens = max(1, len(user_msg) // 4) if user_msg else 1
+            completion_tokens = max(1, len(content) // 4)
+            total_tokens = prompt_tokens + completion_tokens
+            
+            print(f"[MOCK_VLLM] [{request_id}] REQUEST_START: path={self.path}, model={model}, stream={stream}, msg_length={len(user_msg)}, tokens={prompt_tokens}/{completion_tokens}/{total_tokens}", flush=True)
+            
+            if stream:
+                # SSE streaming response
+                print(f"[MOCK_VLLM] [{request_id}] STREAM_START: sending SSE response", flush=True)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                # Use keep-alive initially, then let HTTP/1.0 close connection naturally after [DONE]
+                # Don't set Connection header - let BaseHTTPRequestHandler handle it
+                self.end_headers()
+                
+                # Send initial delta
+                chunk = {
                     "id": "chatcmpl-mock",
-                    "object": "chat.completion",
+                    "object": "chat.completion.chunk",
                     "model": model,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": {
-                                "role": "assistant",
-                                "content": f"mock-vllm ok (echo): {user_msg[:200]}",
-                            },
-                            "finish_reason": "stop",
-                        }
-                    ],
-                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-                },
-            )
+                    "choices": [{"index": 0, "delta": {"role": "assistant", "content": content}, "finish_reason": None}],
+                }
+                try:
+                    chunk_data = f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
+                    self.wfile.write(chunk_data)
+                    self.wfile.flush()
+                    print(f"[MOCK_VLLM] [{request_id}] STREAM_CHUNK_1: sent initial delta, size={len(chunk_data)}", flush=True)
+                except (BrokenPipeError, OSError, ValueError) as e:
+                    print(f"[MOCK_VLLM] [{request_id}] STREAM_ERROR: failed to send initial chunk: {e}", flush=True)
+                    return
+                
+                # Send final chunk with usage tokens
+                final_chunk = {
+                    "id": "chatcmpl-mock",
+                    "object": "chat.completion.chunk",
+                    "model": model,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens, "total_tokens": total_tokens},
+                }
+                try:
+                    final_data = f"data: {json.dumps(final_chunk)}\n\n".encode("utf-8")
+                    done_data = b"data: [DONE]\n\n"
+                    self.wfile.write(final_data)
+                    self.wfile.write(done_data)
+                    self.wfile.flush()
+                    # Let BaseHTTPRequestHandler close the connection naturally
+                    # Don't call wfile.close() as it can cause issues with reqwest reading headers
+                    elapsed = (time.time() - request_start) * 1000
+                    print(f"[MOCK_VLLM] [{request_id}] STREAM_COMPLETE: sent final chunk + [DONE], elapsed_ms={elapsed:.1f}", flush=True)
+                except (BrokenPipeError, OSError, ValueError) as e:
+                    elapsed = (time.time() - request_start) * 1000
+                    print(f"[MOCK_VLLM] [{request_id}] STREAM_ERROR: failed to send final chunk: {e}, elapsed_ms={elapsed:.1f}", flush=True)
+                    pass
+                return
+            else:
+                # Non-streaming JSON response
+                print(f"[MOCK_VLLM] [{request_id}] NON_STREAM: sending JSON response", flush=True)
+                self._json(
+                    200,
+                    {
+                        "id": "chatcmpl-mock",
+                        "object": "chat.completion",
+                        "model": model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": content,
+                                },
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens, "total_tokens": total_tokens},
+                    },
+                )
+                elapsed = (time.time() - request_start) * 1000
+                print(f"[MOCK_VLLM] [{request_id}] REQUEST_COMPLETE: elapsed_ms={elapsed:.1f}", flush=True)
             return
 
         if self.path == "/v1/completions":
             data = self._read_json()
             model = (data.get("model") or MODEL_ID) if isinstance(data, dict) else MODEL_ID
             prompt = str((data.get("prompt") or "")) if isinstance(data, dict) else ""
+            completion_text = f"mock-vllm ok: {prompt[:200]}"
+            comp_prompt_tokens = max(1, len(prompt) // 4) if prompt else 1
+            comp_completion_tokens = max(1, len(completion_text) // 4)
+            comp_total_tokens = comp_prompt_tokens + comp_completion_tokens
             self._json(
                 200,
                 {
                     "id": "cmpl-mock",
                     "object": "text_completion",
                     "model": model,
-                    "choices": [{"index": 0, "text": f"mock-vllm ok: {prompt[:200]}", "finish_reason": "stop"}],
-                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                    "choices": [{"index": 0, "text": completion_text, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": comp_prompt_tokens, "completion_tokens": comp_completion_tokens, "total_tokens": comp_total_tokens},
                 },
             )
             return
@@ -120,13 +208,23 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/embeddings":
             data = self._read_json()
             model = (data.get("model") or MODEL_ID) if isinstance(data, dict) else MODEL_ID
+            input_text = ""
+            try:
+                input_data = (data.get("input") or "") if isinstance(data, dict) else ""
+                if isinstance(input_data, str):
+                    input_text = input_data
+                elif isinstance(input_data, list):
+                    input_text = " ".join(str(x) for x in input_data)
+            except Exception:
+                pass
+            emb_prompt_tokens = max(1, len(input_text) // 4) if input_text else 1
             self._json(
                 200,
                 {
                     "object": "list",
                     "model": model,
                     "data": [{"object": "embedding", "index": 0, "embedding": [0.0, 0.0, 0.0]}],
-                    "usage": {"prompt_tokens": 1, "total_tokens": 1},
+                    "usage": {"prompt_tokens": emb_prompt_tokens, "total_tokens": emb_prompt_tokens},
                 },
             )
             return

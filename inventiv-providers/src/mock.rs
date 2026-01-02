@@ -107,7 +107,8 @@ impl MockProvider {
         let id12 = instance_id.to_string().replace('-', "").chars().take(12).collect::<String>();
         let project_name = format!("mockrt-{}", id12);
         let network_name = self.get_controlplane_network_name().await?;
-        let model_id = format!("demo-model-{}", id12);
+        // Mock provider always uses mock-echo-model for synthetic mock vLLM
+        let model_id = "mock-echo-model".to_string();
         let project_root = self.get_project_root();
         
         // Mock Provider uses synthetic mock vLLM (echo responses) for local testing

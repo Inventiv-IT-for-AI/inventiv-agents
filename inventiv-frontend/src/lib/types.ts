@@ -291,6 +291,18 @@ export type SystemActivityResponse = {
     instances: SystemActivityInstanceSeries[];
 };
 
+export type InstanceRequestMetrics = {
+    instance_id: string;
+    total_requests: number;
+    successful_requests: number;
+    failed_requests: number;
+    total_input_tokens: number;
+    total_output_tokens: number;
+    total_tokens: number;
+    first_request_at: string | null;
+    last_request_at: string | null;
+};
+
 export type ActionLog = {
     id: string;
     action_type: string;

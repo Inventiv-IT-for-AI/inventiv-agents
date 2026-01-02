@@ -35,6 +35,8 @@ mod bootstrap_admin;
 mod chat;
 mod finops;
 mod instance_type_zones; // Module for zone associations
+mod metrics;
+mod openai_proxy;
 mod provider_settings;
 mod rbac;
 mod settings; // Module
@@ -42,6 +44,7 @@ mod simple_logger;
 mod organizations;
 mod users_endpoint;
 mod workbench;
+mod worker_routing;
 // Simple logger without sqlx macros
 
 // use audit_log::AuditLogger; // Commented out due to DATABASE_URL build issues
@@ -218,6 +221,7 @@ async fn main() {
         // Instances
         .route("/instances", get(list_instances))
         .route("/instances/search", get(search_instances))
+        .route("/instances/:instance_id/metrics", get(metrics::get_instance_metrics))
         .route(
             "/instances/:id/archive",
             axum::routing::put(archive_instance),
@@ -382,13 +386,6 @@ struct ReadyWorkerRow {
     worker_last_heartbeat: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(name)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
 
 fn stable_hash_u64(s: &str) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -1054,211 +1051,11 @@ async fn list_system_activity(
         .into_response()
 }
 
-async fn bump_runtime_model_counters(db: &Pool<Postgres>, model_id: &str, ok: bool) {
-    let mid = model_id.trim();
-    if mid.is_empty() {
-        return;
-    }
-    let _ = sqlx::query(
-        r#"
-        INSERT INTO runtime_models (model_id, first_seen_at, last_seen_at, total_requests, failed_requests)
-        VALUES ($1, NOW(), NOW(), 1, CASE WHEN $2 THEN 0 ELSE 1 END)
-        ON CONFLICT (model_id) DO UPDATE
-          SET last_seen_at = GREATEST(runtime_models.last_seen_at, NOW()),
-              total_requests = runtime_models.total_requests + 1,
-              failed_requests = runtime_models.failed_requests + (CASE WHEN $2 THEN 0 ELSE 1 END)
-        "#,
-    )
-    .bind(mid)
-    .bind(ok)
-    .execute(db)
-    .await;
-}
+// Re-export from worker_routing module for backward compatibility
+pub(crate) use worker_routing::{bump_runtime_model_counters, header_value, resolve_openai_model_id, select_ready_worker_for_model};
 
-async fn select_ready_worker_for_model(
-    db: &Pool<Postgres>,
-    model: &str,
-    sticky_key: Option<&str>,
-) -> Option<(uuid::Uuid, String)> {
-    // `model` here is the vLLM/OpenAI model id (HF repo id).
-    // We route based on `instances.worker_model_id` (set by worker heartbeat/register).
-    let model = model.trim();
-    let stale = openai_worker_stale_seconds_db(db).await;
-    let rows = sqlx::query_as::<Postgres, ReadyWorkerRow>(
-        r#"
-        SELECT
-          id,
-          ip_address::text as ip_address,
-          worker_vllm_port,
-          worker_queue_depth,
-          worker_last_heartbeat
-        FROM instances
-        WHERE status::text = 'ready'
-          AND ip_address IS NOT NULL
-          AND (worker_status = 'ready' OR worker_status IS NULL)
-          AND ($1::text = '' OR worker_model_id = $1)
-          -- Use the same freshness signal as /v1/models + /runtime/models:
-          -- allow either worker heartbeat OR orchestrator health timestamps to keep the instance routable.
-          AND GREATEST(
-              COALESCE(worker_last_heartbeat, 'epoch'::timestamptz),
-              COALESCE(last_health_check, 'epoch'::timestamptz),
-              COALESCE((last_reconciliation AT TIME ZONE 'UTC'), 'epoch'::timestamptz)
-            ) > NOW() - ($2::bigint * INTERVAL '1 second')
-        ORDER BY worker_queue_depth NULLS LAST,
-                 GREATEST(
-                   COALESCE(worker_last_heartbeat, 'epoch'::timestamptz),
-                   COALESCE(last_health_check, 'epoch'::timestamptz),
-                   COALESCE((last_reconciliation AT TIME ZONE 'UTC'), 'epoch'::timestamptz)
-                 ) DESC,
-                 created_at DESC
-        LIMIT 50
-        "#,
-    )
-    .bind(model)
-    .bind(stale)
-    .fetch_all(db)
-    .await
-    .ok()?;
-
-    if rows.is_empty() {
-        return None;
-    }
-
-    let chosen = if let Some(key) = sticky_key.filter(|k| !k.trim().is_empty()) {
-        // Stable-ish affinity to an instance across requests (best effort).
-        let mut sorted = rows;
-        sorted.sort_by_key(|r| r.id);
-        let idx = (stable_hash_u64(key) as usize) % sorted.len();
-        sorted[idx].clone()
-    } else {
-        rows[0].clone()
-    };
-
-    let ip = chosen
-        .ip_address
-        .split('/')
-        .next()
-        .unwrap_or(&chosen.ip_address)
-        .to_string();
-    let port = chosen.worker_vllm_port.unwrap_or(8000).max(1) as i32;
-    Some((chosen.id, format!("http://{}:{}", ip, port)))
-}
-
-async fn resolve_openai_model_id(
-    db: &Pool<Postgres>,
-    requested: Option<&str>,
-    user: Option<&auth::AuthUser>,
-) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
-    // Accept either:
-    // - HF repo id (models.model_id)
-    // - UUID (models.id) as string
-    // - Organization offering id: org_slug/model_code (private to current org for now)
-    // If missing, fallback to WORKER_MODEL_ID env (dev convenience).
-    let Some(raw) = requested
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .or_else(|| {
-            std::env::var("WORKER_MODEL_ID")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-        })
-    else {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error":"missing_model"})),
-        ));
-    };
-
-    // Offering id: org_slug/model_code
-    if let Some((org_slug, code)) = raw.split_once('/') {
-        let org_slug = org_slug.trim();
-        let code = code.trim();
-        if org_slug.is_empty() || code.is_empty() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error":"invalid_model","message":"invalid_offering_id"})),
-            ));
-        }
-
-        let Some(u) = user else {
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(json!({"error":"forbidden","message":"offering_requires_user_session"})),
-            ));
-        };
-        let Some(current_org) = u.current_organization_id else {
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(json!({"error":"forbidden","message":"organization_required"})),
-            ));
-        };
-
-        // For now: org offerings are private (only usable when the offering belongs to the current org).
-        let row: Option<(uuid::Uuid, String)> = sqlx::query_as(
-            r#"
-            SELECT om.organization_id, m.model_id
-            FROM organization_models om
-            JOIN organizations o ON o.id = om.organization_id
-            JOIN models m ON m.id = om.model_id
-            WHERE o.slug = $1
-              AND om.code = $2
-              AND om.is_active = true
-              AND m.is_active = true
-            LIMIT 1
-            "#,
-        )
-        .bind(org_slug)
-        .bind(code)
-        .fetch_optional(db)
-        .await
-        .ok()
-        .flatten();
-
-        let Some((offering_org_id, hf_model_id)) = row else {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(json!({"error":"not_found","message":"offering_not_found"})),
-            ));
-        };
-
-        if offering_org_id != current_org {
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(json!({"error":"forbidden","message":"offering_not_accessible_in_current_org"})),
-            ));
-        }
-
-        return Ok(hf_model_id);
-    }
-
-    // If it looks like a UUID, try resolve -> HF repo id.
-    if let Ok(uid) = uuid::Uuid::parse_str(&raw) {
-        let hf: Option<String> =
-            sqlx::query_scalar("SELECT model_id FROM models WHERE id = $1 AND is_active = true")
-                .bind(uid)
-                .fetch_optional(db)
-                .await
-                .ok()
-                .flatten();
-        return Ok(hf.unwrap_or(raw));
-    }
-
-    // If it matches an active catalog entry by HF repo id, return it; else keep as-is.
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM models WHERE model_id = $1 AND is_active = true)",
-    )
-    .bind(&raw)
-    .fetch_one(db)
-    .await
-    .unwrap_or(false);
-    if exists {
-        Ok(raw)
-    } else {
-        // Keep as-is (may still be served by workers even if not in catalog).
-        Ok(raw)
-    }
-}
+// Note: The actual implementations are in worker_routing.rs
+// These are re-exported here for backward compatibility with existing code in main.rs
 
 async fn openai_list_models(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Return *live* models based on worker heartbeats:
@@ -1335,7 +1132,7 @@ async fn openai_proxy_chat_completions(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    openai_proxy_to_worker(
+    openai_proxy::proxy_to_worker(
         &state,
         "/v1/chat/completions",
         headers,
@@ -1351,7 +1148,7 @@ async fn openai_proxy_completions(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    openai_proxy_to_worker(&state, "/v1/completions", headers, body, user.map(|u| u.0)).await
+    openai_proxy::proxy_to_worker(&state, "/v1/completions", headers, body, user.map(|u| u.0)).await
 }
 
 async fn openai_proxy_embeddings(
@@ -1360,167 +1157,9 @@ async fn openai_proxy_embeddings(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    openai_proxy_to_worker(&state, "/v1/embeddings", headers, body, user.map(|u| u.0)).await
+    openai_proxy::proxy_to_worker(&state, "/v1/embeddings", headers, body, user.map(|u| u.0)).await
 }
 
-async fn openai_proxy_to_worker(
-    state: &Arc<AppState>,
-    path: &str,
-    headers: HeaderMap,
-    body: Bytes,
-    user: Option<auth::AuthUser>,
-) -> Response {
-    let v: serde_json::Value = match serde_json::from_slice(&body) {
-        Ok(v) => v,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error":"invalid_json"})),
-            )
-                .into_response();
-        }
-    };
-    let requested_model = v.get("model").and_then(|m| m.as_str());
-    let model_id = match resolve_openai_model_id(&state.db, requested_model, user.as_ref()).await {
-        Ok(m) => m,
-        Err(e) => return e.into_response(),
-    };
-    let stream = v.get("stream").and_then(|b| b.as_bool()).unwrap_or(false);
-
-    // Sticky key: user-provided; forwarded to worker-local HAProxy to keep affinity in multi-vLLM mode.
-    // Also used best-effort for instance selection (stable hashing).
-    let sticky = header_value(&headers, "X-Inventiv-Session");
-
-    let Some((instance_id, base_url)) =
-        select_ready_worker_for_model(&state.db, &model_id, sticky.as_deref()).await
-    else {
-        bump_runtime_model_counters(&state.db, &model_id, false).await;
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "error":"no_ready_worker",
-                "message":"No READY worker found for requested model",
-                "model": model_id
-            })),
-        )
-            .into_response();
-    };
-
-    let target = format!("{}{}", base_url.trim_end_matches('/'), path);
-
-    let mut client_builder =
-        reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(3));
-    // Non-stream responses should be bounded; stream can be long-lived.
-    if stream {
-        client_builder = client_builder.timeout(std::time::Duration::from_secs(0));
-    } else {
-        client_builder = client_builder.timeout(std::time::Duration::from_secs(60));
-    }
-    let client = client_builder.build();
-    let Ok(client) = client else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error":"http_client_build_failed"})),
-        )
-            .into_response();
-    };
-
-    // Forward headers (allowlist).
-    //
-    // IMPORTANT:
-    // - Do NOT forward client Authorization (API key) to workers.
-    // - Keep headers minimal to avoid hop-by-hop / proxy-only headers causing issues.
-    let mut out_headers = reqwest::header::HeaderMap::new();
-    if let Some(ct) = headers.get(axum::http::header::CONTENT_TYPE) {
-        out_headers.insert(reqwest::header::CONTENT_TYPE, ct.clone());
-    } else {
-        out_headers.insert(
-            reqwest::header::CONTENT_TYPE,
-            reqwest::header::HeaderValue::from_static("application/json"),
-        );
-    }
-    if let Some(acc) = headers.get(axum::http::header::ACCEPT) {
-        out_headers.insert(reqwest::header::ACCEPT, acc.clone());
-    } else {
-        out_headers.insert(
-            reqwest::header::ACCEPT,
-            reqwest::header::HeaderValue::from_static("application/json"),
-        );
-    }
-    // Ensure sticky header is forwarded (HAProxy config uses it).
-    if let Some(sid) = sticky.as_deref() {
-        if let Ok(val) = reqwest::header::HeaderValue::from_str(sid) {
-            out_headers.insert(
-                reqwest::header::HeaderName::from_static("x-inventiv-session"),
-                val,
-            );
-        }
-    }
-
-    // Proxy request.
-    let upstream = match client
-        .post(&target)
-        .headers(out_headers)
-        .body(body)
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            bump_runtime_model_counters(&state.db, &model_id, false).await;
-            let _ = simple_logger::log_action_with_metadata(
-                &state.db,
-                "OPENAI_PROXY",
-                "failed",
-                Some(instance_id),
-                Some("upstream_request_failed"),
-                Some(json!({"target": target, "error": e.to_string()})),
-            )
-            .await;
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({"error":"upstream_unreachable","message":e.to_string()})),
-            )
-                .into_response();
-        }
-    };
-
-    let status = upstream.status();
-    let mut resp_headers = axum::http::HeaderMap::new();
-    // Preserve content-type for SSE streaming.
-    if let Some(ct) = upstream.headers().get(reqwest::header::CONTENT_TYPE) {
-        if let Ok(cts) = ct.to_str() {
-            if let Ok(v) = axum::http::HeaderValue::from_str(cts) {
-                resp_headers.insert(axum::http::header::CONTENT_TYPE, v);
-            }
-        }
-    }
-
-    if stream {
-        // Count as success if upstream accepted (2xx). We'll treat other codes as failed.
-        bump_runtime_model_counters(&state.db, &model_id, status.is_success()).await;
-        let byte_stream = upstream.bytes_stream().map(|chunk| {
-            chunk.map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::Other, "upstream_stream_error")
-            })
-        });
-        return (status, resp_headers, Body::from_stream(byte_stream)).into_response();
-    }
-
-    let bytes = match upstream.bytes().await {
-        Ok(b) => b,
-        Err(e) => {
-            bump_runtime_model_counters(&state.db, &model_id, false).await;
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({"error":"upstream_read_failed","message":e.to_string()})),
-            )
-                .into_response();
-        }
-    };
-    bump_runtime_model_counters(&state.db, &model_id, status.is_success()).await;
-    (status, resp_headers, bytes).into_response()
-}
 
 fn extract_bearer(headers: &HeaderMap) -> Option<String> {
     let Some(auth) = headers.get(axum::http::header::AUTHORIZATION) else {

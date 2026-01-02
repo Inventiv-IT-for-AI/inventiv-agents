@@ -160,15 +160,7 @@ export function CreateInstanceModal({
         const qs = selectedProviderCode !== "all" ? `?provider_code=${encodeURIComponent(selectedProviderCode)}` : "";
 
         const run = async () => {
-            // Fetch models (active only) once per open.
-            if (models.length === 0) {
-                const mres = await fetch(apiUrl("models?active=true"));
-                const mdata = mres.ok ? ((await mres.json()) as LlmModel[]) : [];
-                if (!cancelled) {
-                    setModels(mdata);
-                    if (!selectedModelId && mdata.length > 0) setSelectedModelId(mdata[0].id);
-                }
-            }
+            // Models will be fetched based on selected instance type (see useEffect below)
 
             const combos: Combo[] = [];
             for (const z of candidateZones) {
@@ -209,7 +201,43 @@ export function CreateInstanceModal({
             cancelled = true;
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open, selectedProviderCode, selectedProviderId, selectedRegionId, selectedZoneId, zones, providers, regions, models.length, selectedModelId, typesByZoneRef]);
+    }, [open, selectedProviderCode, selectedProviderId, selectedRegionId, selectedZoneId, zones, providers, regions, typesByZoneRef]);
+
+    // Fetch compatible models when an instance type is selected
+    useEffect(() => {
+        if (!open) return;
+        let cancelled = false;
+
+        const fetchModels = async () => {
+            if (selectedCombo?.type?.id) {
+                // Fetch only models compatible with the selected instance type
+                const mres = await fetch(apiUrl(`instance_types/${selectedCombo.type.id}/models`));
+                const mdata = mres.ok ? ((await mres.json()) as LlmModel[]) : [];
+                if (!cancelled) {
+                    setModels(mdata);
+                    // Reset selected model if it's not in the compatible list
+                    if (selectedModelId && !mdata.some((m) => m.id === selectedModelId)) {
+                        setSelectedModelId(mdata.length > 0 ? mdata[0].id : "");
+                    } else if (!selectedModelId && mdata.length > 0) {
+                        setSelectedModelId(mdata[0].id);
+                    }
+                }
+            } else {
+                // No instance type selected: fetch all active models
+                const mres = await fetch(apiUrl("models?active=true"));
+                const mdata = mres.ok ? ((await mres.json()) as LlmModel[]) : [];
+                if (!cancelled) {
+                    setModels(mdata);
+                    if (!selectedModelId && mdata.length > 0) setSelectedModelId(mdata[0].id);
+                }
+            }
+        };
+
+        void fetchModels().catch((e) => console.error("Failed to fetch models", e));
+        return () => {
+            cancelled = true;
+        };
+    }, [open, selectedCombo?.type?.id, selectedModelId]);
 
     const handleDeploy = async () => {
         setErrorMsg(null);

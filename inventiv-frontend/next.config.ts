@@ -12,11 +12,13 @@ const nextConfig: NextConfig = {
   webpack: (config) => {
     // When `ia-widgets` is resolved to a path outside `/app` (Docker bind mount),
     // webpack may not find deps like `@radix-ui/*` because it searches relative to that external dir.
-    // Ensure `/app/node_modules` is always part of the module resolution chain.
+    // Ensure `/app/node_modules` and parent `node_modules` (monorepo) are part of the module resolution chain.
     config.resolve = config.resolve || {};
     const modules = config.resolve.modules || [];
     const appNodeModules = path.resolve(__dirname, "node_modules");
-    config.resolve.modules = [appNodeModules, ...modules];
+    const parentNodeModules = path.resolve(__dirname, "..", "node_modules");
+    // Add parent node_modules first to prioritize hoisted packages in monorepo
+    config.resolve.modules = [parentNodeModules, appNodeModules, ...modules.filter((m: string) => m !== appNodeModules && m !== parentNodeModules)];
     return config;
   },
 };

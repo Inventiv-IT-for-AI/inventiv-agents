@@ -292,11 +292,12 @@ echo "== 6) Start per-instance mock runtime (Option A) =="
 # This validates the complete chain: provisioning, monitoring, decommissioning
 # Real vLLM will be used with real providers (Scaleway, etc.) in staging/prod
 export MOCK_USE_REAL_VLLM=0
-# Use a unique mock model id per run to avoid collisions
-MOCK_VLLM_MODEL_ID="demo-model-$(echo "$INSTANCE_ID" | tr -d '-' | cut -c1-12)"
+# Use mock-echo-model from catalog so it appears in Chat module
+# This ensures the model_id matches the catalog entry for proper visibility
+MOCK_VLLM_MODEL_ID="mock-echo-model"
 export MOCK_VLLM_MODEL_ID
 echo "MOCK_USE_REAL_VLLM=${MOCK_USE_REAL_VLLM} (synthetic mock with echo)"
-echo "MOCK_VLLM_MODEL_ID=${MOCK_VLLM_MODEL_ID}"
+echo "MOCK_VLLM_MODEL_ID=${MOCK_VLLM_MODEL_ID} (using catalog model_id)"
 
 export WORKER_AUTH_TOKEN="${WORKER_AUTH_TOKEN:-dev-worker-token}"
 export INSTANCE_ID
@@ -309,7 +310,7 @@ chmod +x ./scripts/mock_runtime_up.sh 2>/dev/null || true
 
 echo "== 7) Wait for worker heartbeats to be persisted (poll via API) =="
 hb_ok=0
-for i in {1..60}; do
+for i in {1..120}; do
   INST_JSON="$(curl -fsS -b /tmp/inventiv_cookies.txt "${API_BASE_URL}/instances/${INSTANCE_ID}" || true)"
   export INST_JSON
   if python3 - <<'PY' >/dev/null 2>&1

@@ -5,7 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { RefreshCcw } from "lucide-react";
 import { apiUrl } from "@/lib/api";
-import type { GpuActivityResponse, Instance, SystemActivityResponse } from "@/lib/types";
+import type { GpuActivityResponse, Instance, InstanceRequestMetrics, SystemActivityResponse } from "@/lib/types";
 import { displayOrDash } from "@/lib/utils";
 import { IA_COLORS, IASparklineDual } from "ia-widgets";
 
@@ -43,6 +43,7 @@ export default function ObservabilityPage() {
   const [instances, setInstances] = useState<Instance[]>([]);
   const [system, setSystem] = useState<SystemActivityResponse | null>(null);
   const [gpu, setGpu] = useState<GpuActivityResponse | null>(null);
+  const [instanceMetrics, setInstanceMetrics] = useState<Map<string, InstanceRequestMetrics>>(new Map());
   const [isLoading, setIsLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
@@ -135,6 +136,45 @@ export default function ObservabilityPage() {
     };
   }, [tick, query]);
 
+  // Load instance metrics for active instances
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (activeInstances.length === 0) {
+        setInstanceMetrics(new Map());
+        return;
+      }
+      try {
+        const metricsPromises = activeInstances.map(async (inst) => {
+          try {
+            const res = await fetch(apiUrl(`instances/${inst.id}/metrics`));
+            if (!res.ok) return null;
+            const json = (await res.json()) as InstanceRequestMetrics;
+            return { instanceId: inst.id, metrics: json };
+          } catch {
+            return null;
+          }
+        });
+        const results = await Promise.all(metricsPromises);
+        if (!cancelled) {
+          const metricsMap = new Map<string, InstanceRequestMetrics>();
+          for (const result of results) {
+            if (result?.metrics) {
+              metricsMap.set(result.instanceId, result.metrics);
+            }
+          }
+          setInstanceMetrics(metricsMap);
+        }
+      } catch {
+        // ignore errors
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeInstances, tick]);
+
   const systemByInstance = useMemo(() => {
     const map = new Map<string, SystemActivityResponse["instances"][number]>();
     for (const s of system?.instances ?? []) map.set(String(s.instance_id), s);
@@ -189,6 +229,7 @@ export default function ObservabilityPage() {
           const color = stableColorForInstance(inst.id, activeIdsSorted);
           const sys = systemByInstance.get(inst.id) ?? null;
           const gpuSeries = gpuByInstance.get(inst.id) ?? null;
+          const metrics = instanceMetrics.get(inst.id) ?? null;
 
           const sysSamples = sys?.samples ?? [];
           const cpuMem = sysSamples.map((s) => ({ a: s.cpu_pct ?? null, b: s.mem_pct ?? null }));
@@ -358,6 +399,58 @@ export default function ObservabilityPage() {
                       })}
                     </div>
                   )}
+                </div>
+
+                {/* Request Metrics */}
+                <div className="rounded-lg border p-3">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="text-xs font-medium">Request Metrics</div>
+                    {metrics?.last_request_at ? (
+                      <div className="text-[11px] text-muted-foreground">
+                        Last: {new Date(metrics.last_request_at).toLocaleTimeString()}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-md border p-2 bg-muted/30">
+                      <div className="text-[11px] text-muted-foreground">Requêtes reçues</div>
+                      <div className="text-lg font-semibold mt-1">
+                        {metrics ? metrics.total_requests.toLocaleString() : "—"}
+                      </div>
+                    </div>
+                    <div className="rounded-md border p-2 bg-muted/30">
+                      <div className="text-[11px] text-muted-foreground">Requêtes traitées</div>
+                      <div className="text-lg font-semibold mt-1">
+                        {metrics ? (
+                          <span className="text-green-600">{metrics.successful_requests.toLocaleString()}</span>
+                        ) : (
+                          "—"
+                        )}
+                      </div>
+                      {metrics && metrics.total_requests > 0 ? (
+                        <div className="text-[10px] text-muted-foreground mt-1">
+                          {((metrics.successful_requests / metrics.total_requests) * 100).toFixed(1)}% success
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="rounded-md border p-2 bg-muted/30">
+                      <div className="text-[11px] text-muted-foreground">Tokens reçus</div>
+                      <div className="text-lg font-semibold mt-1">
+                        {metrics ? metrics.total_input_tokens.toLocaleString() : "—"}
+                      </div>
+                    </div>
+                    <div className="rounded-md border p-2 bg-muted/30">
+                      <div className="text-[11px] text-muted-foreground">Tokens retournés</div>
+                      <div className="text-lg font-semibold mt-1">
+                        {metrics ? metrics.total_output_tokens.toLocaleString() : "—"}
+                      </div>
+                    </div>
+                  </div>
+                  {metrics && metrics.failed_requests > 0 ? (
+                    <div className="mt-2 text-xs text-red-600">
+                      Échecs: {metrics.failed_requests.toLocaleString()}
+                    </div>
+                  ) : null}
                 </div>
               </CardContent>
             </Card>

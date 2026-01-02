@@ -13,7 +13,7 @@ CREATE EXTENSION IF NOT EXISTS timescaledb WITH SCHEMA public;
 
 COMMENT ON EXTENSION timescaledb IS 'Enables scalable inserts and complex queries for time-series data (Community Edition)';
 
-CREATE SCHEMA finops;
+CREATE SCHEMA IF NOT EXISTS finops;
 
 --
 -- Name: pgcrypto; Type: EXTENSION; Schema: -; Owner: -
@@ -27,20 +27,26 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
 
 COMMENT ON EXTENSION pgcrypto IS 'cryptographic functions';
 
-CREATE TYPE public.instance_status AS ENUM (
-    'provisioning',
-    'booting',
-    'ready',
-    'draining',
-    'terminated',
-    'failed',
-    'startup_failed',
-    'terminating',
-    'provisioning_failed',
-    'archived'
-);
+-- Create instance_status enum type if it doesn't exist
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'instance_status') THEN
+        CREATE TYPE public.instance_status AS ENUM (
+            'provisioning',
+            'booting',
+            'ready',
+            'draining',
+            'terminated',
+            'failed',
+            'startup_failed',
+            'terminating',
+            'provisioning_failed',
+            'archived'
+        );
+    END IF;
+END $$;
 
-CREATE FUNCTION public.check_model_instance_compatibility(p_model_id uuid, p_instance_type_id uuid) RETURNS boolean
+CREATE OR REPLACE FUNCTION public.check_model_instance_compatibility(p_model_id uuid, p_instance_type_id uuid) RETURNS boolean
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -63,7 +69,7 @@ BEGIN
     RETURN (v_instance_vram_total_gb >= v_model_vram_gb);
 END;
 $$;
-CREATE FUNCTION public.set_updated_at_global_settings() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.set_updated_at_global_settings() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -72,7 +78,7 @@ BEGIN
   RETURN NEW;
 END;
 $$;
-CREATE FUNCTION public.set_updated_at_provider_settings() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.set_updated_at_provider_settings() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -81,7 +87,7 @@ BEGIN
   RETURN NEW;
 END;
 $$;
-CREATE FUNCTION public.set_updated_at_settings_definitions() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.set_updated_at_settings_definitions() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -90,7 +96,7 @@ BEGIN
   RETURN NEW;
 END;
 $$;
-CREATE FUNCTION public.touch_runtime_model_from_instance() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.touch_runtime_model_from_instance() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -110,7 +116,7 @@ BEGIN
   RETURN NEW;
 END;
 $$;
-CREATE FUNCTION public.validate_global_settings() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.validate_global_settings() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -140,7 +146,7 @@ BEGIN
   RETURN NEW;
 END;
 $$;
-CREATE FUNCTION public.validate_provider_settings() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.validate_provider_settings() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -595,6 +601,8 @@ CREATE TABLE public.runtime_models (
     failed_requests bigint DEFAULT 0 NOT NULL
 );
 
+ALTER TABLE ONLY public.runtime_models ADD CONSTRAINT runtime_models_model_id_key UNIQUE (model_id);
+
 CREATE TABLE public.settings_definitions (
     key text NOT NULL,
     scope text DEFAULT 'provider'::text NOT NULL,
@@ -696,6 +704,134 @@ CREATE TABLE public.zones (
     code character varying(50) NOT NULL,
     is_active boolean DEFAULT true NOT NULL
 );
+
+--
+-- Primary Key Constraints
+--
+
+ALTER TABLE ONLY finops.api_keys
+    ADD CONSTRAINT api_keys_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY finops.cost_actual_cumulative_minute
+    ADD CONSTRAINT cost_actual_cumulative_minute_pkey PRIMARY KEY (bucket_minute, provider_id_key, instance_id_key);
+
+ALTER TABLE ONLY finops.cost_actual_minute
+    ADD CONSTRAINT cost_actual_minute_pkey PRIMARY KEY (bucket_minute, provider_id_key, instance_id_key);
+
+ALTER TABLE ONLY finops.cost_forecast_minute
+    ADD CONSTRAINT cost_forecast_minute_pkey PRIMARY KEY (bucket_minute, provider_id_key);
+
+ALTER TABLE ONLY finops.customers
+    ADD CONSTRAINT customers_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY finops.events
+    ADD CONSTRAINT events_pkey PRIMARY KEY (event_id);
+
+ALTER TABLE ONLY finops.inference_usage
+    ADD CONSTRAINT inference_usage_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY finops.provider_costs
+    ADD CONSTRAINT provider_costs_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY finops.subscription_charges
+    ADD CONSTRAINT subscription_charges_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY finops.token_purchases
+    ADD CONSTRAINT token_purchases_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.action_logs
+    ADD CONSTRAINT action_logs_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.action_types
+    ADD CONSTRAINT action_types_pkey PRIMARY KEY (code);
+
+ALTER TABLE ONLY public.instance_state_history
+    ADD CONSTRAINT instance_state_history_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.instance_type_zones
+    ADD CONSTRAINT instance_type_zones_pkey PRIMARY KEY (instance_type_id, zone_id);
+
+ALTER TABLE ONLY public.instance_types
+    ADD CONSTRAINT instance_types_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.instance_volumes
+    ADD CONSTRAINT instance_volumes_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.instances
+    ADD CONSTRAINT instances_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.mock_provider_instances
+    ADD CONSTRAINT mock_provider_instances_pkey PRIMARY KEY (provider_instance_id);
+
+ALTER TABLE ONLY public.models
+    ADD CONSTRAINT models_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.providers
+    ADD CONSTRAINT providers_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.regions
+    ADD CONSTRAINT regions_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.ssh_keys
+    ADD CONSTRAINT ssh_keys_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.worker_auth_tokens
+    ADD CONSTRAINT worker_auth_tokens_pkey PRIMARY KEY (instance_id);
+
+ALTER TABLE ONLY public.zones
+    ADD CONSTRAINT zones_pkey PRIMARY KEY (id);
+
+--
+-- Unique Constraints
+--
+
+ALTER TABLE ONLY finops.customers
+    ADD CONSTRAINT customers_email_key UNIQUE (email);
+
+ALTER TABLE ONLY finops.customers
+    ADD CONSTRAINT customers_external_ref_key UNIQUE (external_ref);
+
+ALTER TABLE ONLY finops.provider_costs
+    ADD CONSTRAINT provider_costs_provider_id_external_id_key UNIQUE (provider_id, external_id);
+
+ALTER TABLE ONLY finops.subscription_charges
+    ADD CONSTRAINT subscription_charges_external_id_key UNIQUE (external_id);
+
+ALTER TABLE ONLY finops.token_purchases
+    ADD CONSTRAINT token_purchases_external_id_key UNIQUE (external_id);
+
+ALTER TABLE ONLY public.instance_types
+    ADD CONSTRAINT instance_types_provider_code_key UNIQUE (provider_id, code);
+
+ALTER TABLE ONLY public.instance_types
+    ADD CONSTRAINT instance_types_provider_id_name_key UNIQUE (provider_id, name);
+
+ALTER TABLE ONLY public.models
+    ADD CONSTRAINT models_model_id_key UNIQUE (model_id);
+
+ALTER TABLE ONLY public.providers
+    ADD CONSTRAINT providers_code_key UNIQUE (code);
+
+ALTER TABLE ONLY public.providers
+    ADD CONSTRAINT providers_name_key UNIQUE (name);
+
+ALTER TABLE ONLY public.regions
+    ADD CONSTRAINT regions_provider_code_key UNIQUE (provider_id, code);
+
+ALTER TABLE ONLY public.regions
+    ADD CONSTRAINT regions_provider_id_name_key UNIQUE (provider_id, name);
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_email_key UNIQUE (email);
+
+ALTER TABLE ONLY public.zones
+    ADD CONSTRAINT zones_region_code_key UNIQUE (region_id, code);
+
+ALTER TABLE ONLY public.zones
+    ADD CONSTRAINT zones_region_id_name_key UNIQUE (region_id, name);
 
 CREATE INDEX idx_finops_api_keys_customer ON finops.api_keys USING btree (customer_id);
 

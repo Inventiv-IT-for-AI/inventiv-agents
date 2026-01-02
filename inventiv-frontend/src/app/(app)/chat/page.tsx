@@ -12,6 +12,8 @@ import type { WorkbenchProject, WorkbenchRun, WorkbenchRunWithMessages } from "@
 import { WorkspaceBanner } from "@/components/shared/WorkspaceBanner";
 import { AIToggle } from "ia-widgets";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import { MoreVertical } from "lucide-react";
 
 type ChatMsg = { role: "system" | "user" | "assistant"; content: string };
 
@@ -50,6 +52,8 @@ export default function ChatPage() {
   const [renameRunOpen, setRenameRunOpen] = useState(false);
   const [renameRunId, setRenameRunId] = useState<string>("");
   const [renameRunTitle, setRenameRunTitle] = useState<string>("");
+  const [moveToTopicOpen, setMoveToTopicOpen] = useState(false);
+  const [moveToTopicRunId, setMoveToTopicRunId] = useState<string>("");
 
   const selectedModelLabel = useMemo(() => {
     const m = models.find((x) => x.model === selectedModel);
@@ -59,7 +63,7 @@ export default function ChatPage() {
   const loadModels = async () => {
     setModelsError(null);
     try {
-      const res = await fetch(apiUrl("/chat/models"), { cache: "no-store" });
+      const res = await fetch(apiUrl("/chat/models"), { cache: "no-store", credentials: "include" });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         throw new Error(body?.message || body?.error || `http_${res.status}`);
@@ -81,7 +85,7 @@ export default function ChatPage() {
   const loadRuns = async () => {
     setRunsError(null);
     try {
-      const res = await fetch(apiUrl("workbench/runs?limit=30"), { cache: "no-store" });
+      const res = await fetch(apiUrl("workbench/runs?limit=30"), { cache: "no-store", credentials: "include" });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         throw new Error(body?.message || body?.error || `http_${res.status}`);
@@ -97,7 +101,7 @@ export default function ChatPage() {
   const loadProjects = async () => {
     setProjectsError(null);
     try {
-      const res = await fetch(apiUrl("workbench/projects"), { cache: "no-store" });
+      const res = await fetch(apiUrl("workbench/projects"), { cache: "no-store", credentials: "include" });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         throw new Error(body?.message || body?.error || `http_${res.status}`);
@@ -113,7 +117,7 @@ export default function ChatPage() {
   const loadRun = async (id: string) => {
     setChatError(null);
     try {
-      const res = await fetch(apiUrl(`workbench/runs/${id}`), { cache: "no-store" });
+      const res = await fetch(apiUrl(`workbench/runs/${id}`), { cache: "no-store", credentials: "include" });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         throw new Error(body?.message || body?.error || `http_${res.status}`);
@@ -137,6 +141,7 @@ export default function ChatPage() {
     const res = await fetch(apiUrl("workbench/runs"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({
         model_id: modelId,
         api_key_id: null,
@@ -156,6 +161,7 @@ export default function ChatPage() {
     await fetch(apiUrl(`workbench/runs/${rid}/messages`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({ message_index: messageIndex, role, content }),
     }).catch(() => null);
   };
@@ -164,6 +170,7 @@ export default function ChatPage() {
     await fetch(apiUrl(`workbench/runs/${rid}/complete`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({
         status,
         ttft_ms: null,
@@ -218,11 +225,17 @@ export default function ChatPage() {
     const rid = await ensureRun(selectedModel);
     await appendMessage(rid, nextMessages.length - 1, "user", p);
 
+    // Declare variables before try block so they're accessible in catch (for streaming mode)
+    let requestStartTime: number | undefined;
+    let chunkCount = 0;
+    let sseLineCount = 0;
+
     try {
       if (!streamingEnabled) {
         const res = await fetch(apiUrl("/v1/chat/completions"), {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Inventiv-Session": rid },
+          credentials: "include",
           body: JSON.stringify({
             model: selectedModel,
             stream: false,
@@ -246,9 +259,17 @@ export default function ChatPage() {
       // Pre-create assistant slot in UI
       setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
 
+      // Initialize variables for streaming mode
+      requestStartTime = performance.now();
+      chunkCount = 0;
+      sseLineCount = 0;
+      
+      console.log(`[CHAT] [${rid}] REQUEST_START: model=${selectedModel}, message_count=${nextMessages.length}, stream=true`);
+      
       const res = await fetch(apiUrl("/v1/chat/completions"), {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Inventiv-Session": rid },
+        credentials: "include",
         body: JSON.stringify({
           model: selectedModel,
           stream: true,
@@ -257,8 +278,12 @@ export default function ChatPage() {
         signal: controller.signal,
       });
 
+      const requestElapsed = performance.now() - requestStartTime;
+      console.log(`[CHAT] [${rid}] REQUEST_RESPONSE: status=${res.status}, elapsed_ms=${Math.round(requestElapsed)}`);
+
       if (!res.ok || !res.body) {
         const body = await res.json().catch(() => null);
+        console.error(`[CHAT] [${rid}] REQUEST_ERROR: status=${res.status}, error=${body?.error || body?.message || 'unknown'}`);
         throw new Error(body?.message || body?.error || `http_${res.status}`);
       }
 
@@ -282,9 +307,13 @@ export default function ChatPage() {
 
       const parseSseLine = (line: string) => {
         if (!line.startsWith("data:")) return;
+        sseLineCount++;
         const payload = line.slice(5).trim();
         if (!payload) return;
-        if (payload === "[DONE]") return;
+        if (payload === "[DONE]") {
+          console.log(`[CHAT] [${rid}] SSE_DONE: total_lines=${sseLineCount}, final_length=${assistant.length}`);
+          return;
+        }
         try {
           const obj = JSON.parse(payload);
           const delta =
@@ -292,20 +321,36 @@ export default function ChatPage() {
             obj?.choices?.[0]?.message?.content ??
             obj?.choices?.[0]?.text ??
             "";
-          if (typeof delta === "string" && delta.length) flushDelta(delta);
-        } catch {
-          // ignore parse errors
+          if (typeof delta === "string" && delta.length) {
+            if (sseLineCount <= 3) {
+              console.log(`[CHAT] [${rid}] SSE_CHUNK: line=${sseLineCount}, delta_length=${delta.length}, delta_preview=${delta.substring(0, 50)}`);
+            }
+            flushDelta(delta);
+          }
+        } catch (e) {
+          console.warn(`[CHAT] [${rid}] SSE_PARSE_ERROR: line=${sseLineCount}, error=${e}`);
         }
       };
 
+      console.log(`[CHAT] [${rid}] STREAM_START: reading SSE stream`);
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          console.log(`[CHAT] [${rid}] STREAM_END: chunk_count=${chunkCount}, sse_lines=${sseLineCount}, final_length=${assistant.length}`);
+          break;
+        }
+        chunkCount++;
+        if (chunkCount <= 3 || chunkCount % 10 === 0) {
+          console.log(`[CHAT] [${rid}] STREAM_CHUNK: count=${chunkCount}, size=${value.length}`);
+        }
         buf += decoder.decode(value, { stream: true });
         const lines = buf.split("\n");
         buf = lines.pop() ?? "";
         for (const raw of lines) parseSseLine(raw.replace(/\r$/, ""));
       }
+
+      const totalElapsed = performance.now() - requestStartTime;
+      console.log(`[CHAT] [${rid}] REQUEST_COMPLETE: total_ms=${Math.round(totalElapsed)}, chunks=${chunkCount}, sse_lines=${sseLineCount}, response_length=${assistant.length}`);
 
       setStreamingNow(false);
       abortRef.current = null;
@@ -315,7 +360,10 @@ export default function ChatPage() {
       void loadRuns().catch(() => null);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      const elapsed = requestStartTime ? performance.now() - requestStartTime : 0;
+      console.error(`[CHAT] [${rid}] REQUEST_FAILED: elapsed_ms=${Math.round(elapsed)}, error=${msg}`);
       if (msg.toLowerCase().includes("abort")) {
+        console.log(`[CHAT] [${rid}] REQUEST_CANCELLED`);
         setChatError("Annulé");
         await completeRun(rid, "cancelled", { stream: streamingEnabled, cancelled: true });
       } else {
@@ -355,6 +403,7 @@ export default function ChatPage() {
     const res = await fetch(apiUrl("workbench/projects"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({ name, shared_with_org: createProjectShared }),
     });
     if (res.ok) {
@@ -369,13 +418,14 @@ export default function ChatPage() {
     await fetch(apiUrl(`workbench/runs/${id}`), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify(patch),
     }).catch(() => null);
     await loadRuns();
   };
 
   const deleteRun = async (id: string) => {
-    await fetch(apiUrl(`workbench/runs/${id}`), { method: "DELETE" }).catch(() => null);
+    await fetch(apiUrl(`workbench/runs/${id}`), { method: "DELETE", credentials: "include" }).catch(() => null);
     if (runId === id) startNewChat();
     await loadRuns();
   };
@@ -426,7 +476,7 @@ export default function ChatPage() {
 
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2">
-                <Label>Projets</Label>
+                <Label>Topics</Label>
                 <Button variant="outline" size="sm" onClick={() => setCreateProjectOpen(true)}>
                   New
                 </Button>
@@ -437,7 +487,7 @@ export default function ChatPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="__all__">Tous</SelectItem>
-                  <SelectItem value="__none__">Sans projet</SelectItem>
+                  <SelectItem value="__none__">Sans topic</SelectItem>
                   {projects.map((p) => (
                     <SelectItem key={p.id} value={p.id}>
                       {p.name}
@@ -457,13 +507,13 @@ export default function ChatPage() {
                   <div className="text-sm text-muted-foreground">Aucune session.</div>
                 ) : (
                   filteredRuns.map((r) => (
-                    <div key={r.id} className="flex items-center gap-2">
+                    <div key={r.id} className="flex items-center gap-2 min-w-0">
                       <Button
                         variant={r.id === runId ? "secondary" : "ghost"}
-                        className="w-full justify-start"
+                        className="flex-1 min-w-0 justify-start"
                         onClick={() => loadRun(r.id)}
                       >
-                        <div className="min-w-0 text-left">
+                        <div className="min-w-0 text-left flex-1">
                           <div className="text-sm font-medium truncate">{r.title || r.model_id}</div>
                           <div className="text-xs text-muted-foreground truncate">
                             {new Date(r.created_at).toLocaleString()}
@@ -471,20 +521,39 @@ export default function ChatPage() {
                           </div>
                         </div>
                       </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          setRenameRunId(r.id);
-                          setRenameRunTitle(r.title || "");
-                          setRenameRunOpen(true);
-                        }}
-                      >
-                        Rename
-                      </Button>
-                      <Button variant="outline" size="sm" onClick={() => void deleteRun(r.id)}>
-                        Delete
-                      </Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="sm" className="flex-shrink-0 h-8 w-8 p-0">
+                            <MoreVertical className="h-4 w-4" />
+                            <span className="sr-only">Open menu</span>
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onClick={() => {
+                              setRenameRunId(r.id);
+                              setRenameRunTitle(r.title || "");
+                              setRenameRunOpen(true);
+                            }}
+                          >
+                            Rename
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => {
+                              setMoveToTopicRunId(r.id);
+                              setMoveToTopicOpen(true);
+                            }}
+                          >
+                            Move to Topic
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => void deleteRun(r.id)}
+                            className="text-red-600 focus:text-red-600"
+                          >
+                            Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
                   ))
                 )}
@@ -500,10 +569,10 @@ export default function ChatPage() {
                     onValueChange={(v) => void updateRun(runId, { project_id: v === "__none__" ? null : v })}
                   >
                     <SelectTrigger>
-                      <SelectValue placeholder="Affecter à un projet…" />
+                      <SelectValue placeholder="Affecter à un topic…" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="__none__">Sans projet</SelectItem>
+                      <SelectItem value="__none__">Sans topic</SelectItem>
                       {projects.map((p) => (
                         <SelectItem key={p.id} value={p.id}>
                           {p.name}
@@ -563,7 +632,7 @@ export default function ChatPage() {
       <Dialog open={createProjectOpen} onOpenChange={setCreateProjectOpen}>
         <DialogContent showCloseButton={false} className="sm:max-w-[520px]">
           <DialogHeader>
-            <DialogTitle>Nouveau projet</DialogTitle>
+            <DialogTitle>Nouveau topic</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3 py-2">
             <div className="grid grid-cols-4 items-center gap-4">
@@ -581,6 +650,43 @@ export default function ChatPage() {
             </Button>
             <Button onClick={() => void createProject()} disabled={!createProjectName.trim()}>
               Create
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Move to topic dialog */}
+      <Dialog open={moveToTopicOpen} onOpenChange={setMoveToTopicOpen}>
+        <DialogContent showCloseButton={false} className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>Déplacer vers un topic</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-3 py-2">
+            <Select
+              value={runs.find((r) => r.id === moveToTopicRunId)?.project_id || "__none__"}
+              onValueChange={(v) => {
+                if (moveToTopicRunId) {
+                  void updateRun(moveToTopicRunId, { project_id: v === "__none__" ? null : v });
+                  setMoveToTopicOpen(false);
+                }
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Sélectionner un topic…" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">Sans topic</SelectItem>
+                {projects.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter className="sm:justify-between">
+            <Button variant="outline" onClick={() => setMoveToTopicOpen(false)}>
+              Cancel
             </Button>
           </DialogFooter>
         </DialogContent>

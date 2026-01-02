@@ -422,7 +422,26 @@ dev-stop:
 
 dev-delete:
 	@$(MAKE) check-dev-env
+	@echo "🧹 Cleaning up all inventiv containers..."
+	@docker ps -a --filter "name=inventiv" --format "{{.Names}}" | xargs -r docker rm -f >/dev/null 2>&1 || true
+	@docker ps -a --filter "name=mockrt-" --format "{{.Names}}" | xargs -r docker rm -f >/dev/null 2>&1 || true
+	@docker ps -a --filter "name=inventiv-api-loopback" --format "{{.Names}}" | xargs -r docker rm -f >/dev/null 2>&1 || true
+	@echo "🧹 Cleaning up volumes..."
+	@docker volume ls --filter "name=mockrt-" --format "{{.Name}}" | xargs -r docker volume rm >/dev/null 2>&1 || true
+	@echo "🧹 Stopping compose services..."
+	@$(COMPOSE_LOCAL) down -v >/dev/null 2>&1 || true
+	@echo "🧹 Cleaning up orphaned networks..."
+	@NETWORK_NAME="$(CONTROLPLANE_NETWORK_NAME)"; \
+	if docker network inspect "$$NETWORK_NAME" >/dev/null 2>&1; then \
+	  docker network inspect "$$NETWORK_NAME" --format '{{range .Containers}}{{.Name}} {{end}}' | \
+	  xargs -r docker stop >/dev/null 2>&1 || true; \
+	  docker network rm "$$NETWORK_NAME" >/dev/null 2>&1 || true; \
+	fi
+	@docker network prune -f >/dev/null 2>&1 || true
+	@echo "✅ Cleanup complete"
+	@echo "🧹 Cleaning up docker-compose services..."
 	$(COMPOSE_LOCAL) down -v
+	@echo "✅ Cleanup complete"
 
 dev-ps:
 	@$(MAKE) check-dev-env

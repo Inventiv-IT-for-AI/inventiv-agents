@@ -17,7 +17,8 @@ fi
 ID12="$(echo "${INSTANCE_ID}" | tr -d '-' | cut -c1-12)"
 PROJECT_NAME="mockrt-${ID12}"
 
-MOCK_VLLM_MODEL_ID="${MOCK_VLLM_MODEL_ID:-demo-model-${ID12}}"
+# Mock provider always uses mock-echo-model for synthetic mock vLLM
+MOCK_VLLM_MODEL_ID="${MOCK_VLLM_MODEL_ID:-mock-echo-model}"
 export MOCK_VLLM_MODEL_ID
 
 # Mock Provider uses synthetic mock vLLM (echo responses) for local testing

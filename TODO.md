@@ -57,7 +57,7 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 
 - **SSE**: implémentation actuelle basée sur polling DB (efficace mais pas “event-sourced” → à améliorer via NOTIFY/LISTEN ou Redis streams).
 - **Observabilité**: pas encore de stack métriques/traces end-to-end (Prometheus/Grafana/OTel) + alerting.
-- **FinOps**: coûts OK, mais pas encore de **comptage tokens in/out** (voir backlog).
+- ✅ **FinOps**: coûts OK + **comptage tokens in/out** implémenté (voir section "FinOps full features").
 - **Docs**: certains documents restent “vision” (router, bare-metal) vs “implémenté”.
 - **Mock provider routing**: le test E2E OpenAI proxy override `instances.ip_address` vers `mock-vllm` (hack local). À remplacer par un mécanisme propre (voir backlog).
 - **Docker CLI version**: orchestrator utilise Docker CLI 27.4.0 (compatible API 1.44+). À documenter les prérequis Docker dans la doc.
@@ -75,10 +75,13 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 - **Streaming**: améliorer streaming E2E (Workbench + proxy + UI) + UX (annulation, TTFT, tokens/sec).
 
 ### Observability / Monitoring
-- **Metrics**: `/metrics` sur API/orchestrator/worker + dashboards (CPU/Mem/Disk/Net + GPU per-index) + SLOs.
+- ✅ **Metrics**: `/metrics` sur API/orchestrator/worker + dashboards (CPU/Mem/Disk/Net + GPU per-index) + SLOs.
+  - Implémenté: métriques système (CPU/Mem/Disk/Net) et GPU dans dashboard Observability
+  - Implémenté: métriques requêtes et tokens par instance (`GET /instances/:instance_id/metrics`)
 - **Tracing**: OTel (optionnel au début) + corrélation `correlation_id` (API ↔ orchestrator ↔ worker ↔ upstream).
+  - Partiellement: `correlation_id` ajouté dans logs API, à étendre aux autres services
 - **Monitoring infra**: GPU util, queue depth, vLLM health, erreurs, saturation, qualité du load-balancing.
-- **E2E test chain (mock)**: étendre le test pour valider aussi le routing OpenAI sans hack DB (voir item “mock provider routing”).
+- **E2E test chain (mock)**: étendre le test pour valider aussi le routing OpenAI sans hack DB (voir item "mock provider routing").
 
 ### Mock provider / tests
 - ✅ **Gestion automatique des runtimes Mock**: création/suppression via Docker Compose dans `inventiv-providers/src/mock.rs`.
@@ -90,8 +93,11 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 - **Tests contractuels**: ajouter des tests (Rust) des payloads `register/heartbeat` (schema/validation) + compat rétro (old heartbeat payload sans `system_samples`).
 - **Documentation Mock provider**: créer `docs/providers.md` avec architecture et guide d'utilisation.
 
-### FinOps “full features”
-- **Comptage tokens in/out** par Worker / API_KEY / User / Tenant / Model.
+### FinOps "full features"
+- ✅ **Comptage tokens in/out** par Worker / API_KEY / User / Tenant / Model.
+  - Implémenté: extraction tokens depuis réponses streaming/non-streaming, stockage dans `instance_request_metrics` et `finops.inference_usage`
+  - Endpoint: `GET /instances/:instance_id/metrics`
+  - Dashboard: métriques affichées dans Observability (`/observability`)
 - **Validation**: consolidation dashboards + exports + séries temporelles.
 
 ### Secrets & credentials

@@ -989,6 +989,7 @@ dependencies = [
  "axum",
  "chrono",
  "dotenv",
+ "futures-util",
  "inventiv-common",
  "jsonwebtoken",
  "rand 0.8.5",
