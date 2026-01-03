@@ -3,15 +3,13 @@
 -- Example: RENDER-S (P100) needs vLLM compiled with sm_60 support, while L4/L40S can use newer versions
 
 -- Update RENDER-S instances to use a vLLM image compatible with P100 (compute capability 6.0)
--- IMPORTANT: v0.6.2.post1 standard image does NOT support P100 (sm_60)
--- For P100, we need a custom-built image or an older version that includes sm_60 support
--- TODO: Replace with actual P100-compatible image once identified/tested
--- For now, using v0.6.2.post1 as placeholder - this will fail on P100 and needs to be updated
+-- v0.3.3 is the last version that supports P100 (sm_60) before support was dropped
+-- This version includes CUDA kernels compiled for sm_60 (P100) architecture
 UPDATE instance_types 
 SET allocation_params = jsonb_set(
     COALESCE(allocation_params, '{}'::jsonb),
     '{vllm_image}',
-    '"vllm/vllm-openai:v0.6.2.post1"'::jsonb
+    '"vllm/vllm-openai:v0.3.3"'::jsonb
 )
 WHERE code = 'RENDER-S'
   AND (allocation_params->>'vllm_image' IS NULL OR allocation_params->>'vllm_image' = '');
