@@ -70,6 +70,11 @@ Le worker agent collecte trois types de métriques :
   "gpu_utilization": 45.0,
   "gpu_mem_used_mb": 12288.0,
   "ip_address": "192.168.1.100",
+  "agent_info": {
+    "version": "1.0.0",
+    "build_date": "2026-01-03",
+    "checksum": "4f9441dc..."
+  },
   "metadata": {
     "gpu_utilization": 45.0,
     "gpu_mem_used_mb": 12288.0,

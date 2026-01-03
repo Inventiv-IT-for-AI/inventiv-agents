@@ -108,6 +108,30 @@ async fn check_instance_readyz_http(ip: &str, port: u16) -> bool {
     }
 }
 
+/// Check agent info endpoint (/info) to verify version and checksum
+async fn check_agent_info(ip: &str, port: u16) -> Result<serde_json::Value, String> {
+    let clean_ip = ip.split('/').next().unwrap_or(ip);
+    let url = format!("http://{}:{}/info", clean_ip, port);
+    let client = reqwest::Client::builder()
+        .connect_timeout(StdDuration::from_secs(2))
+        .timeout(StdDuration::from_secs(3))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    
+    match client.get(&url).send().await {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                resp.json::<serde_json::Value>()
+                    .await
+                    .map_err(|e| format!("Failed to parse JSON: {}", e))
+            } else {
+                Err(format!("HTTP {}: {}", resp.status(), resp.text().await.unwrap_or_default()))
+            }
+        }
+        Err(e) => Err(format!("Request failed: {}", e)),
+    }
+}
+
 pub(crate) async fn check_vllm_http_models(
     ip: &str,
     port: u16,
@@ -391,6 +415,11 @@ async fn maybe_trigger_worker_install_over_ssh(
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "https://raw.githubusercontent.com/Inventiv-IT-for-AI/inventiv-agents/main/inventiv-worker/agent.py".to_string());
+    
+    // Optional: expected SHA256 checksum for agent.py (for integrity verification)
+    let agent_expected_sha256 = std::env::var("WORKER_AGENT_SHA256")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
 
     let worker_health_port: u16 = if let Some(pid) = provider_id {
         provider_setting_i64(db, pid, "WORKER_HEALTH_PORT")
@@ -441,6 +470,7 @@ async fn maybe_trigger_worker_install_over_ssh(
     // If the last install succeeded recently, it's more likely we should just wait for model load/readiness.
     #[derive(sqlx::FromRow)]
     struct LastSshInstall {
+        id: uuid::Uuid,
         status: String,
         created_at: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>,
         completed_at: Option<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>>,
@@ -450,6 +480,7 @@ async fn maybe_trigger_worker_install_over_ssh(
     let last: Option<LastSshInstall> = sqlx::query_as(
         r#"
         SELECT
+          id,
           status::text as status,
           created_at,
           completed_at,
@@ -473,9 +504,53 @@ async fn maybe_trigger_worker_install_over_ssh(
         let status = last.status.trim().to_ascii_lowercase();
         let last_phase = last.last_phase.unwrap_or_default();
 
-        // If an install is still in progress, don't start another one.
+        // If an install is still in progress, check if it has exceeded timeout
         if status == "in_progress" {
-            return;
+            // Get SSH timeout setting (same logic as below)
+            let ssh_timeout_s: u64 = if let Some(pid) = provider_id {
+                provider_setting_i64(db, pid, "WORKER_SSH_BOOTSTRAP_TIMEOUT_S")
+                    .await
+                    .and_then(|v| u64::try_from(v).ok())
+                    .filter(|v| *v > 0)
+                    .or_else(|| {
+                        std::env::var("WORKER_SSH_BOOTSTRAP_TIMEOUT_S")
+                            .ok()
+                            .and_then(|v| v.trim().parse::<u64>().ok())
+                            .filter(|v| *v > 0)
+                    })
+                    .unwrap_or(900)
+            } else {
+                std::env::var("WORKER_SSH_BOOTSTRAP_TIMEOUT_S")
+                    .ok()
+                    .and_then(|v| v.trim().parse::<u64>().ok())
+                    .filter(|v| *v > 0)
+                    .unwrap_or(900)
+            };
+            
+            // If SSH install has exceeded timeout, mark it as failed
+            if age_s > ssh_timeout_s as i64 {
+                println!(
+                    "⚠️ WORKER_SSH_INSTALL for instance {} has been in_progress for {}s (timeout: {}s), marking as failed",
+                    instance_id, age_s, ssh_timeout_s
+                );
+                let _ = logger::log_event_complete_with_metadata(
+                    db,
+                    last.id,
+                    "failed",
+                    (age_s * 1000) as i32,
+                    Some(&format!("SSH install exceeded timeout ({}s > {}s)", age_s, ssh_timeout_s)),
+                    Some(serde_json::json!({
+                        "ssh_timeout_s": ssh_timeout_s,
+                        "age_s": age_s,
+                        "ssh_timed_out": true
+                    })),
+                )
+                .await;
+                // Don't return - allow retry logic below to handle it
+            } else {
+                // Still within timeout, don't start another one
+                return;
+            }
         }
 
         // If forced, allow immediate re-run even after a success/failure (manual operator action).
@@ -487,8 +562,55 @@ async fn maybe_trigger_worker_install_over_ssh(
         } else {
             // If we just completed a successful install, wait longer (model load can take a while).
             // This avoids repeatedly restarting vLLM/agent and never reaching READY.
-            if status == "success" && last_phase == "done" && age_s < 30 * 60 {
-                return;
+            // However, if health checks are still failing after 10 minutes, something is wrong
+            // and we should retry the installation (containers may have crashed or not started properly).
+            // BUT: if worker is sending heartbeats, it's alive and we should wait longer (model loading).
+            if status == "success" && last_phase == "done" {
+                // Check if worker is sending heartbeats
+                let has_recent_heartbeat: Option<i64> = sqlx::query_scalar(
+                    r#"
+                    SELECT EXTRACT(EPOCH FROM (NOW() - worker_last_heartbeat))::bigint
+                    FROM instances
+                    WHERE id = $1
+                      AND worker_last_heartbeat > NOW() - INTERVAL '5 minutes'
+                    "#,
+                )
+                .bind(instance_id)
+                .fetch_optional(db)
+                .await
+                .unwrap_or(None);
+                
+                if let Some(heartbeat_age_s) = has_recent_heartbeat {
+                    // Worker is sending heartbeats - it's alive, just not ready yet
+                    // Wait longer for model loading (up to 30 minutes)
+                    if age_s < 30 * 60 {
+                        println!(
+                            "ℹ️ Instance {} SSH install succeeded {}s ago, worker sending heartbeats (last {}s ago) - waiting for model loading (up to 30min)",
+                            instance_id, age_s, heartbeat_age_s
+                        );
+                        return;
+                    } else {
+                        println!(
+                            "⚠️ Instance {} SSH install succeeded {}s ago, worker sending heartbeats but still not ready after 30min - may need investigation",
+                            instance_id, age_s
+                        );
+                        // Continue to allow retry, but this is unusual
+                    }
+                } else {
+                    // No heartbeats - normal timeout logic
+                    if age_s < 10 * 60 {
+                        // Within 10 minutes: normal wait for model loading
+                        return;
+                    } else {
+                        // After 10 minutes: if health checks still fail, retry installation
+                        // This handles cases where containers crashed or didn't start properly
+                        println!(
+                            "⚠️ Instance {} SSH install succeeded {}s ago but health checks still failing and no heartbeats, retrying installation",
+                            instance_id, age_s
+                        );
+                        // Continue to trigger reinstall below
+                    }
+                }
             }
 
             // If it failed recently, apply a short backoff before retrying.
@@ -507,6 +629,7 @@ async fn maybe_trigger_worker_install_over_ssh(
         "vllm_image": vllm_image,
         "vllm_mode": vllm_mode,
         "agent_url": agent_url,
+        "agent_expected_sha256": agent_expected_sha256.as_deref(),
         "worker_health_port": worker_health_port,
         "worker_vllm_port": worker_vllm_port,
         "has_hf_token": !worker_hf_token.trim().is_empty(),
@@ -536,6 +659,7 @@ MODEL_ID={model_id}
 VLLM_IMAGE={vllm_image}
 VLLM_MODE={vllm_mode}
 AGENT_URL={agent_url}
+AGENT_EXPECTED_SHA256={agent_expected_sha256_str}
 WORKER_AUTH_TOKEN={worker_auth_token}
 WORKER_HF_TOKEN={worker_hf_token}
 WORKER_HEALTH_PORT={worker_health_port}
@@ -616,21 +740,67 @@ systemctl enable --now docker
 if command -v nvidia-smi >/dev/null 2>&1; then
   echo "::phase::nvidia_toolkit"
   echo "[inventiv-worker] installing nvidia-container-toolkit"
+  set +e
   . /etc/os-release
   distribution="${{ID}}${{VERSION_ID}}"
-  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --batch --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --batch --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg || true
   curl -fsSL "https://nvidia.github.io/libnvidia-container/${{distribution}}/libnvidia-container.list" \
     | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
-    > /etc/apt/sources.list.d/nvidia-container-toolkit.list
-  apt-get update -y
-  apt-get install -y nvidia-container-toolkit
-  nvidia-ctk runtime configure --runtime=docker
-  systemctl restart docker
+    > /etc/apt/sources.list.d/nvidia-container-toolkit.list || true
+  apt-get update -y || true
+  if ! apt-get install -y nvidia-container-toolkit; then
+    echo "[inventiv-worker] ERROR: nvidia-container-toolkit installation failed" >&2
+    set -e
+    exit 1
+  fi
+  if ! nvidia-ctk runtime configure --runtime=docker; then
+    echo "[inventiv-worker] ERROR: nvidia-ctk runtime configure failed" >&2
+    set -e
+    exit 1
+  fi
+  systemctl restart docker || true
+  set -e
+  
+  echo "[inventiv-worker] verifying GPU access"
+  if ! docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi >/dev/null 2>&1; then
+    echo "[inventiv-worker] ERROR: Docker cannot access GPUs. nvidia-container-toolkit may not be configured correctly." >&2
+    echo "[inventiv-worker] Diagnostics:" >&2
+    docker info | grep -i runtime >&2 || true
+    nvidia-ctk config --dry-run --insecure --config /etc/docker/daemon.json >&2 || true
+    exit 1
+  fi
+  echo "[inventiv-worker] GPU access verified"
+else
+  echo "[inventiv-worker] nvidia-smi not found; skipping nvidia-container-toolkit"
 fi
 
 echo "::phase::agent_download"
 mkdir -p /opt/inventiv-worker
 curl -fsSL "$AGENT_URL" -o /opt/inventiv-worker/agent.py
+
+# Verify agent.py integrity if expected SHA256 is provided
+if [[ -n "$AGENT_EXPECTED_SHA256" ]]; then
+  echo "[inventiv-worker] Verifying agent.py checksum..."
+  ACTUAL_SHA256="$(sha256sum /opt/inventiv-worker/agent.py 2>/dev/null | cut -d' ' -f1 || shasum -a 256 /opt/inventiv-worker/agent.py 2>/dev/null | cut -d' ' -f1)"
+  if [[ "$ACTUAL_SHA256" != "$AGENT_EXPECTED_SHA256" ]]; then
+    echo "[inventiv-worker] ERROR: agent.py checksum mismatch!" >&2
+    echo "[inventiv-worker] Expected: $AGENT_EXPECTED_SHA256" >&2
+    echo "[inventiv-worker] Actual:   $ACTUAL_SHA256" >&2
+    echo "[inventiv-worker] The downloaded agent.py may be outdated or corrupted." >&2
+    echo "[inventiv-worker] Please ensure WORKER_AGENT_SOURCE_URL points to the correct version or update WORKER_AGENT_SHA256." >&2
+    exit 1
+  fi
+  echo "[inventiv-worker] agent.py checksum verified: $ACTUAL_SHA256"
+else
+  echo "[inventiv-worker] WARNING: No WORKER_AGENT_SHA256 provided - skipping integrity check"
+  ACTUAL_SHA256="$(sha256sum /opt/inventiv-worker/agent.py 2>/dev/null | cut -d' ' -f1 || shasum -a 256 /opt/inventiv-worker/agent.py 2>/dev/null | cut -d' ' -f1)"
+  echo "[inventiv-worker] Downloaded agent.py SHA256: $ACTUAL_SHA256"
+fi
+
+# Extract and log agent version if available
+AGENT_VERSION="$(grep -m1 '^AGENT_VERSION' /opt/inventiv-worker/agent.py 2>/dev/null | sed -E 's/^[^"]*"([^"]+)".*/\1/' || echo 'unknown')"
+AGENT_BUILD_DATE="$(grep -m1 '^AGENT_BUILD_DATE' /opt/inventiv-worker/agent.py 2>/dev/null | sed -E 's/^[^"]*"([^"]+)".*/\1/' || echo 'unknown')"
+echo "[inventiv-worker] agent.py version: $AGENT_VERSION (build: $AGENT_BUILD_DATE)"
 
 echo "::phase::docker_pull"
 docker pull "$VLLM_IMAGE"
@@ -707,21 +877,39 @@ EOF
     -v /opt/inventiv-worker/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro \
     haproxy:2.9-alpine
 else
-  # Mono vLLM: one server uses all GPUs.
-  docker run -d --restart unless-stopped \
-    --name vllm \
-    --gpus all \
-    -p 8000:8000 \
-    -e HUGGING_FACE_HUB_TOKEN="$WORKER_HF_TOKEN" \
-    -e HUGGINGFACE_HUB_TOKEN="$WORKER_HF_TOKEN" \
-    -e HF_TOKEN="$WORKER_HF_TOKEN" \
-    -e HF_HOME=/opt/inventiv-worker/hf \
-    -e TRANSFORMERS_CACHE=/opt/inventiv-worker/hf \
-    -v /opt/inventiv-worker:/opt/inventiv-worker \
-    "$VLLM_IMAGE" \
-    --host 0.0.0.0 --port 8000 \
-    --model "$MODEL_ID" \
-    --dtype float16
+  # Mono vLLM: one server uses all GPUs (if available).
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    docker run -d --restart unless-stopped \
+      --name vllm \
+      --gpus all \
+      -p 8000:8000 \
+      -e HUGGING_FACE_HUB_TOKEN="$WORKER_HF_TOKEN" \
+      -e HUGGINGFACE_HUB_TOKEN="$WORKER_HF_TOKEN" \
+      -e HF_TOKEN="$WORKER_HF_TOKEN" \
+      -e HF_HOME=/opt/inventiv-worker/hf \
+      -e TRANSFORMERS_CACHE=/opt/inventiv-worker/hf \
+      -v /opt/inventiv-worker:/opt/inventiv-worker \
+      "$VLLM_IMAGE" \
+      --host 0.0.0.0 --port 8000 \
+      --model "$MODEL_ID" \
+      --dtype float16
+  else
+    echo "[inventiv-worker] WARNING: nvidia-smi not found, running vLLM in CPU mode (slow)" >&2
+    docker run -d --restart unless-stopped \
+      --name vllm \
+      -p 8000:8000 \
+      -e HUGGING_FACE_HUB_TOKEN="$WORKER_HF_TOKEN" \
+      -e HUGGINGFACE_HUB_TOKEN="$WORKER_HF_TOKEN" \
+      -e HF_TOKEN="$WORKER_HF_TOKEN" \
+      -e HF_HOME=/opt/inventiv-worker/hf \
+      -e TRANSFORMERS_CACHE=/opt/inventiv-worker/hf \
+      -v /opt/inventiv-worker:/opt/inventiv-worker \
+      "$VLLM_IMAGE" \
+      --host 0.0.0.0 --port 8000 \
+      --model "$MODEL_ID" \
+      --dtype float16 \
+      --device cpu
+  fi
 fi
 
 # Ensure container is actually running
@@ -790,6 +978,7 @@ echo "[inventiv-worker] ssh bootstrap done"
         vllm_image = sh_escape_single(&vllm_image),
         vllm_mode = sh_escape_single(&vllm_mode),
         agent_url = sh_escape_single(&agent_url),
+        agent_expected_sha256_str = sh_escape_single(&agent_expected_sha256.as_deref().unwrap_or("")),
         worker_auth_token = sh_escape_single(&worker_auth_token),
         worker_hf_token = sh_escape_single(&worker_hf_token),
     );
@@ -1144,11 +1333,106 @@ pub async fn check_and_transition_instance(
         .and_then(|v| u16::try_from(v).ok())
         .unwrap_or(fallback_vllm_port);
 
-    let is_ready_http = check_instance_readyz_http(&ip, worker_port).await;
+    // For worker targets: prioritize heartbeats over active health checks
+    // Heartbeats work bidirectionally (workers can reach control plane via Cloudflare tunnel),
+    // while active health checks may fail due to network routing issues.
+    let mut is_healthy_from_heartbeat = false;
+    let mut heartbeat_age_secs: Option<i64> = None;
+    
+    if expect_worker {
+        // Check if we have a recent heartbeat (within last 30 seconds)
+        #[derive(sqlx::FromRow)]
+        struct HeartbeatInfo {
+            worker_last_heartbeat: Option<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>>,
+            worker_status: Option<String>,
+        }
+        
+        let heartbeat_info: Option<HeartbeatInfo> = sqlx::query_as(
+            r#"
+            SELECT worker_last_heartbeat, worker_status
+            FROM instances
+            WHERE id = $1
+            "#,
+        )
+        .bind(instance_id)
+        .fetch_optional(&db)
+        .await
+        .ok()
+        .flatten();
+        
+        if let Some(info) = heartbeat_info {
+            if let Some(last_hb) = info.worker_last_heartbeat {
+                let now = sqlx::types::chrono::Utc::now();
+                let age = (now - last_hb).num_seconds();
+                heartbeat_age_secs = Some(age);
+                
+                // If heartbeat is recent (within 30 seconds) and status is "ready", trust it
+                if age < 30 {
+                    if let Some(status) = &info.worker_status {
+                        let status_lower = status.to_ascii_lowercase();
+                        if status_lower == "ready" {
+                            is_healthy_from_heartbeat = true;
+                            println!(
+                                "✅ Instance {} healthy via heartbeat (status={}, age={}s)",
+                                instance_id, status, age
+                            );
+                        } else {
+                            // Worker is sending heartbeats but not ready yet - log for visibility
+                            println!(
+                                "ℹ️ Instance {} worker sending heartbeats (status={}, age={}s) - waiting for ready state",
+                                instance_id, status, age
+                            );
+                        }
+                    } else {
+                        // Worker is sending heartbeats but status is null - log for visibility
+                        println!(
+                            "ℹ️ Instance {} worker sending heartbeats (status=null, age={}s) - waiting for status",
+                            instance_id, age
+                        );
+                    }
+                }
+            }
+        }
+    }
+    
+    // Only perform active health checks if we don't have a recent healthy heartbeat
+    // This avoids network routing issues when workers can reach control plane but not vice versa
+    let is_ready_http = if is_healthy_from_heartbeat {
+        // Trust heartbeat, skip active check
+        true
+    } else {
+        check_instance_readyz_http(&ip, worker_port).await
+    };
+    
     let is_ssh = check_instance_ssh(&ip).await;
+
+    // Agent info check: verify agent version and checksum for worker instances
+    let mut agent_info_check: Option<serde_json::Value> = None;
+    let mut agent_info_error: Option<String> = None;
+    if expect_worker && is_ready_http {
+        match check_agent_info(&ip, worker_port).await {
+            Ok(info) => {
+                agent_info_check = Some(info.clone());
+                println!(
+                    "📦 [Health Check] Instance {} agent info retrieved: version={:?}, checksum={:?}",
+                    instance_id,
+                    info.get("agent_version"),
+                    info.get("agent_checksum").and_then(|c| c.as_str().map(|s| &s[..16]))
+                );
+            }
+            Err(e) => {
+                agent_info_error = Some(e.clone());
+                println!(
+                    "⚠️ [Health Check] Instance {} failed to retrieve agent info: {}",
+                    instance_id, e
+                );
+            }
+        }
+    }
 
     // Model readiness check (explicit) for worker targets: verify the OpenAI endpoint is reachable
     // and the expected model is visible in /v1/models.
+    // Skip if we already know from heartbeat that model is loaded
     let mut model_check_ok = true;
     if expect_worker && is_ready_http {
         let model_id_from_db: Option<String> = sqlx::query_scalar(
@@ -1214,7 +1498,7 @@ pub async fn check_and_transition_instance(
         model_check_ok = http_ok && model_loaded;
 
         // Log:
-        // - log each readiness step (rate-limited on failure)
+        // - log each readiness step (rate-limited on both success and failure)
         async fn should_log_step(
             db: &Pool<Postgres>,
             instance_id: uuid::Uuid,
@@ -1222,16 +1506,29 @@ pub async fn check_and_transition_instance(
             ok: bool,
         ) -> bool {
             if ok {
-                // success: log only if we never logged a success before
-                let already_ok: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM action_logs WHERE instance_id = $1 AND action_type = $2 AND status = 'success')"
+                // success: log first time, then periodically (every 5 minutes) to show continued health
+                let last_success: Option<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>> = sqlx::query_scalar(
+                    r#"
+                    SELECT MAX(created_at)
+                    FROM action_logs
+                    WHERE instance_id = $1
+                      AND action_type = $2
+                      AND status = 'success'
+                    "#,
                 )
                 .bind(instance_id)
                 .bind(action_type)
-                .fetch_one(db)
+                .fetch_optional(db)
                 .await
-                .unwrap_or(false);
-                return !already_ok;
+                .unwrap_or(None);
+                
+                if let Some(last) = last_success {
+                    // Log again if last success was more than 5 minutes ago
+                    let elapsed_minutes = (sqlx::types::chrono::Utc::now() - last).num_minutes();
+                    return elapsed_minutes >= 5;
+                }
+                // First success: always log
+                return true;
             }
             // failure: log at most once per minute
             sqlx::query_scalar(
@@ -1379,11 +1676,47 @@ pub async fn check_and_transition_instance(
         }
     }
 
-    // Worker targets are only considered healthy when /readyz succeeds.
+    // Worker targets are considered healthy if:
+    // 1. We have a recent healthy heartbeat (preferred - works even with network routing issues)
+    // 2. OR /readyz succeeds AND model check passes (fallback for instances without heartbeats yet)
     let is_healthy = if expect_worker {
-        is_ready_http && model_check_ok
+        if is_healthy_from_heartbeat {
+            // Trust heartbeat - it's more reliable than active checks when network routing is asymmetric
+            true
+        } else {
+            // Fallback to active health checks for instances that haven't sent heartbeats yet
+            is_ready_http && model_check_ok
+        }
     } else {
         is_ready_http || is_ssh
+    };
+
+    // Check if we should log health check (rate-limited: every 5 minutes for success, 1 minute for failure)
+    let should_log_health_check = {
+        let last_hc: Option<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>> = sqlx::query_scalar(
+            r#"
+            SELECT MAX(created_at)
+            FROM action_logs
+            WHERE instance_id = $1
+              AND action_type = 'HEALTH_CHECK'
+            "#,
+        )
+        .bind(instance_id)
+        .fetch_optional(&db)
+        .await
+        .unwrap_or(None);
+        
+        if let Some(last) = last_hc {
+            // Log again if last check was more than 5 minutes ago (for successes) or 1 minute ago (for failures)
+            let elapsed_secs = (sqlx::types::chrono::Utc::now() - last).num_seconds();
+            if is_healthy {
+                elapsed_secs >= 300 // 5 minutes for successes
+            } else {
+                elapsed_secs >= 60 // 1 minute for failures
+            }
+        } else {
+            true // First check: always log
+        }
     };
 
     if is_healthy {
@@ -1392,33 +1725,205 @@ pub async fn check_and_transition_instance(
             instance_id
         );
         let hc_start = std::time::Instant::now();
-        let log_id = logger::log_event_with_metadata(
-            &db,
-            "HEALTH_CHECK",
-            "in_progress",
-            instance_id,
-            None,
-            Some(serde_json::json!({
-                "ip": ip,
-                "result": "success",
-                "failures": failures,
-                "mode": if is_ready_http { "worker_readyz" } else { "ssh_22" },
-                "worker_health_port": worker_port,
-                "vllm_port": vllm_port,
-                "model_check": if expect_worker { if model_check_ok { "ok" } else { "failed" } } else { "skipped" }
-            })),
-        ).await.ok();
-        let _ = state_machine::booting_to_ready(&db, instance_id, "Health check passed").await;
-        if let Some(lid) = log_id {
-            let dur = hc_start.elapsed().as_millis() as i32;
-            let _ = logger::log_event_complete(&db, lid, "success", dur, None).await;
+        
+        // Always log health check success (with rate-limiting to avoid spam)
+        if should_log_health_check {
+            let log_id = logger::log_event_with_metadata(
+                &db,
+                "HEALTH_CHECK",
+                "in_progress",
+                instance_id,
+                None,
+                {
+                    let mut meta = serde_json::json!({
+                        "ip": ip,
+                        "result": "success",
+                        "failures": failures,
+                        "mode": if is_healthy_from_heartbeat { 
+                            "heartbeat" 
+                        } else if is_ready_http { 
+                            "worker_readyz" 
+                        } else { 
+                            "ssh_22" 
+                        },
+                        "heartbeat_age_secs": heartbeat_age_secs,
+                        "worker_health_port": worker_port,
+                        "vllm_port": vllm_port,
+                        "model_check": if expect_worker { if model_check_ok { "ok" } else { "failed" } } else { "skipped" }
+                    });
+                    if let Some(agent_info) = &agent_info_check {
+                        meta["agent_info"] = agent_info.clone();
+                    }
+                    if let Some(err) = &agent_info_error {
+                        meta["agent_info_error"] = serde_json::json!(err);
+                    }
+                    Some(meta)
+                },
+            ).await.ok();
+            if let Some(lid) = log_id {
+                let dur = hc_start.elapsed().as_millis() as i32;
+                let _ = logger::log_event_complete(&db, lid, "success", dur, None).await;
+            }
+        }
+        
+        // Only transition if not already ready
+        let current_status: Option<String> = sqlx::query_scalar(
+            "SELECT status::text FROM instances WHERE id = $1"
+        )
+        .bind(instance_id)
+        .fetch_optional(&db)
+        .await
+        .unwrap_or(None);
+        
+        if current_status.as_deref() != Some("ready") {
+            let _ = state_machine::booting_to_ready(&db, instance_id, "Health check passed").await;
         }
     } else {
-        // For worker targets: if SSH is up but readyz isn't, trigger a bootstrap over SSH and
-        // do NOT increment failures (installation can take several minutes).
+        // For worker targets: if SSH is up but readyz isn't, check if worker is sending heartbeats
+        // before triggering a bootstrap over SSH. If worker is sending heartbeats, it's alive and
+        // we should wait for it to become ready (model loading can take time).
         if expect_worker && is_ssh {
+            // First, check if worker is sending active heartbeats (within last 2 minutes)
+            let has_recent_heartbeat: Option<i64> = sqlx::query_scalar(
+                r#"
+                SELECT EXTRACT(EPOCH FROM (NOW() - worker_last_heartbeat))::bigint
+                FROM instances
+                WHERE id = $1
+                  AND worker_last_heartbeat > NOW() - INTERVAL '2 minutes'
+                "#,
+            )
+            .bind(instance_id)
+            .fetch_optional(&db)
+            .await
+            .unwrap_or(None);
+            
+            if let Some(heartbeat_age_s) = has_recent_heartbeat {
+                // Worker is sending heartbeats - it's alive, just not ready yet
+                // Don't restart containers, wait for model loading or worker to become ready
+                println!(
+                    "ℹ️ Instance {} SSH accessible, readyz not yet, but worker is sending heartbeats (last {}s ago) - waiting for worker to become ready",
+                    instance_id, heartbeat_age_s
+                );
+                return;
+            }
+            
+            // No recent heartbeats - check if we have a very recent successful SSH install
+            let recent_success: Option<i64> = sqlx::query_scalar(
+                r#"
+                SELECT EXTRACT(EPOCH FROM (NOW() - completed_at))::bigint
+                FROM action_logs
+                WHERE instance_id = $1
+                  AND action_type = 'WORKER_SSH_INSTALL'
+                  AND status = 'success'
+                  AND metadata->>'last_phase' = 'done'
+                  AND completed_at > NOW() - INTERVAL '5 minutes'
+                ORDER BY completed_at DESC
+                LIMIT 1
+                "#,
+            )
+            .bind(instance_id)
+            .fetch_optional(&db)
+            .await
+            .unwrap_or(None);
+            
+            if let Some(age_s) = recent_success {
+                if age_s < 5 * 60 {
+                    // Very recent successful install - containers may still be starting up
+                    // Don't restart them, just wait
+                    println!(
+                        "ℹ️ Instance {} SSH install succeeded {}s ago - waiting for containers to become ready (SSH accessible, readyz not yet)",
+                        instance_id, age_s
+                    );
+                    return;
+                }
+            }
+            
+            println!(
+                "⚠️ Instance {} SSH is reachable but worker readyz is not and no recent heartbeats - triggering SSH bootstrap",
+                instance_id
+            );
             maybe_trigger_worker_install_over_ssh(&db, instance_id, &ip, false, None).await;
             return;
+        }
+        
+        // If SSH is also not reachable, check if we should trigger installation
+        if expect_worker && !is_ssh {
+            // Check if we have any SSH install attempts
+            let has_ssh_install: bool = sqlx::query_scalar(
+                r#"
+                SELECT EXISTS(
+                    SELECT 1 FROM action_logs
+                    WHERE instance_id = $1
+                      AND action_type = 'WORKER_SSH_INSTALL'
+                )
+                "#,
+            )
+            .bind(instance_id)
+            .fetch_one(&db)
+            .await
+            .unwrap_or(false);
+            
+            if !has_ssh_install {
+                // No SSH install attempt yet - check if instance has been booting for a reasonable time
+                // (give Scaleway time to start SSH service, typically 1-2 minutes)
+                let instance_age: Option<i64> = sqlx::query_scalar(
+                    r#"
+                    SELECT EXTRACT(EPOCH FROM (NOW() - created_at))::bigint
+                    FROM instances
+                    WHERE id = $1
+                    "#,
+                )
+                .bind(instance_id)
+                .fetch_optional(&db)
+                .await
+                .unwrap_or(None);
+                
+                if let Some(age_s) = instance_age {
+                    // Wait at least 2 minutes for Scaleway instance to fully boot and SSH to become available
+                    if age_s >= 120 {
+                        println!(
+                            "⏳ Instance {} has been booting for {}s but SSH is not yet reachable - will retry when SSH becomes available",
+                            instance_id, age_s
+                        );
+                        // Don't increment failures - SSH may still be starting up
+                        return;
+                    }
+                }
+                // Instance is very new (< 2 minutes), SSH may not be ready yet
+                return;
+            }
+            
+            // We have SSH install attempts - check if we have a recent successful SSH install
+            let recent_success: Option<i64> = sqlx::query_scalar(
+                r#"
+                SELECT EXTRACT(EPOCH FROM (NOW() - completed_at))::bigint
+                FROM action_logs
+                WHERE instance_id = $1
+                  AND action_type = 'WORKER_SSH_INSTALL'
+                  AND status = 'success'
+                  AND metadata->>'last_phase' = 'done'
+                  AND completed_at > NOW() - INTERVAL '20 minutes'
+                ORDER BY completed_at DESC
+                LIMIT 1
+                "#,
+            )
+            .bind(instance_id)
+            .fetch_optional(&db)
+            .await
+            .unwrap_or(None);
+            
+            if let Some(age_s) = recent_success {
+                if age_s > 10 * 60 {
+                    // SSH install succeeded more than 10 minutes ago but SSH is not reachable
+                    // This suggests containers may have crashed or the instance had issues
+                    println!(
+                        "⚠️ Instance {} SSH install succeeded {}s ago but SSH is not reachable - containers may have crashed, retrying installation",
+                        instance_id, age_s
+                    );
+                    maybe_trigger_worker_install_over_ssh(&db, instance_id, &ip, false, None).await;
+                    return;
+                }
+            }
         }
 
         let new_failures = failures + 1;

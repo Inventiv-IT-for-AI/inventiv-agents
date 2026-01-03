@@ -40,6 +40,8 @@ export type Instance = {
     worker_metadata?: Record<string, unknown> | null;
     worker_health_port?: number | null;
     worker_vllm_port?: number | null;
+    // Progress percentage (0-100) towards operational state
+    progress_percent?: number | null;
 };
 
 export type InstanceStorageInfo = {

@@ -295,36 +295,49 @@ async fn handle_streaming_response(
         }
     });
     
-    // Forward chunks and send to token extraction task
-    // Use a timeout to close the channel after stream ends
-    let tx_for_timeout = tx_arc.clone();
-    tokio::spawn(async move {
-        // Wait a bit after stream should complete, then close channel
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        drop(tx_for_timeout);
-    });
-    
+    // Collect all chunks, forward them, and close channel when stream ends
     let tx_for_stream = tx_arc.clone();
-    let byte_stream = upstream.bytes_stream().map(move |chunk| {
-        match &chunk {
-            Ok(bytes) => {
-                let count = chunk_count_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                if count % 10 == 0 || count <= 3 {
-                    eprintln!("[OPENAI_PROXY] [{}] STREAM_CHUNK: count={}, size={}", correlation_id_for_stream, count, bytes.len());
+    let tx_for_close = tx_arc.clone();
+    let correlation_id_for_fold = correlation_id_for_stream.clone();
+    let chunk_count_for_fold = chunk_count_clone.clone();
+    
+    // Use fold to collect all chunks and detect stream end
+    // fold returns a Future, so we wrap it in a stream and flatten
+    let byte_stream = futures_util::stream::once(async move {
+        let (results, _tx) = upstream.bytes_stream()
+            .fold((Vec::<Result<Bytes, std::io::Error>>::new(), tx_for_stream), move |(mut results, tx), chunk_result| {
+                let correlation_id_clone = correlation_id_for_fold.clone();
+                let chunk_count_clone = chunk_count_for_fold.clone();
+                async move {
+                    match &chunk_result {
+                        Ok(bytes) => {
+                            let count = chunk_count_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                            if count % 10 == 0 || count <= 3 {
+                                eprintln!("[OPENAI_PROXY] [{}] STREAM_CHUNK: count={}, size={}", correlation_id_clone, count, bytes.len());
+                            }
+                            // Send chunk to token extraction task
+                            let _ = tx.send(bytes.to_vec());
+                            results.push(Ok(Bytes::copy_from_slice(bytes)));
+                        },
+                        Err(e) => {
+                            let count = chunk_count_clone.load(std::sync::atomic::Ordering::Relaxed);
+                            eprintln!("[OPENAI_PROXY] [{}] STREAM_ERROR: chunk_count={}, error={:?}", 
+                                correlation_id_clone, count, e);
+                            results.push(Err(std::io::Error::new(std::io::ErrorKind::Other, "upstream_stream_error")));
+                        }
+                    }
+                    (results, tx)
                 }
-                // Send chunk to token extraction task
-                let _ = tx_for_stream.send(bytes.to_vec());
-            },
-            Err(e) => {
-                let count = chunk_count_clone.load(std::sync::atomic::Ordering::Relaxed);
-                eprintln!("[OPENAI_PROXY] [{}] STREAM_ERROR: chunk_count={}, error={:?}", 
-                    correlation_id_for_stream, count, e);
-            }
-        }
-        chunk.map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::Other, "upstream_stream_error")
-        })
-    });
+            })
+            .await;
+        
+        // Stream completed, close channel to trigger token extraction
+        eprintln!("[OPENAI_PROXY] [{}] STREAM_END: closing channel, collected {} chunks", correlation_id_for_stream, results.len());
+        drop(tx_for_close);
+        // Return results as a stream
+        futures_util::stream::iter(results)
+    })
+    .flatten();
     
     eprintln!("[OPENAI_PROXY] [{}] STREAMING_RETURN: returning stream to client", correlation_id);
     (status, resp_headers, Body::from_stream(byte_stream)).into_response()

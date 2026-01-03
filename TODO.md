@@ -78,6 +78,26 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 - ✅ **Metrics**: `/metrics` sur API/orchestrator/worker + dashboards (CPU/Mem/Disk/Net + GPU per-index) + SLOs.
   - Implémenté: métriques système (CPU/Mem/Disk/Net) et GPU dans dashboard Observability
   - Implémenté: métriques requêtes et tokens par instance (`GET /instances/:instance_id/metrics`)
+- ✅ **Progress Tracking**: Système de progression 0-100% basé sur les actions complétées
+  - Implémenté: calcul automatique dans `inventiv-api/src/progress.rs`
+  - Implémenté: affichage dans UI avec colonne dédiée
+  - Implémenté: étapes granulaires (SSH install, vLLM HTTP, model loaded, warmup, health check)
+- ✅ **Agent Version Management**: Versioning et checksum SHA256 pour `agent.py`
+  - Implémenté: constantes `AGENT_VERSION` et `AGENT_BUILD_DATE` dans agent.py
+  - Implémenté: endpoint `/info` pour exposer version/checksum
+  - Implémenté: vérification checksum dans script SSH bootstrap
+  - Implémenté: tooling Makefile (`agent-checksum`, `agent-version-bump`, etc.)
+  - Implémenté: CI/CD integration (vérification automatique, workflow de bump)
+  - Implémenté: monitoring dans health checks et heartbeats
+- ✅ **Storage Management**: Gestion automatique du cycle de vie des volumes
+  - Implémenté: découverte automatique des volumes attachés (`list_attached_volumes`)
+  - Implémenté: tracking dans `instance_volumes` avec `delete_on_terminate`
+  - Implémenté: suppression automatique lors de la terminaison
+  - Implémenté: détection des volumes de boot créés automatiquement
+- ✅ **State Machine**: Transitions explicites et historisation
+  - Implémenté: fonctions explicites dans `state_machine.rs`
+  - Implémenté: historique dans `instance_state_history`
+  - Implémenté: logging structuré avec métadonnées
 - **Tracing**: OTel (optionnel au début) + corrélation `correlation_id` (API ↔ orchestrator ↔ worker ↔ upstream).
   - Partiellement: `correlation_id` ajouté dans logs API, à étendre aux autres services
 - **Monitoring infra**: GPU util, queue depth, vLLM health, erreurs, saturation, qualité du load-balancing.
@@ -164,6 +184,68 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 5) **Tenants + RBAC** (premier cut)  
 6) **LB hardening** + signaux worker (queue depth / TTFT)  
 7) **Autoscaling MVP** (politiques + cooldowns)
+
+---
+
+## 🧪 Tests & Validation (nouvelles fonctionnalités)
+
+### Progress Tracking
+- [ ] **Test unitaire** : Vérifier le calcul de progression pour chaque étape
+- [ ] **Test E2E Mock** : Valider la progression simulée pour instances Mock
+- [ ] **Test E2E Scaleway** : Valider la progression réelle pour instances Scaleway
+- [ ] **Test UI** : Vérifier l'affichage de la colonne progress dans la table
+- [ ] **Test SSE** : Vérifier la mise à jour en temps réel du progress
+
+### Agent Version Management
+- [ ] **Test checksum** : Vérifier que le checksum est calculé correctement
+- [ ] **Test vérification** : Valider que le script bootstrap détecte les checksums invalides
+- [ ] **Test endpoint /info** : Vérifier que `/info` retourne les bonnes informations
+- [ ] **Test heartbeat** : Valider que `agent_info` est inclus dans les heartbeats
+- [ ] **Test health check** : Vérifier que le health check récupère et log les infos agent
+- [ ] **Test CI/CD** : Valider que `make agent-version-check` échoue si version non mise à jour
+- [ ] **Test workflow GitHub** : Valider que le workflow `agent-version-bump` fonctionne
+- [ ] **Test version mismatch** : Simuler une version incorrecte et vérifier la détection
+- [ ] **Test checksum mismatch** : Simuler un checksum invalide et vérifier l'échec du bootstrap
+
+### Storage Management
+- [ ] **Test découverte volumes** : Valider que `list_attached_volumes` découvre tous les volumes
+- [ ] **Test création** : Vérifier que les volumes sont trackés immédiatement après création
+- [ ] **Test terminaison** : Valider que tous les volumes sont supprimés lors de la terminaison
+- [ ] **Test volumes boot** : Vérifier que les volumes de boot créés automatiquement sont trackés
+- [ ] **Test volumes persistants** : Valider que `delete_on_terminate=false` préserve les volumes
+- [ ] **Test erreur suppression** : Simuler une erreur de suppression et vérifier le logging
+- [ ] **Test volumes locaux** : Valider la détection et le rejet des volumes locaux pour L40S/L4
+- [ ] **Test récupération** : Vérifier que les volumes non supprimés peuvent être nettoyés manuellement
+
+### State Machine
+- [ ] **Test transitions** : Valider chaque transition d'état (booting→ready, booting→startup_failed, etc.)
+- [ ] **Test idempotence** : Vérifier que les transitions sont idempotentes
+- [ ] **Test historique** : Valider que `instance_state_history` enregistre toutes les transitions
+- [ ] **Test récupération** : Vérifier la récupération automatique (STARTUP_TIMEOUT → booting)
+- [ ] **Test erreurs spécifiques** : Valider les transitions vers `startup_failed` avec codes d'erreur spécifiques
+
+### Monitoring & Observabilité
+- [ ] **Test health check agent_info** : Vérifier que le health check récupère `/info`
+- [ ] **Test métadonnées** : Valider que `agent_info` est stocké dans `worker_metadata`
+- [ ] **Test logs** : Vérifier que les métadonnées agent sont incluses dans les logs de health check
+- [ ] **Test détection problèmes** : Simuler des problèmes (version incorrecte, checksum invalide) et vérifier la détection
+- [ ] **Test rate limiting** : Valider le rate limiting des logs de health check (5min succès, 1min échec)
+
+### Intégration
+- [ ] **Test complet cycle** : Provisionner une instance Scaleway et valider :
+  - Découverte des volumes
+  - Vérification checksum agent
+  - Progression 0-100%
+  - Health checks avec agent_info
+  - Terminaison et suppression des volumes
+- [ ] **Test Mock provider** : Valider que toutes les fonctionnalités fonctionnent avec Mock
+- [ ] **Test multi-instances** : Valider avec plusieurs instances en parallèle
+- [ ] **Test récupération** : Valider la récupération après erreurs (timeout, checksum mismatch, etc.)
+
+### Documentation
+- [ ] **Mise à jour README** : Ajouter références aux nouveaux documents
+- [ ] **Validation docs** : Vérifier que tous les exemples de code fonctionnent
+- [ ] **Guide utilisateur** : Créer un guide pour utiliser les nouvelles fonctionnalités
 
 ---
 

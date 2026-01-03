@@ -37,6 +37,7 @@ mod finops;
 mod instance_type_zones; // Module for zone associations
 mod metrics;
 mod openai_proxy;
+mod progress;
 mod provider_settings;
 mod rbac;
 mod settings; // Module
@@ -1610,6 +1611,10 @@ pub struct InstanceResponse {
     pub total_cost: Option<f64>,
     pub is_archived: bool,
     pub deleted_by_provider: Option<bool>,
+    /// Progress percentage (0-100) towards operational state (calculated, not from DB)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[sqlx(skip)]
+    pub progress_percent: Option<u8>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -2770,7 +2775,11 @@ async fn list_instances(
     .await
     .unwrap_or(vec![]);
 
-    Json(instances)
+    // Enrich instances with progress percentage
+    let mut instances_vec = instances;
+    progress::enrich_instances_with_progress(&state.db, &mut instances_vec).await;
+
+    Json(instances_vec)
 }
 
 #[utoipa::path(
@@ -2887,13 +2896,16 @@ async fn search_instances(
         "#
     );
 
-    let rows: Vec<InstanceResponse> = sqlx::query_as::<Postgres, InstanceResponse>(&sql)
+    let mut rows: Vec<InstanceResponse> = sqlx::query_as::<Postgres, InstanceResponse>(&sql)
         .bind(show_archived)
         .bind(limit)
         .bind(offset)
         .fetch_all(&state.db)
         .await
         .unwrap_or_default();
+
+    // Enrich instances with progress percentage
+    progress::enrich_instances_with_progress(&state.db, &mut rows).await;
 
     Json(SearchInstancesResponse {
         offset,
@@ -2991,7 +3003,9 @@ async fn get_instance(
     .flatten();
 
     match row {
-        Some(inst) => {
+        Some(mut inst) => {
+            // Enrich instance with progress percentage
+            progress::enrich_instances_with_progress(&state.db, std::slice::from_mut(&mut inst)).await;
             let storages: Vec<InstanceStorageInfo> =
                 sqlx::query_as::<Postgres, (String, Option<String>, String, i64, bool)>(
                     r#"

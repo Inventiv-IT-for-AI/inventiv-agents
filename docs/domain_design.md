@@ -43,13 +43,25 @@ pub struct Instance {
 ```
 
 #### `InstanceStatus` (Enum/State Machine)
-Cycle de vie rigoureux.
+Cycle de vie rigoureux avec transitions explicites.
+
+**États principaux** :
 *   `Provisioning`: Demandé au provider, en attente.
 *   `Booting`: Instance up, mais Worker pas encore prêt.
 *   `Ready`: Worker prêt à recevoir du trafic (Healthcheck OK).
 *   `Draining`: En cours d'arrêt, ne prend plus de nouvelles requêtes.
+*   `Terminating`: En cours de suppression chez le provider.
 *   `Terminated`: Détruite chez le provider.
-*   `Failed`: Erreur irrécupérable.
+*   `Archived`: Archivée (supprimée de la vue active).
+
+**États d'erreur** :
+*   `ProvisioningFailed`: Échec lors de la création de l'instance chez le provider.
+*   `StartupFailed`: Échec lors du démarrage ou de la configuration du worker.
+*   `Failed`: État générique d'échec.
+
+**Transitions** : Gérées par des fonctions explicites dans `inventiv-orchestrator/src/state_machine.rs`.
+
+> **Voir** : [docs/STATE_MACHINE_AND_PROGRESS.md](STATE_MACHINE_AND_PROGRESS.md) pour les détails complets sur les transitions, l'historique, et le progress tracking.
 
 ## 3. Storage Strategy
 

@@ -43,6 +43,9 @@ jobs:
       - name: Tests
         run: make test
 
+      - name: Agent version check
+        run: make agent-version-check
+
   frontend:
     name: Frontend (lint/build)
     runs-on: ubuntu-latest

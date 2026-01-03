@@ -697,7 +697,7 @@ export function InstanceTimelineModal({
                         {selectedLog.metadata && Object.keys(selectedLog.metadata).length > 0 ? (
                           <div className="text-xs">
                             <div className="text-muted-foreground mb-1">Métadonnées</div>
-                            <pre className="text-[11px] leading-snug bg-background border rounded-md p-2 overflow-x-auto">
+                            <pre className="text-[11px] leading-snug bg-background border rounded-md p-2 overflow-x-auto overflow-y-auto max-h-[400px] whitespace-pre-wrap break-words">
 {JSON.stringify(selectedLog.metadata, null, 2)}
                             </pre>
                           </div>

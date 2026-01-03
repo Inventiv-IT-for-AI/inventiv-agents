@@ -14,6 +14,82 @@ async fn delete_instance_volumes_best_effort(
 ) -> bool {
     // Returns true if there are no remaining deletable volumes (all deleted or none configured).
     // We only delete volumes marked delete_on_terminate=true.
+    
+    // First, get instance info to discover volumes that might not be in instance_volumes table
+    let instance_info: Option<(String, String)> = sqlx::query_as(
+        r#"
+        SELECT provider_instance_id::text, 
+               (SELECT COALESCE(z.code, z.name) FROM zones z WHERE z.id = i.zone_id) AS zone
+        FROM instances i
+        WHERE i.id = $1
+          AND i.provider_instance_id IS NOT NULL
+        "#,
+    )
+    .bind(instance_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    
+    // Discover volumes attached to the instance (even if not in instance_volumes table)
+    // This handles cases where Scaleway creates volumes automatically (e.g., local boot volumes)
+    if let Some((provider_instance_id, zone)) = instance_info {
+        if let Ok(attached_volumes) = provider.list_attached_volumes(&zone, &provider_instance_id).await {
+            for av in attached_volumes {
+                // Check if this volume is already tracked in instance_volumes
+                let exists: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM instance_volumes WHERE instance_id=$1 AND provider_volume_id=$2 AND deleted_at IS NULL)",
+                )
+                .bind(instance_id)
+                .bind(&av.provider_volume_id)
+                .fetch_one(pool)
+                .await
+                .unwrap_or(false);
+                
+                if !exists {
+                    // Volume exists at provider but not in our DB - track it so we can delete it
+                    eprintln!(
+                        "🔍 [job-terminator] Discovered untracked volume {} for instance {} - adding to deletion queue",
+                        av.provider_volume_id, instance_id
+                    );
+                    
+                    let row_id = Uuid::new_v4();
+                    let provider_id: Option<Uuid> = sqlx::query_scalar(
+                        "SELECT provider_id FROM instances WHERE id = $1"
+                    )
+                    .bind(instance_id)
+                    .fetch_optional(pool)
+                    .await
+                    .ok()
+                    .flatten();
+                    
+                    if let Some(pid) = provider_id {
+                        let _ = sqlx::query(
+                            r#"
+                            INSERT INTO instance_volumes 
+                            (id, instance_id, provider_id, zone_code, provider_volume_id, provider_volume_name, volume_type, size_bytes, delete_on_terminate, status, attached_at, is_boot)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, 'attached', NOW(), $9)
+                            ON CONFLICT (instance_id, provider_volume_id) DO NOTHING
+                            "#,
+                        )
+                        .bind(row_id)
+                        .bind(instance_id)
+                        .bind(pid)
+                        .bind(&zone)
+                        .bind(&av.provider_volume_id)
+                        .bind(av.provider_volume_name.as_deref())
+                        .bind(&av.volume_type)
+                        .bind(av.size_bytes.unwrap_or(0))
+                        .bind(av.boot)
+                        .execute(pool)
+                        .await;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Now delete all volumes marked delete_on_terminate=true
     let vols: Vec<(Uuid, String, String, bool)> = sqlx::query_as(
         r#"
         SELECT id, provider_volume_id, zone_code, delete_on_terminate
@@ -112,6 +188,11 @@ pub async fn terminator_terminating_instances(
     pool: &Pool<Postgres>,
     redis_client: &redis::Client,
 ) -> Result<usize, Box<dyn std::error::Error>> {
+    // Claim instances that are terminating and haven't been reconciled recently
+    // This handles cases where:
+    // 1. Redis event was lost (non-durable pub/sub)
+    // 2. process_termination failed silently
+    // 3. Instance is stuck waiting for provider deletion confirmation
     let claimed: Vec<(Uuid, Uuid, Option<String>, Option<String>)> = sqlx::query_as(
         "WITH cte AS (
             SELECT i.id,
@@ -133,6 +214,13 @@ pub async fn terminator_terminating_instances(
     )
     .fetch_all(pool)
     .await?;
+    
+    if !claimed.is_empty() {
+        eprintln!(
+            "🔵 [job-terminator] Claimed {} instance(s) for termination processing",
+            claimed.len()
+        );
+    }
 
     if claimed.is_empty() {
         return Ok(0);

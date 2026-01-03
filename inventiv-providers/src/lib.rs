@@ -11,8 +11,25 @@ pub trait CloudProvider: Send + Sync {
         cloud_init: Option<&str>,
     ) -> Result<String>;
     async fn start_instance(&self, zone: &str, server_id: &str) -> Result<bool>;
+    
+    // Optional: stop/poweroff instance before termination
+    // Default implementation returns Ok(false) (not supported)
+    async fn stop_instance(&self, _zone: &str, _server_id: &str) -> Result<bool> {
+        Ok(false)
+    }
+    
     async fn terminate_instance(&self, zone: &str, server_id: &str) -> Result<bool>;
     async fn get_instance_ip(&self, zone: &str, server_id: &str) -> Result<Option<String>>;
+
+    // Optional: get server state (e.g., "running", "stopped", "starting")
+    // Default implementation returns None (caller cannot wait for specific state).
+    async fn get_server_state(
+        &self,
+        _zone: &str,
+        _server_id: &str,
+    ) -> Result<Option<String>> {
+        Ok(None)
+    }
 
     // New Generic Methods
     async fn check_instance_exists(&self, zone: &str, server_id: &str) -> Result<bool>;

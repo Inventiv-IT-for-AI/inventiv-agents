@@ -95,6 +95,7 @@ PRD_REMOTE_SSH ?=
 	reset-admin-password \
 	docker-prune-old test test-worker-observability test-worker-observability-clean clean check fmt fmt-check clippy \
 	ui-install ui-lint ui-build security-check \
+	agent-version-bump agent-checksum agent-version-check \
 	ci-fast ci
 
 help:
@@ -106,6 +107,13 @@ help:
 	@echo "  IMAGE_TAG (default)=$(IMAGE_TAG)   | version tag=$(IMAGE_TAG_VERSION)   | latest tag=$(IMAGE_TAG_LATEST)"
 	@echo "  LOCAL_COMPOSE_FILE=$(LOCAL_COMPOSE_FILE)"
 	@echo "  DEPLOY_COMPOSE_FILE=$(DEPLOY_COMPOSE_FILE)"
+	@echo ""
+	@echo "## Agent version management"
+	@echo "  make agent-checksum              # Calculate SHA256 of agent.py"
+	@echo "  make agent-version-get           # Show current agent version"
+	@echo "  make agent-version-bump [VERSION=1.0.1] [BUILD_DATE=2026-01-03]"
+	@echo "  make agent-version-auto-bump    # Auto-increment patch version"
+	@echo "  make agent-version-check         # Verify version was updated if agent.py changed"
 	@echo ""
 	@echo "## Images (build/push/pull)"
 	@echo "  make images-build [IMAGE_TAG=<sha>]"
@@ -903,3 +911,131 @@ ci: ci-fast
 
 clean:
 	rm -rf target/
+
+# Agent version management
+AGENT_PY := inventiv-worker/agent.py
+AGENT_VERSION_REGEX := ^AGENT_VERSION = "([^"]+)"$$
+AGENT_BUILD_DATE_REGEX := ^AGENT_BUILD_DATE = "([^"]+)"$$
+
+# Calculate SHA256 checksum of agent.py
+.PHONY: agent-checksum
+agent-checksum:
+	@if [ ! -f "$(AGENT_PY)" ]; then \
+		echo "❌ $(AGENT_PY) not found"; \
+		exit 1; \
+	fi
+	@echo "📦 Calculating SHA256 checksum for $(AGENT_PY)..."
+	@if command -v sha256sum >/dev/null 2>&1; then \
+		sha256sum "$(AGENT_PY)" | cut -d' ' -f1; \
+	elif command -v shasum >/dev/null 2>&1; then \
+		shasum -a 256 "$(AGENT_PY)" | cut -d' ' -f1; \
+	else \
+		echo "❌ Neither sha256sum nor shasum found"; \
+		exit 1; \
+	fi
+
+# Extract current agent version from agent.py
+.PHONY: agent-version-get
+agent-version-get:
+	@if [ ! -f "$(AGENT_PY)" ]; then \
+		echo "❌ $(AGENT_PY) not found"; \
+		exit 1; \
+	fi
+	@grep -m1 '^AGENT_VERSION' "$(AGENT_PY)" | sed -E 's/^[^"]*"([^"]+)".*/\1/' || echo "unknown"
+
+# Bump agent version (updates AGENT_VERSION and AGENT_BUILD_DATE)
+# Usage: make agent-version-bump [VERSION=1.0.1] [BUILD_DATE=2026-01-03]
+.PHONY: agent-version-bump
+agent-version-bump:
+	@if [ ! -f "$(AGENT_PY)" ]; then \
+		echo "❌ $(AGENT_PY) not found"; \
+		exit 1; \
+	fi
+	@CURRENT_VERSION=$$(grep -m1 '^AGENT_VERSION' "$(AGENT_PY)" | sed -E 's/^[^"]*"([^"]+)".*/\1/' || echo ""); \
+	CURRENT_DATE=$$(grep -m1 '^AGENT_BUILD_DATE' "$(AGENT_PY)" | sed -E 's/^[^"]*"([^"]+)".*/\1/' || echo ""); \
+	NEW_VERSION="$${VERSION:-$$CURRENT_VERSION}"; \
+	NEW_DATE="$${BUILD_DATE:-$$(date +%Y-%m-%d)}"; \
+	if [ -z "$$NEW_VERSION" ]; then \
+		echo "❌ Cannot determine version. Set VERSION=... or ensure AGENT_VERSION exists in $(AGENT_PY)"; \
+		exit 1; \
+	fi; \
+	echo "📝 Updating agent version: $$CURRENT_VERSION -> $$NEW_VERSION"; \
+	echo "📅 Build date: $$CURRENT_DATE -> $$NEW_DATE"; \
+	if [ "$$CURRENT_VERSION" = "$$NEW_VERSION" ] && [ "$$CURRENT_DATE" = "$$NEW_DATE" ]; then \
+		echo "ℹ️  Version and date unchanged, skipping update"; \
+		exit 0; \
+	fi; \
+	if command -v sed >/dev/null 2>&1; then \
+		if [ "$$(uname)" = "Darwin" ]; then \
+			sed -i '' "s/^AGENT_VERSION = \".*\"/AGENT_VERSION = \"$$NEW_VERSION\"/" "$(AGENT_PY)"; \
+			sed -i '' "s/^AGENT_BUILD_DATE = \".*\"/AGENT_BUILD_DATE = \"$$NEW_DATE\"/" "$(AGENT_PY)"; \
+		else \
+			sed -i "s/^AGENT_VERSION = \".*\"/AGENT_VERSION = \"$$NEW_VERSION\"/" "$(AGENT_PY)"; \
+			sed -i "s/^AGENT_BUILD_DATE = \".*\"/AGENT_BUILD_DATE = \"$$NEW_DATE\"/" "$(AGENT_PY)"; \
+		fi; \
+		echo "✅ Updated $(AGENT_PY)"; \
+		echo "   AGENT_VERSION = \"$$NEW_VERSION\""; \
+		echo "   AGENT_BUILD_DATE = \"$$NEW_DATE\""; \
+		echo ""; \
+		echo "📦 New SHA256 checksum:"; \
+		$(MAKE) agent-checksum; \
+	else \
+		echo "❌ sed command not found"; \
+		exit 1; \
+	fi
+
+# Auto-bump agent version based on git changes (increments patch version)
+# Usage: make agent-version-auto-bump
+.PHONY: agent-version-auto-bump
+agent-version-auto-bump:
+	@if [ ! -f "$(AGENT_PY)" ]; then \
+		echo "❌ $(AGENT_PY) not found"; \
+		exit 1; \
+	fi
+	@CURRENT_VERSION=$$(grep -m1 '^AGENT_VERSION' "$(AGENT_PY)" | sed -E 's/^[^"]*"([^"]+)".*/\1/' || echo "1.0.0"); \
+	MAJOR=$$(echo "$$CURRENT_VERSION" | cut -d. -f1); \
+	MINOR=$$(echo "$$CURRENT_VERSION" | cut -d. -f2); \
+	PATCH=$$(echo "$$CURRENT_VERSION" | cut -d. -f3); \
+	if [ -z "$$PATCH" ]; then PATCH=0; fi; \
+	NEW_PATCH=$$((PATCH + 1)); \
+	NEW_VERSION="$$MAJOR.$$MINOR.$$NEW_PATCH"; \
+	echo "🔄 Auto-bumping version: $$CURRENT_VERSION -> $$NEW_VERSION"; \
+	$(MAKE) agent-version-bump VERSION="$$NEW_VERSION"
+
+# Check if agent.py version needs to be updated (for CI)
+# Fails if agent.py was modified but version wasn't bumped
+.PHONY: agent-version-check
+agent-version-check:
+	@if [ ! -f "$(AGENT_PY)" ]; then \
+		echo "❌ $(AGENT_PY) not found"; \
+		exit 1; \
+	fi
+	@echo "🔍 Checking if agent.py version is up-to-date..."
+	@if ! git diff --quiet HEAD -- "$(AGENT_PY)" 2>/dev/null; then \
+		echo "⚠️  $(AGENT_PY) has uncommitted changes"; \
+		git diff HEAD -- "$(AGENT_PY)" | head -20; \
+		echo ""; \
+		echo "💡 Run 'make agent-version-auto-bump' to update version automatically"; \
+		exit 1; \
+	fi; \
+	if git diff --quiet HEAD~1 HEAD -- "$(AGENT_PY)" 2>/dev/null; then \
+		echo "✅ $(AGENT_PY) unchanged in last commit"; \
+		exit 0; \
+	fi; \
+	CURRENT_VERSION=$$(grep -m1 '^AGENT_VERSION' "$(AGENT_PY)" | sed -E 's/^[^"]*"([^"]+)".*/\1/' || echo ""); \
+	PREV_VERSION=$$(git show HEAD~1:"$(AGENT_PY)" 2>/dev/null | grep -m1 '^AGENT_VERSION' | sed -E 's/^[^"]*"([^"]+)".*/\1/' || echo ""); \
+	if [ -z "$$CURRENT_VERSION" ]; then \
+		echo "❌ AGENT_VERSION not found in $(AGENT_PY)"; \
+		exit 1; \
+	fi; \
+	if [ "$$CURRENT_VERSION" = "$$PREV_VERSION" ]; then \
+		echo "❌ $(AGENT_PY) was modified but AGENT_VERSION wasn't updated"; \
+		echo "   Current version: $$CURRENT_VERSION"; \
+		echo "   Previous version: $$PREV_VERSION"; \
+		echo ""; \
+		echo "💡 Run 'make agent-version-auto-bump' to update version automatically"; \
+		exit 1; \
+	fi; \
+	echo "✅ Version updated: $$PREV_VERSION -> $$CURRENT_VERSION"; \
+	CURRENT_DATE=$$(grep -m1 '^AGENT_BUILD_DATE' "$(AGENT_PY)" | sed -E 's/^[^"]*"([^"]+)".*/\1/' || echo ""); \
+	echo "   Build date: $$CURRENT_DATE"

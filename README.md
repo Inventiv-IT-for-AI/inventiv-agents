@@ -12,15 +12,18 @@
 
 **Why it's useful**: Enables standardized deployment and scaling of LLM models (vLLM), with integrated financial tracking and granular control over cloud resources.
 
-📘 **Detailed documentation**: [Architecture](docs/architecture.md) | [Domain Design & CQRS](docs/domain_design.md) | [General Specifications](docs/specification_generale.md) | [UI Design System](docs/ui_design_system.md) | [`ia-widgets`](docs/ia_widgets.md) | [Engineering Guidelines](docs/engineering_guidelines.md)
+📘 **Detailed documentation**: [Architecture](docs/architecture.md) | [Domain Design & CQRS](docs/domain_design.md) | [General Specifications](docs/specification_generale.md) | [UI Design System](docs/ui_design_system.md) | [`ia-widgets`](docs/ia_widgets.md) | [Engineering Guidelines](docs/engineering_guidelines.md) | [State Machine & Progress](docs/STATE_MACHINE_AND_PROGRESS.md) | [Agent Version Management](docs/AGENT_VERSION_MANAGEMENT.md) | [Storage Management](docs/STORAGE_MANAGEMENT.md)
 
 ## Key Features
 
 - ✅ **Provisioning / Termination**: Automatic creation and destruction of GPU instances via providers (Scaleway, Mock)
 - ✅ **Health-check & Reconciliation**: Continuous monitoring of instances, orphan detection, automatic retry
 - ✅ **Redis Event Bus**: Event-driven architecture with `CMD:*` (commands) and `EVT:*` (events)
-- ✅ **Orchestrator (jobs + state machine)**: Asynchronous lifecycle management (booting → ready → terminating → terminated)
-- ✅ **Worker (agent runtime)**: Python agent deployed on GPU instances, heartbeat, readiness (`/readyz`), metrics
+- ✅ **Orchestrator (jobs + state machine)**: Asynchronous lifecycle management (booting → ready → terminating → terminated) with explicit state transitions and progress tracking (0-100%)
+- ✅ **Worker (agent runtime)**: Python agent deployed on GPU instances, heartbeat, readiness (`/readyz`), metrics, version management (`/info` endpoint)
+- ✅ **Progress Tracking**: Granular progress percentage (0-100%) based on completed actions (SSH install, vLLM ready, model loaded, etc.)
+- ✅ **Agent Version Management**: Versioning, SHA256 checksum verification, CI/CD automation, monitoring
+- ✅ **Storage Management**: Automatic volume discovery, tracking, and cleanup on termination
 - ✅ **FinOps (costs/forecast)**: Tracking of real and forecasted costs by instance/type/region/provider, time windows (minute/hour/day/30d/365d)
 - ✅ **Frontend (web console)**: Next.js dashboard with FinOps monitoring, instance management, settings (providers/zones/types), action logs
 - ✅ **Auth (JWT session + users)**: Cookie-based session authentication, user management, automatic admin bootstrap

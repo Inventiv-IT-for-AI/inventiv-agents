@@ -1,5 +1,5 @@
 use crate::{inventory, CloudProvider};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use sqlx::{Pool, Postgres};
 use std::process::Stdio;

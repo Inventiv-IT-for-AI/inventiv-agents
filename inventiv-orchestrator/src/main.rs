@@ -5,7 +5,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -16,6 +16,7 @@ mod logger;
 mod models;
 mod provider_manager; // NEW
 mod provisioning_job;
+mod recovery_job;
 mod services; // NEW
 mod terminator_job;
 mod watch_dog_job;
@@ -41,6 +42,13 @@ struct WorkerRegisterRequest {
     metadata: Option<serde_json::Value>,
 }
 
+#[derive(Deserialize, Serialize, Debug)]
+struct AgentInfo {
+    version: Option<String>,
+    build_date: Option<String>,
+    checksum: Option<String>,
+}
+
 #[derive(Deserialize, Debug)]
 struct WorkerHeartbeatRequest {
     instance_id: Uuid,
@@ -52,6 +60,8 @@ struct WorkerHeartbeatRequest {
     gpu_mem_used_mb: Option<f64>,
     /// Optional: worker-reported reachable IP.
     ip_address: Option<String>,
+    /// Agent version/checksum information
+    agent_info: Option<AgentInfo>,
     metadata: Option<serde_json::Value>,
 }
 
@@ -291,9 +301,13 @@ async fn main() {
                         if let Ok(cmd) =
                             serde_json::from_value::<CommandProvision>(event_json.clone())
                         {
+                            let instance_id = cmd.instance_id.clone();
+                            eprintln!("📥 [Redis] Received CMD:PROVISION for instance {} (zone={}, type={})", 
+                                instance_id, cmd.zone, cmd.instance_type);
                             let pool = state_redis.db.clone();
                             let redis_client = state_redis.redis_client.clone();
                             tokio::spawn(async move {
+                                eprintln!("🔵 [Redis] Spawning process_provisioning task for instance {}", instance_id);
                                 services::process_provisioning(
                                     pool,
                                     redis_client,
@@ -303,13 +317,17 @@ async fn main() {
                                     cmd.correlation_id,
                                 )
                                 .await;
+                                eprintln!("🔵 [Redis] process_provisioning task completed for instance {}", instance_id);
                             });
+                        } else {
+                            eprintln!("⚠️ [Redis] Failed to parse CMD:PROVISION event: {}", payload);
                         }
                     }
                     "CMD:TERMINATE" => {
                         if let Ok(cmd) =
                             serde_json::from_value::<CommandTerminate>(event_json.clone())
                         {
+                            eprintln!("📥 [Redis] Received CMD:TERMINATE for instance {}", cmd.instance_id);
                             let pool = state_redis.db.clone();
                             let redis_client = state_redis.redis_client.clone();
                             tokio::spawn(async move {
@@ -321,6 +339,8 @@ async fn main() {
                                 )
                                 .await;
                             });
+                        } else {
+                            eprintln!("⚠️ [Redis] Failed to parse CMD:TERMINATE event: {}", payload);
                         }
                     }
                     "CMD:REINSTALL" => {
@@ -386,6 +406,13 @@ async fn main() {
     let redis_prov = state.redis_client.clone();
     tokio::spawn(async move {
         provisioning_job::run(db_prov, redis_prov).await;
+    });
+
+    // job-recovery (recover stuck instances in various states)
+    let db_recovery = state.db.clone();
+    let redis_recovery = state.redis_client.clone();
+    tokio::spawn(async move {
+        recovery_job::run(db_recovery, redis_recovery).await;
     });
 
     // 5. Start HTTP Server (Admin API - Simplified for internal health/debug only)
@@ -482,9 +509,21 @@ async fn worker_register(
     }
 
     println!(
-        "🧩 worker_register: instance_id={} model_id={:?} health_port={:?} vllm_port={:?}",
-        payload.instance_id, payload.model_id, payload.health_port, payload.vllm_port
+        "🧩 [Worker] REGISTER: instance_id={} worker_id={:?} model_id={:?} health_port={:?} vllm_port={:?} ip={:?} client_ip={}",
+        payload.instance_id, payload.worker_id, payload.model_id, payload.health_port, payload.vllm_port, payload.ip_address, client_ip
     );
+    
+    // Log payload summary for debugging
+    let payload_summary = json!({
+        "instance_id": payload.instance_id,
+        "worker_id": payload.worker_id,
+        "model_id": payload.model_id,
+        "health_port": payload.health_port,
+        "vllm_port": payload.vllm_port,
+        "ip_address": payload.ip_address,
+        "has_metadata": payload.metadata.is_some()
+    });
+    println!("🔵 [Worker] REGISTER payload summary: {}", serde_json::to_string(&payload_summary).unwrap_or_default());
 
     let res = sqlx::query(
         r#"
@@ -568,13 +607,50 @@ async fn worker_heartbeat(
     }
 
     let status = payload.status.to_ascii_lowercase();
+    
+    // Log agent info if present
+    if let Some(agent_info) = &payload.agent_info {
+        println!(
+            "📦 [Worker] AGENT INFO: instance_id={} version={:?} build_date={:?} checksum={:?}",
+            payload.instance_id,
+            agent_info.version,
+            agent_info.build_date,
+            agent_info.checksum.as_ref().map(|s| &s[..16]) // Log first 16 chars of checksum
+        );
+    }
+    
     println!(
-        "💓 worker_heartbeat: instance_id={} status={} model_id={:?} gpu_util={:?}",
-        payload.instance_id, status, payload.model_id, payload.gpu_utilization
+        "💓 [Worker] HEARTBEAT: instance_id={} worker_id={:?} status={} model_id={:?} gpu_util={:?} queue_depth={:?} ip={:?}",
+        payload.instance_id, payload.worker_id, status, payload.model_id, payload.gpu_utilization, payload.queue_depth, payload.ip_address
     );
+    
+    // Log essential payload fields for debugging
+    let payload_summary = json!({
+        "instance_id": payload.instance_id,
+        "worker_id": payload.worker_id,
+        "status": status,
+        "model_id": payload.model_id,
+        "gpu_utilization": payload.gpu_utilization,
+        "gpu_mem_used_mb": payload.gpu_mem_used_mb,
+        "queue_depth": payload.queue_depth,
+        "ip_address": payload.ip_address,
+        "agent_info": payload.agent_info,
+        "has_metadata": payload.metadata.is_some()
+    });
+    println!("🔵 [Worker] HEARTBEAT payload summary: {}", serde_json::to_string(&payload_summary).unwrap_or_default());
 
     // We'll need metadata both for persistence on the instance row and for time-series sampling.
     let meta_clone = payload.metadata.clone();
+    
+    // Merge agent_info into metadata for storage
+    let mut enriched_metadata = meta_clone.clone().unwrap_or(json!({}));
+    if let Some(agent_info) = &payload.agent_info {
+        enriched_metadata["agent_info"] = json!({
+            "version": agent_info.version.clone(),
+            "build_date": agent_info.build_date.clone(),
+            "checksum": agent_info.checksum.clone(),
+        });
+    }
 
     let res = sqlx::query(
         r#"

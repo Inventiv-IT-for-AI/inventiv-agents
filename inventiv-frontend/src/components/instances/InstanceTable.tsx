@@ -3,6 +3,7 @@
 import { formatDistanceToNow, parseISO } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import { Eye, Archive, Wrench } from "lucide-react";
 import type { Instance } from "@/lib/types";
 import { displayOrDash, formatEur } from "@/lib/utils";
@@ -147,6 +148,34 @@ export function InstanceTable({
             {row.status}
           </Badge>
         ),
+      },
+      {
+        id: "progress",
+        label: "Progress",
+        width: 180,
+        sortable: true,
+        cell: ({ row }) => {
+          // Only show progress for instances that are provisioning or booting
+          if (
+            row.progress_percent == null ||
+            row.status.toLowerCase() === "ready" ||
+            row.status.toLowerCase() === "terminated" ||
+            row.status.toLowerCase() === "terminating" ||
+            row.status.toLowerCase() === "archived" ||
+            row.status.toLowerCase().includes("failed")
+          ) {
+            return <span className="text-muted-foreground text-sm">—</span>;
+          }
+          
+          return (
+            <div className="flex items-center gap-2 w-full">
+              <Progress value={row.progress_percent} className="h-2 flex-1" />
+              <span className="text-xs text-muted-foreground font-mono min-w-[2.5rem] text-right">
+                {row.progress_percent}%
+              </span>
+            </div>
+          );
+        },
       },
       {
         id: "created",

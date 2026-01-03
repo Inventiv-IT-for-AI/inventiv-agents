@@ -107,13 +107,18 @@ pub fn parse_tokens_from_sse_stream(stream_text: &str) -> (Option<i32>, Option<i
     let mut output_tokens = None;
     let mut total_tokens = None;
     
+    eprintln!("[METRICS] parse_tokens_from_sse_stream: input_length={}", stream_text.len());
+    
     // Parse SSE stream backwards to find the last chunk with usage
     // OpenAI sends usage in a separate data chunk before [DONE]
     let lines: Vec<&str> = stream_text.lines().collect();
-    for line in lines.iter().rev() {
+    eprintln!("[METRICS] parse_tokens_from_sse_stream: total_lines={}", lines.len());
+    
+    for (idx, line) in lines.iter().rev().enumerate() {
         if line.starts_with("data: ") {
             let payload = line.strip_prefix("data: ").unwrap_or("").trim();
             if payload == "[DONE]" {
+                eprintln!("[METRICS] parse_tokens_from_sse_stream: found [DONE] at line {}", idx);
                 continue;
             }
             if let Ok(chunk_json) = serde_json::from_str::<serde_json::Value>(payload) {
@@ -121,9 +126,22 @@ pub fn parse_tokens_from_sse_stream(stream_text: &str) -> (Option<i32>, Option<i
                     input_tokens = usage_obj.get("prompt_tokens").and_then(|v| v.as_i64()).map(|v| v as i32);
                     output_tokens = usage_obj.get("completion_tokens").and_then(|v| v.as_i64()).map(|v| v as i32);
                     total_tokens = usage_obj.get("total_tokens").and_then(|v| v.as_i64()).map(|v| v as i32);
+                    eprintln!("[METRICS] parse_tokens_from_sse_stream: found usage at line {}: input={:?}, output={:?}, total={:?}", 
+                        idx, input_tokens, output_tokens, total_tokens);
                     break; // Found usage, stop parsing
+                } else {
+                    eprintln!("[METRICS] parse_tokens_from_sse_stream: line {} has no usage field", idx);
                 }
+            } else {
+                eprintln!("[METRICS] parse_tokens_from_sse_stream: failed to parse JSON at line {}: {}", idx, payload.chars().take(100).collect::<String>());
             }
+        }
+    }
+    
+    if input_tokens.is_none() && output_tokens.is_none() && total_tokens.is_none() {
+        eprintln!("[METRICS] parse_tokens_from_sse_stream: no usage found, showing last 10 lines:");
+        for line in lines.iter().rev().take(10) {
+            eprintln!("[METRICS] parse_tokens_from_sse_stream: {}", line.chars().take(200).collect::<String>());
         }
     }
     

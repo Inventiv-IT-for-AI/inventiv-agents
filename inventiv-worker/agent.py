@@ -9,8 +9,25 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from uuid import uuid4
+import hashlib
 
 import requests
+
+# Version information (updated on each release)
+AGENT_VERSION = "1.0.0"  # Update this when making changes to agent.py
+AGENT_BUILD_DATE = "2026-01-03"  # Update this when making changes
+
+def _get_agent_checksum():
+    """Calculate SHA256 checksum of this agent.py file."""
+    try:
+        agent_path = os.path.abspath(__file__)
+        if os.path.exists(agent_path):
+            with open(agent_path, "rb") as f:
+                content = f.read()
+                return hashlib.sha256(content).hexdigest()
+    except Exception:
+        pass
+    return None
 
 # Configuration
 CONTROL_PLANE_URL = os.getenv("CONTROL_PLANE_URL", "").rstrip("/")
@@ -679,6 +696,7 @@ def send_heartbeat(status: str):
     gpu = _try_nvidia_smi() or {}
     if not gpu:
         gpu = _fake_gpu_metrics(vllm)
+    agent_checksum = _get_agent_checksum()
     payload = {
         "instance_id": INSTANCE_ID,
         "worker_id": WORKER_ID,
@@ -688,6 +706,11 @@ def send_heartbeat(status: str):
         "gpu_utilization": gpu.get("gpu_utilization"),
         "gpu_mem_used_mb": gpu.get("gpu_mem_used_mb"),
         "ip_address": _local_ip_best_effort(),
+        "agent_info": {
+            "version": AGENT_VERSION,
+            "build_date": AGENT_BUILD_DATE,
+            "checksum": agent_checksum,
+        },
         "metadata": {
             **(gpu or {}),
             "system": sysm or None,
