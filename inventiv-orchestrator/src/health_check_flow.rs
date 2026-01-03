@@ -9,6 +9,86 @@ use tokio::process::Command;
 use crate::logger;
 use crate::state_machine;
 
+/// Resolve vLLM Docker image with hierarchy (same logic as in services.rs)
+async fn resolve_vllm_image_impl(
+    db: &sqlx::Pool<sqlx::Postgres>,
+    instance_type_id: Option<sqlx::types::Uuid>,
+    provider_id: Option<sqlx::types::Uuid>,
+    instance_type_code: &str,
+) -> String {
+    // 1. Check instance_types.allocation_params.vllm_image (instance-type specific)
+    if let Some(type_id) = instance_type_id {
+        if let Ok(Some(vllm_image)) = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT NULLIF(TRIM(allocation_params->>'vllm_image'), '') FROM instance_types WHERE id = $1"
+        )
+        .bind(type_id)
+        .fetch_optional(db)
+        .await
+        {
+            if let Some(img) = vllm_image {
+                if !img.trim().is_empty() {
+                    eprintln!("✅ [resolve_vllm_image] Using instance-type specific image: {} (from allocation_params)", img);
+                    return img;
+                }
+            }
+        }
+    }
+    
+    // 2. Check provider_settings.WORKER_VLLM_IMAGE_<INSTANCE_TYPE_CODE> (per instance type)
+    if let Some(pid) = provider_id {
+        let setting_key = format!("WORKER_VLLM_IMAGE_{}", instance_type_code.replace("-", "_").to_uppercase());
+        if let Ok(Some(img)) = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT NULLIF(TRIM(value_text), '') FROM provider_settings WHERE provider_id = $1 AND key = $2"
+        )
+        .bind(pid)
+        .bind(&setting_key)
+        .fetch_optional(db)
+        .await
+        {
+            if let Some(img) = img {
+                if !img.trim().is_empty() {
+                    eprintln!("✅ [resolve_vllm_image] Using provider setting for {}: {}", instance_type_code, img);
+                    return img;
+                }
+            }
+        }
+    }
+    
+    // 3. Check provider_settings.WORKER_VLLM_IMAGE (provider default)
+    if let Some(pid) = provider_id {
+        if let Ok(Some(img)) = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT NULLIF(TRIM(value_text), '') FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_VLLM_IMAGE'"
+        )
+        .bind(pid)
+        .fetch_optional(db)
+        .await
+        {
+            if let Some(img) = img {
+                if !img.trim().is_empty() {
+                    eprintln!("✅ [resolve_vllm_image] Using provider default image: {}", img);
+                    return img;
+                }
+            }
+        }
+    }
+    
+    // 4. Check environment variable
+    if let Ok(img) = std::env::var("WORKER_VLLM_IMAGE") {
+        if !img.trim().is_empty() {
+            eprintln!("✅ [resolve_vllm_image] Using env var WORKER_VLLM_IMAGE: {}", img);
+            return img;
+        }
+    }
+    
+    // 5. Hardcoded default (stable version, not "latest")
+    // Default: v0.6.2.post1 is a stable version
+    // Note: For P100 (RENDER-S), this may need to be a version compiled with sm_60 support
+    // For L4/L40S, this version should work fine
+    let default_image = "vllm/vllm-openai:v0.6.2.post1".to_string();
+    eprintln!("ℹ️ [resolve_vllm_image] Using hardcoded default: {} (consider configuring instance_types.allocation_params.vllm_image)", default_image);
+    default_image
+}
+
 fn tail_str(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         return s.to_string();
@@ -502,21 +582,31 @@ async fn maybe_trigger_worker_install_over_ssh(
                 .filter(|s| !s.trim().is_empty())
         })
         .unwrap_or_else(|| "Qwen/Qwen2.5-0.5B-Instruct".to_string());
-    let vllm_image = if let Some(pid) = provider_id {
-        provider_setting_text(db, pid, "WORKER_VLLM_IMAGE")
-            .await
-            .or_else(|| {
-                std::env::var("WORKER_VLLM_IMAGE")
-                    .ok()
-                    .filter(|s| !s.trim().is_empty())
-            })
-            .unwrap_or_else(|| "vllm/vllm-openai:latest".to_string())
-    } else {
-        std::env::var("WORKER_VLLM_IMAGE")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "vllm/vllm-openai:latest".to_string())
-    };
+    // Resolve vLLM image with hierarchy (same as in services.rs)
+    let instance_type_id: Option<Uuid> = sqlx::query_scalar("SELECT instance_type_id FROM instances WHERE id = $1")
+        .bind(instance_id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten();
+    
+    let instance_type_code: String = sqlx::query_scalar(
+        "SELECT code FROM instance_types WHERE id = (SELECT instance_type_id FROM instances WHERE id = $1)"
+    )
+    .bind(instance_id)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| "unknown".to_string());
+    
+    // Use the same resolution logic as in services.rs
+    let vllm_image = resolve_vllm_image_impl(
+        db,
+        instance_type_id,
+        provider_id,
+        &instance_type_code,
+    ).await;
     let vllm_mode = if let Some(pid) = provider_id {
         provider_setting_text(db, pid, "WORKER_VLLM_MODE")
             .await

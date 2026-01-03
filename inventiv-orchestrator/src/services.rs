@@ -1237,22 +1237,25 @@ pub async fn process_provisioning(
                         .await
                         .unwrap_or(None);
 
-                let vllm_image = if let Some(pid) = provider_id {
-                    sqlx::query_scalar("SELECT value_text FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_VLLM_IMAGE'")
-                        .bind(pid)
-                        .fetch_optional(&pool)
-                        .await
-                        .ok()
-                        .flatten()
-                        .filter(|s: &String| !s.trim().is_empty())
-                        .or_else(|| std::env::var("WORKER_VLLM_IMAGE").ok().filter(|s| !s.trim().is_empty()))
-                        .unwrap_or_else(|| "vllm/vllm-openai:latest".to_string())
-                } else {
-                    std::env::var("WORKER_VLLM_IMAGE")
-                        .ok()
-                        .filter(|s| !s.trim().is_empty())
-                        .unwrap_or_else(|| "vllm/vllm-openai:latest".to_string())
-                };
+                // Resolve vLLM image with hierarchy:
+                // 1. instance_types.allocation_params.vllm_image (instance-type specific)
+                // 2. provider_settings.WORKER_VLLM_IMAGE_<INSTANCE_TYPE_CODE> (per instance type)
+                // 3. provider_settings.WORKER_VLLM_IMAGE (provider default)
+                // 4. WORKER_VLLM_IMAGE (env var)
+                // 5. Hardcoded default (stable version, not "latest")
+                let instance_type_id: Option<Uuid> = sqlx::query_scalar("SELECT instance_type_id FROM instances WHERE id = $1")
+                    .bind(instance_uuid)
+                    .fetch_optional(&pool)
+                    .await
+                    .ok()
+                    .flatten();
+                
+                let vllm_image = resolve_vllm_image(
+                    &pool,
+                    instance_type_id,
+                    provider_id,
+                    &instance_type,
+                ).await;
 
                 let worker_health_port: u16 = if let Some(pid) = provider_id {
                     sqlx::query_scalar::<_, i64>(
