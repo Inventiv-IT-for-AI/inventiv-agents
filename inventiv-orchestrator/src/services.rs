@@ -1254,7 +1254,7 @@ pub async fn process_provisioning(
                     &pool,
                     instance_type_id,
                     provider_id,
-                    &instance_type,
+                    instance_type,
                 ).await;
 
                 let worker_health_port: u16 = if let Some(pid) = provider_id {

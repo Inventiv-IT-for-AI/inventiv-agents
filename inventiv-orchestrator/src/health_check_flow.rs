@@ -8,12 +8,13 @@ use tokio::process::Command;
 
 use crate::logger;
 use crate::state_machine;
+use uuid::Uuid;
 
 /// Resolve vLLM Docker image with hierarchy (same logic as in services.rs)
 async fn resolve_vllm_image_impl(
     db: &sqlx::Pool<sqlx::Postgres>,
-    instance_type_id: Option<sqlx::types::Uuid>,
-    provider_id: Option<sqlx::types::Uuid>,
+    instance_type_id: Option<Uuid>,
+    provider_id: Option<Uuid>,
     instance_type_code: &str,
 ) -> String {
     // 1. Check instance_types.allocation_params.vllm_image (instance-type specific)

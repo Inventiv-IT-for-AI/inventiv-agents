@@ -157,9 +157,15 @@ Remplacer la logique actuelle de résolution de `vllm_image` par un appel à `re
 ### Versions vLLM recommandées
 
 #### Pour RENDER-S (P100, compute capability 6.0)
-- **Option 1** : `vllm/vllm-openai:v0.6.2.post1` (si compilée avec support P100)
-- **Option 2** : Compiler vLLM depuis les sources avec `TORCH_CUDA_ARCH_LIST="6.0;7.0;7.5;8.0;8.6;8.9"`
-- **Option 3** : Utiliser une image alternative (ex: `ghcr.io/vllm/vllm:latest` avec CUDA 11.8)
+⚠️ **IMPORTANT** : Les images officielles vLLM (`vllm/vllm-openai:*`) ne supportent **PAS** P100 (sm_60) car elles sont compilées pour sm_70+ uniquement.
+
+**Options disponibles** :
+- **Option 1** : Compiler vLLM depuis les sources avec `TORCH_CUDA_ARCH_LIST="6.0;7.0;7.5;8.0;8.6;8.9"` et créer une image Docker personnalisée
+- **Option 2** : Utiliser une version plus ancienne de vLLM qui incluait le support P100 (à identifier)
+- **Option 3** : Utiliser une image alternative ou un fork de vLLM avec support P100
+- **Option 4** : Migrer vers des instances L4/L40S qui sont pleinement supportées
+
+**Note actuelle** : La migration SQL utilise `v0.6.2.post1` comme placeholder pour RENDER-S, mais cette version **ne fonctionnera pas** sur P100. Il faut soit compiler une version personnalisée, soit utiliser une alternative.
 
 #### Pour L4/L40S (compute capability 8.9)
 - **Recommandé** : `vllm/vllm-openai:v0.6.2.post1` ou version plus récente stable
