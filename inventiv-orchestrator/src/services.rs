@@ -2071,9 +2071,14 @@ pub async fn process_provisioning(
             // Generic logic: works for providers that support get_server_state() (e.g., Scaleway)
             // and providers that don't (e.g., Mock - they just call start_instance() once)
             
-            // For Scaleway instances requiring diskless boot (L4, L40S, RENDER-S), verify no local volumes before starting
+            // For Scaleway instances requiring diskless boot (L4, L40S), verify no local volumes before starting
             // This prevents the "local-volume(s) must be equal to 0GB" error at poweron
-            if is_scaleway && scaleway_requires_diskless_boot_image(&instance_type) {
+            // NOTE: RENDER-S is excluded from this check because Scaleway automatically creates Local Storage volumes for RENDER-S
+            let instance_type_upper = instance_type.to_uppercase();
+            let is_render_s = instance_type_upper.starts_with("RENDER-");
+            let requires_strict_diskless = scaleway_requires_diskless_boot_image(&instance_type) && !is_render_s;
+            
+            if is_scaleway && requires_strict_diskless {
                 if let Ok(attached_volumes) = provider.list_attached_volumes(&zone, &server_id).await {
                     let has_local_volumes = attached_volumes.iter().any(|v| {
                         v.volume_type == "l_ssd" || (v.volume_type.is_empty() && v.size_bytes.unwrap_or(0) > 0)
