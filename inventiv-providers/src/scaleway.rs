@@ -546,12 +546,39 @@ impl CloudProvider for ScalewayProvider {
         let json_resp: serde_json::Value = resp.json().await?;
         let server = json_resp.get("server").and_then(|s| s.as_object());
         
+        // Debug: log the full server response to understand structure
+        if let Some(server_obj) = server {
+            let volumes_debug = server_obj.get("volumes").map(|v| serde_json::to_string_pretty(v).unwrap_or_default());
+            eprintln!("🔍 [Scaleway API] Server volumes structure for {}: {}", server_id, volumes_debug.as_deref().unwrap_or("null"));
+            
+            // Also check if there are other volume-related fields
+            let all_keys: Vec<String> = server_obj.keys().map(|k| k.to_string()).collect();
+            eprintln!("🔍 [Scaleway API] Server object keys: {:?}", all_keys);
+        }
+        
         let mut volumes = Vec::new();
         
         if let Some(server_obj) = server {
             // Scaleway returns volumes in server.volumes array
-            if let Some(volumes_array) = server_obj.get("volumes").and_then(|v| v.as_array()) {
-                for vol in volumes_array {
+            // For RENDER-S, volumes might be in a different format (object with numeric keys like "0", "1")
+            let volumes_value = server_obj.get("volumes");
+            let volumes_to_iterate: Vec<&serde_json::Value> = if let Some(v) = volumes_value {
+                // Try as array first
+                if let Some(arr) = v.as_array() {
+                    arr.iter().collect()
+                } else if let Some(obj) = v.as_object() {
+                    // If it's an object (e.g., {"0": {...}, "1": {...}}), convert values to Vec
+                    eprintln!("🔍 [Scaleway API] Volumes is an object with {} keys, converting to array", obj.len());
+                    obj.values().collect()
+                } else {
+                    vec![]
+                }
+            } else {
+                vec![]
+            };
+            
+            if !volumes_to_iterate.is_empty() {
+                for vol in volumes_to_iterate {
                     if let Some(vol_obj) = vol.as_object() {
                         let volume_id = vol_obj
                             .get("id")
@@ -906,6 +933,174 @@ impl CloudProvider for ScalewayProvider {
             .send()
             .await?;
         Ok(resp.status().is_success())
+    }
+
+    async fn create_volume(
+        &self,
+        zone: &str,
+        name: &str,
+        size_bytes: i64,
+        volume_type: &str,
+        _perf_iops: Option<i32>,
+    ) -> Result<Option<String>> {
+        // Scaleway Block Storage API: create volume
+        // Only support "sbs_volume" type (Block Storage)
+        if volume_type != "sbs_volume" {
+            eprintln!(
+                "⚠️ [Scaleway API] Volume type '{}' not supported, only 'sbs_volume' is supported",
+                volume_type
+            );
+            return Ok(None);
+        }
+
+        let url = format!(
+            "https://api.scaleway.com/block/v1/zones/{}/volumes",
+            zone
+        );
+
+        // Scaleway Block Storage API expects size in bytes, not GB
+        // Minimum size is 1GB = 1,000,000,000 bytes
+        if size_bytes < 1_000_000_000 {
+            return Err(anyhow::anyhow!("Volume size must be at least 1GB (1,000,000,000 bytes)"));
+        }
+
+        // Use from_empty to create a volume from scratch (not from a snapshot)
+        let body = json!({
+            "name": name,
+            "project_id": self.project_id,
+            "from_empty": {
+                "size": size_bytes
+            }
+        });
+
+        let size_gb_display = size_bytes / 1_000_000_000;
+        eprintln!(
+            "🔵 [Scaleway API] POST {} - Creating volume: name={}, size={}GB ({} bytes), zone={}",
+            url, name, size_gb_display, size_bytes, zone
+        );
+        eprintln!("🔵 [Scaleway API] Request payload: {}", serde_json::to_string_pretty(&body).unwrap_or_default());
+
+        let resp = self
+            .client
+            .post(&url)
+            .headers(self.headers())
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        let status_code = status.as_u16();
+
+        if !status.is_success() {
+            let error_text = resp.text().await.unwrap_or_default();
+            eprintln!(
+                "❌ [Scaleway API] POST {} failed: status={}, response={}",
+                url, status_code, error_text
+            );
+            return Err(anyhow::anyhow!(
+                "Scaleway create_volume failed: status={} body={}",
+                status_code,
+                error_text
+            ));
+        }
+
+        let json_resp: serde_json::Value = resp.json().await?;
+        let volume_id = json_resp["id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("No volume id in create response"))?
+            .to_string();
+
+        let size_gb_display = size_bytes / 1_000_000_000;
+        eprintln!("✅ [Scaleway API] Volume created: id={}, name={}, size={}GB ({} bytes)", volume_id, name, size_gb_display, size_bytes);
+        Ok(Some(volume_id))
+    }
+
+    async fn attach_volume(
+        &self,
+        zone: &str,
+        server_id: &str,
+        volume_id: &str,
+        _delete_on_termination: bool,
+    ) -> Result<bool> {
+        // For Block Storage volumes, we need to attach via PATCH on the server
+        // First, get current server state to see existing volumes
+        let get_url = format!(
+            "https://api.scaleway.com/instance/v1/zones/{}/servers/{}",
+            zone, server_id
+        );
+        
+        let get_resp = self.client.get(&get_url).headers(self.headers()).send().await?;
+        if !get_resp.status().is_success() {
+            return Err(anyhow::anyhow!("Failed to get server state: status={}", get_resp.status()));
+        }
+        
+        let server_json: serde_json::Value = get_resp.json().await?;
+        let server_obj = server_json.get("server")
+            .and_then(|s| s.as_object())
+            .ok_or_else(|| anyhow::anyhow!("Invalid server response"))?;
+        
+        // Get existing volumes array
+        let mut volumes = server_obj.get("volumes")
+            .and_then(|v| v.as_object())
+            .map(|v| v.clone())
+            .unwrap_or_else(|| serde_json::Map::new());
+        
+        // Find next available volume index (volumes are indexed as "0", "1", etc.)
+        let mut next_index = 0;
+        while volumes.contains_key(&next_index.to_string()) {
+            next_index += 1;
+        }
+        
+        // Add the new volume
+        volumes.insert(
+            next_index.to_string(),
+            json!({
+                "id": volume_id
+            })
+        );
+        
+        // PATCH the server with updated volumes
+        let patch_url = format!(
+            "https://api.scaleway.com/instance/v1/zones/{}/servers/{}",
+            zone, server_id
+        );
+        
+        let body = json!({
+            "volumes": volumes
+        });
+
+        eprintln!(
+            "🔵 [Scaleway API] PATCH {} - Attaching volume: server_id={}, volume_id={}, zone={}, index={}",
+            patch_url, server_id, volume_id, zone, next_index
+        );
+        eprintln!("🔵 [Scaleway API] Request payload: {}", serde_json::to_string_pretty(&body).unwrap_or_default());
+
+        let resp = self
+            .client
+            .patch(&patch_url)
+            .headers(self.headers())
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        let status_code = status.as_u16();
+
+        if !status.is_success() {
+            let error_text = resp.text().await.unwrap_or_default();
+            eprintln!(
+                "❌ [Scaleway API] PATCH {} failed: status={}, response={}",
+                patch_url, status_code, error_text
+            );
+            return Err(anyhow::anyhow!(
+                "Scaleway attach_volume failed: status={} body={}",
+                status_code,
+                error_text
+            ));
+        }
+
+        eprintln!("✅ [Scaleway API] Volume attached: server_id={}, volume_id={}", server_id, volume_id);
+        Ok(true)
     }
 }
 

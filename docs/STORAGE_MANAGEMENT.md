@@ -35,6 +35,9 @@ CREATE TABLE instance_volumes (
 CREATE UNIQUE INDEX idx_instance_volumes_unique 
   ON instance_volumes(instance_id, provider_volume_id) 
   WHERE deleted_at IS NULL;
+
+CREATE UNIQUE CONSTRAINT instance_volumes_unique_constraint 
+  ON instance_volumes(instance_id, provider_volume_id);
 ```
 
 ### Champs importants
@@ -120,10 +123,17 @@ Chaque suppression de volume génère une action :
 Certains types d'instances Scaleway nécessitent un **boot diskless** :
 - **L40S-2-48G** : Pas de volumes locaux autorisés
 - **L4-2-24G** : Pas de volumes locaux autorisés
-- **RENDER-S** : Boot diskless avec volumes locaux créés automatiquement
+- **RENDER-S** : Boot diskless avec volumes Local Storage créés automatiquement par Scaleway
+
+**Comportement RENDER-S** :
+- Scaleway crée automatiquement un volume Local Storage (`l_ssd`) de 400GB lors de la création
+- Ce volume est détecté et tracké dans `instance_volumes` avec `volume_type=l_ssd`
+- `delete_on_terminate=true` pour les volumes Local Storage auto-créés (suppression automatique)
+- **Pas de création de Block Storage** : Le code skip la création de volumes Block Storage pour RENDER-S
+- Le volume Local Storage est utilisé pour le stockage des données
 
 **Vérification** :
-- Avant `PROVIDER_START` : Vérifie qu'aucun volume local (`l_ssd`) n'est attaché
+- Avant `PROVIDER_START` : Vérifie qu'aucun volume local (`l_ssd`) n'est attaché pour L40S/L4
 - Si détecté : Instance marquée `provisioning_failed` avec erreur explicite
 
 #### Volumes persistants

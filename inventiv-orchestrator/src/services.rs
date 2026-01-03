@@ -1426,6 +1426,7 @@ pub async fn process_provisioning(
 
             // Discover and track all volumes attached to the instance (including auto-created boot volumes)
             // This ensures storage_count and storage_sizes_gb are populated immediately for Scaleway instances
+            // Track ALL volumes (boot + data) so they can be displayed and cleaned up on termination
             if is_scaleway {
                 if let Ok(attached_volumes) = provider.list_attached_volumes(&zone, &server_id).await {
                     eprintln!(
@@ -1463,12 +1464,27 @@ pub async fn process_provisioning(
                                     if size_bytes > 0 { size_bytes / 1_000_000_000 } else { 0 }, av.boot
                                 );
                                 
-                                let _ = sqlx::query(
+                                // For volumes created automatically by Scaleway:
+                                // - Boot volumes (boot=true) should be deleted on termination
+                                // - Local Storage volumes for RENDER-S (boot=false, volume_type=l_ssd) should also be deleted
+                                //   since they're auto-created and attached to the instance
+                                // - Data volumes we create will have delete_on_terminate set later based on config
+                                let delete_on_terminate = if av.boot {
+                                    true // Boot volumes should be deleted
+                                } else if av.volume_type == "l_ssd" {
+                                    true // Local Storage volumes (e.g., RENDER-S) should be deleted since they're auto-created
+                                } else {
+                                    false // Other volumes (e.g., Block Storage we create) will be handled by config
+                                };
+                                
+                                let insert_result = sqlx::query(
                                     r#"
                                     INSERT INTO instance_volumes 
                                     (id, instance_id, provider_id, zone_code, provider_volume_id, provider_volume_name, volume_type, size_bytes, delete_on_terminate, status, attached_at, is_boot)
-                                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, 'attached', NOW(), $9)
-                                    ON CONFLICT (instance_id, provider_volume_id) DO NOTHING
+                                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'attached', NOW(), $10)
+                                    ON CONFLICT (instance_id, provider_volume_id) DO UPDATE
+                                    SET deleted_at = NULL, status = 'attached', attached_at = NOW()
+                                    WHERE instance_volumes.deleted_at IS NOT NULL
                                     "#,
                                 )
                                 .bind(row_id)
@@ -1479,9 +1495,23 @@ pub async fn process_provisioning(
                                 .bind(av.provider_volume_name.as_deref())
                                 .bind(&av.volume_type)
                                 .bind(size_bytes)
+                                .bind(delete_on_terminate)
                                 .bind(av.boot)
                                 .execute(&pool)
                                 .await;
+                                
+                                match insert_result {
+                                    Ok(result) => {
+                                        if result.rows_affected() > 0 {
+                                            eprintln!("✅ [process_create] Successfully inserted volume {} into DB (first discovery)", av.provider_volume_id);
+                                        } else {
+                                            eprintln!("ℹ️ [process_create] Volume {} already exists in DB (ON CONFLICT - first discovery)", av.provider_volume_id);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("❌ [process_create] Failed to insert volume {} into DB (first discovery): {:?}", av.provider_volume_id, e);
+                                    }
+                                }
                             }
                         }
                     }
@@ -1665,29 +1695,118 @@ pub async fn process_provisioning(
 
             if let Some((gb, perf_iops, delete_on_terminate)) = data_conf {
                 if gb > 0 {
-                    // Track provider-created attached volumes (boot/root) so we can delete them on termination.
-                    // Scaleway GPU instances use Block Storage for the boot volume; if not tracked, it can leak.
-                    if is_scaleway && is_worker_target {
-                        if let Ok(attached) =
-                            provider.list_attached_volumes(&zone, &server_id).await
-                        {
+                    // For RENDER-S instances, Scaleway creates Local Storage volumes automatically.
+                    // We should NOT create additional Block Storage volumes for RENDER-S.
+                    // Instead, use the Local Storage volume that Scaleway creates (typically 400GB).
+                    let instance_type_upper = instance_type.to_uppercase();
+                    let is_render_s = instance_type_upper.starts_with("RENDER-");
+                    
+                    if is_scaleway && is_worker_target && is_render_s {
+                        eprintln!(
+                            "ℹ️ [process_create] Skipping Block Storage volume creation for RENDER-S instance {} - using Local Storage volume created by Scaleway",
+                            instance_uuid
+                        );
+                        // Still track any volumes that Scaleway created (Local Storage)
+                        if let Ok(attached) = provider.list_attached_volumes(&zone, &server_id).await {
                             for av in attached {
-                                // Only track block volumes that can be deleted via the Block API.
-                                // (root local volumes like l_ssd are not deletable via block/v1).
-                                if av.volume_type != "sbs_volume" {
-                                    continue;
-                                }
+                                // Track Local Storage volumes if not already tracked
                                 let exists: bool = sqlx::query_scalar(
-                                    "SELECT EXISTS(SELECT 1 FROM instance_volumes WHERE instance_id=$1 AND provider_volume_id=$2)",
+                                    "SELECT EXISTS(SELECT 1 FROM instance_volumes WHERE instance_id=$1 AND provider_volume_id=$2 AND deleted_at IS NULL)",
                                 )
                                 .bind(instance_uuid)
                                 .bind(&av.provider_volume_id)
                                 .fetch_one(&pool)
                                 .await
                                 .unwrap_or(false);
+                                
+                                if !exists {
+                                    let row_id = Uuid::new_v4();
+                                    let provider_id: Option<Uuid> = sqlx::query_scalar(
+                                        "SELECT provider_id FROM instances WHERE id = $1"
+                                    )
+                                    .bind(instance_uuid)
+                                    .fetch_optional(&pool)
+                                    .await
+                                    .ok()
+                                    .flatten();
+                                    
+                                    if let Some(pid) = provider_id {
+                                        let size_bytes = av.size_bytes.unwrap_or(0);
+                                        eprintln!(
+                                            "📦 [process_create] Tracking Local Storage volume {} for RENDER-S instance {}: type={}, size={}GB, boot={}",
+                                            av.provider_volume_id, instance_uuid, av.volume_type,
+                                            if size_bytes > 0 { size_bytes / 1_000_000_000 } else { 0 }, av.boot
+                                        );
+                                        
+                                        // For RENDER-S Local Storage volumes created automatically by Scaleway:
+                                        // - They are not boot volumes (boot=false)
+                                        // - But they should be deleted on termination since they're auto-created and attached to the instance
+                                        // - Set delete_on_terminate=true for Local Storage volumes on RENDER-S instances
+                                        let delete_on_terminate_local = true; // Always delete Local Storage volumes for RENDER-S
+                                        
+                                        let insert_result = sqlx::query(
+                                            r#"
+                                            INSERT INTO instance_volumes 
+                                            (id, instance_id, provider_id, zone_code, provider_volume_id, provider_volume_name, volume_type, size_bytes, delete_on_terminate, status, attached_at, is_boot)
+                                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'attached', NOW(), $10)
+                                            ON CONFLICT (instance_id, provider_volume_id) DO UPDATE
+                                            SET deleted_at = NULL, status = 'attached', attached_at = NOW(), delete_on_terminate = $9
+                                            WHERE instance_volumes.deleted_at IS NOT NULL
+                                            "#,
+                                        )
+                                        .bind(row_id)
+                                        .bind(instance_uuid)
+                                        .bind(pid)
+                                        .bind(&zone)
+                                        .bind(&av.provider_volume_id)
+                                        .bind(av.provider_volume_name.as_deref())
+                                        .bind(&av.volume_type)
+                                        .bind(size_bytes)
+                                        .bind(delete_on_terminate_local)
+                                        .bind(av.boot)
+                                        .execute(&pool)
+                                        .await;
+                                        
+                                        match insert_result {
+                                            Ok(result) => {
+                                                if result.rows_affected() > 0 {
+                                                    eprintln!("✅ [process_create] Successfully inserted Local Storage volume {} into DB", av.provider_volume_id);
+                                                } else {
+                                                    eprintln!("ℹ️ [process_create] Local Storage volume {} already exists in DB (ON CONFLICT)", av.provider_volume_id);
+                                                }
+                                            }
+                                            Err(e) => {
+                                                eprintln!("❌ [process_create] Failed to insert Local Storage volume {} into DB: {:?}", av.provider_volume_id, e);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // Skip Block Storage volume creation for RENDER-S - volumes are handled above
+                    } else {
+                        // For non-RENDER-S instances, proceed with Block Storage volume creation
+                        // Note: Boot volumes are already tracked above (after PROVIDER_CREATE).
+                        // This section only ensures boot volumes are updated if metadata is incomplete.
+                        // We don't need to re-discover volumes here since they're already tracked.
+                        if is_scaleway && is_worker_target {
+                        if let Ok(attached) =
+                            provider.list_attached_volumes(&zone, &server_id).await
+                        {
+                            for av in attached {
+                                // Update existing volumes with complete metadata if needed
+                                let exists: bool = sqlx::query_scalar(
+                                    "SELECT EXISTS(SELECT 1 FROM instance_volumes WHERE instance_id=$1 AND provider_volume_id=$2 AND deleted_at IS NULL)",
+                                )
+                                .bind(instance_uuid)
+                                .bind(&av.provider_volume_id)
+                                .fetch_one(&pool)
+                                .await
+                                .unwrap_or(false);
+                                
                                 if exists {
                                     // Best effort: if we previously stored incomplete metadata (size/name),
-                                    // update it now so UI can show the expected sizes (e.g. boot 20GB).
+                                    // update it now so UI can show the expected sizes (e.g. boot 400GB).
                                     if av.size_bytes.unwrap_or(0) > 0
                                         || av.provider_volume_name.is_some()
                                     {
@@ -1703,6 +1822,7 @@ pub async fn process_provisioning(
                                               is_boot = $5
                                             WHERE instance_id = $1
                                               AND provider_volume_id = $2
+                                              AND deleted_at IS NULL
                                             "#,
                                         )
                                         .bind(instance_uuid)
@@ -1713,29 +1833,15 @@ pub async fn process_provisioning(
                                         .execute(&pool)
                                         .await;
                                     }
-                                    continue;
                                 }
-                                let row_id = Uuid::new_v4();
-                                let _ = sqlx::query(
-                                    "INSERT INTO instance_volumes (id, instance_id, provider_id, zone_code, provider_volume_id, provider_volume_name, volume_type, size_bytes, perf_iops, delete_on_terminate, status, attached_at, is_boot)
-                                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULL,TRUE,'attached',NOW(),$9)",
-                                )
-                                .bind(row_id)
-                                .bind(instance_uuid)
-                                .bind(provider_id)
-                                .bind(&zone)
-                                .bind(&av.provider_volume_id)
-                                .bind(av.provider_volume_name.as_deref())
-                                .bind(&av.volume_type)
-                                .bind(av.size_bytes.unwrap_or(0))
-                                .bind(av.boot)
-                                .execute(&pool)
-                                .await;
                             }
                         }
                     }
-
-                    let vol_name = format!("inventiv-data-{}", instance_uuid);
+                    } // Close the else block for non-RENDER-S instances
+                    
+                    // Only create Block Storage volume if NOT RENDER-S
+                    if !is_render_s {
+                        let vol_name = format!("inventiv-data-{}", instance_uuid);
                     let create_log = logger::log_event_with_metadata(
                         &pool,
                         "PROVIDER_CREATE_VOLUME",
@@ -1796,6 +1902,37 @@ pub async fn process_provisioning(
                         }
                     };
                     if !vol_id.is_empty() {
+                        // Track the created volume in instance_volumes
+                        let row_id = Uuid::new_v4();
+                        let provider_id: Option<Uuid> = sqlx::query_scalar(
+                            "SELECT provider_id FROM instances WHERE id = $1"
+                        )
+                        .bind(instance_uuid)
+                        .fetch_optional(&pool)
+                        .await
+                        .ok()
+                        .flatten();
+                        
+                        if let Some(pid) = provider_id {
+                            let _ = sqlx::query(
+                                r#"
+                                INSERT INTO instance_volumes 
+                                (id, instance_id, provider_id, zone_code, provider_volume_id, provider_volume_name, volume_type, size_bytes, delete_on_terminate, status, attached_at, is_boot)
+                                VALUES ($1, $2, $3, $4, $5, $6, 'sbs_volume', $7, $8, 'created', NOW(), FALSE)
+                                ON CONFLICT (instance_id, provider_volume_id) DO NOTHING
+                                "#,
+                            )
+                            .bind(row_id)
+                            .bind(instance_uuid)
+                            .bind(pid)
+                            .bind(&zone)
+                            .bind(&vol_id)
+                            .bind(&vol_name)
+                            .bind(gb_to_bytes(gb))
+                            .bind(delete_on_terminate)
+                            .execute(&pool)
+                            .await;
+                        }
                         if let Some(lid) = create_log {
                             let dur = vol_start.elapsed().as_millis() as i32;
                             logger::log_event_complete(&pool, lid, "success", dur, None)
@@ -1908,6 +2045,7 @@ pub async fn process_provisioning(
                             return;
                         }
                     }
+                    } // Close the if !is_render_s block for Block Storage volume creation
                 }
             }
 
