@@ -57,11 +57,64 @@ WORKER_SIMULATE_GPU_VRAM_MB = int(os.getenv("WORKER_SIMULATE_GPU_VRAM_MB", "2457
 _PREV_CPU = None  # (total, idle)
 _PREV_NET = None  # (rx_bytes, tx_bytes, ts)
 
+# Worker event logging for diagnostics
+_WORKER_LOG_FILE = os.getenv("WORKER_LOG_FILE", "/opt/inventiv-worker/worker-events.log")
+_WORKER_LOG_MAX_SIZE = 10 * 1024 * 1024  # 10MB max log file size
+_WORKER_LOG_MAX_LINES = 10000  # Keep last 10000 lines when rotating
+
 
 def _auth_headers():
     if not WORKER_AUTH_TOKEN:
         return {}
     return {"Authorization": f"Bearer {WORKER_AUTH_TOKEN}"}
+
+
+def _log_event(event_type: str, message: str, details: dict | None = None):
+    """
+    Log structured events to a file for diagnostics.
+    Events are JSON lines for easy parsing.
+    """
+    import json
+    from datetime import datetime
+    
+    try:
+        # Ensure log directory exists
+        log_dir = os.path.dirname(_WORKER_LOG_FILE)
+        if log_dir and not os.path.exists(log_dir):
+            os.makedirs(log_dir, exist_ok=True)
+        
+        # Rotate log file if too large
+        if os.path.exists(_WORKER_LOG_FILE):
+            size = os.path.getsize(_WORKER_LOG_FILE)
+            if size > _WORKER_LOG_MAX_SIZE:
+                # Rotate: keep last N lines
+                try:
+                    with open(_WORKER_LOG_FILE, "r", encoding="utf-8") as f:
+                        lines = f.readlines()
+                    if len(lines) > _WORKER_LOG_MAX_LINES:
+                        lines = lines[-_WORKER_LOG_MAX_LINES:]
+                    with open(_WORKER_LOG_FILE, "w", encoding="utf-8") as f:
+                        f.writelines(lines)
+                except Exception:
+                    # If rotation fails, truncate
+                    open(_WORKER_LOG_FILE, "w").close()
+        
+        # Write event as JSON line
+        event = {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "event_type": event_type,
+            "message": message,
+            "worker_id": WORKER_ID,
+            "instance_id": INSTANCE_ID or None,
+            "details": details or {},
+        }
+        
+        with open(_WORKER_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event) + "\n")
+            f.flush()
+    except Exception as e:
+        # Don't fail if logging fails, but print to stderr
+        print(f"[{WORKER_ID}] Failed to write event log: {e}", flush=True, file=sys.stderr)
 
 
 def _local_ip_best_effort():
@@ -136,18 +189,34 @@ def check_vllm_ready():
     """
     try:
         resp = requests.get(VLLM_READY_URL, timeout=2)
-        if resp.status_code != 200:
-            return False
-        data = resp.json()
-        if not MODEL_ID:
-            return True
-        ids = []
-        for item in data.get("data", []) or []:
-            mid = item.get("id")
-            if mid:
-                ids.append(mid)
-        return MODEL_ID in ids
-    except Exception:
+        is_ready = resp.status_code == 200
+        if is_ready:
+            data = resp.json()
+            if MODEL_ID:
+                ids = []
+                for item in data.get("data", []) or []:
+                    mid = item.get("id")
+                    if mid:
+                        ids.append(mid)
+                is_ready = MODEL_ID in ids
+        else:
+            # Log vLLM check failures periodically to avoid spam
+            import random
+            if random.randint(1, 20) == 1:
+                _log_event("vllm_check_failed", f"vLLM readiness check failed", {
+                    "status_code": resp.status_code,
+                    "vllm_url": VLLM_READY_URL,
+                })
+        return is_ready
+    except Exception as e:
+        # Log vLLM check exceptions periodically to avoid spam
+        import random
+        if random.randint(1, 20) == 1:
+            _log_event("vllm_check_exception", f"vLLM readiness check exception", {
+                "exception_type": type(e).__name__,
+                "error": str(e),
+                "vllm_url": VLLM_READY_URL,
+            })
         return False
 
 
@@ -631,6 +700,62 @@ class _Handler(BaseHTTPRequestHandler):
             self._write(200, "\n".join(lines) + "\n")
             return
 
+        if self.path == "/info":
+            info = {
+                "agent_version": AGENT_VERSION,
+                "agent_build_date": AGENT_BUILD_DATE,
+                "agent_checksum": _get_agent_checksum(),
+                "agent_path": os.path.abspath(__file__),
+                "python_version": sys.version.split()[0],
+                "worker_id": WORKER_ID,
+                "instance_id": INSTANCE_ID or None,
+                "model_id": MODEL_ID or None,
+                "vllm_ready": check_vllm_ready(),
+            }
+            self._write(200, json.dumps(info, indent=2) + "\n", "application/json")
+            return
+
+        if self.path == "/logs" or self.path.startswith("/logs?"):
+            # Parse query params: ?tail=N (default 1000 lines), ?since=ISO8601
+            from urllib.parse import urlparse, parse_qs
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+            tail = int(params.get("tail", ["1000"])[0])
+            since = params.get("since", [None])[0]
+            
+            try:
+                if not os.path.exists(_WORKER_LOG_FILE):
+                    self._write(200, json.dumps({"events": [], "message": "Log file does not exist yet"}) + "\n", "application/json")
+                    return
+                
+                with open(_WORKER_LOG_FILE, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                
+                # Filter by timestamp if since is provided
+                events = []
+                for line in lines[-tail:]:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                        if since:
+                            if event.get("timestamp", "") < since:
+                                continue
+                        events.append(event)
+                    except Exception:
+                        continue
+                
+                result = {
+                    "log_file": _WORKER_LOG_FILE,
+                    "total_events": len(events),
+                    "events": events,
+                }
+                self._write(200, json.dumps(result, indent=2) + "\n", "application/json")
+            except Exception as e:
+                self._write(500, json.dumps({"error": str(e)}) + "\n", "application/json")
+            return
+
         self._write(404, "not-found\n")
 
 
@@ -642,26 +767,34 @@ def _serve_http():
 def register_worker_once():
     global WORKER_AUTH_TOKEN
     if not CONTROL_PLANE_URL or not INSTANCE_ID:
+        _log_event("register_failed", "Missing CONTROL_PLANE_URL or INSTANCE_ID", {
+            "control_plane_url": CONTROL_PLANE_URL or None,
+            "instance_id": INSTANCE_ID or None,
+        })
         return False
-    vllm = _collect_vllm_signals()
-    gpu = _try_nvidia_smi() or {}
-    if not gpu:
-        gpu = _fake_gpu_metrics(vllm)
-    payload = {
-        "instance_id": INSTANCE_ID,
-        "worker_id": WORKER_ID,
-        "model_id": MODEL_ID or None,
-        "vllm_port": WORKER_VLLM_PORT,
-        "health_port": WORKER_HEALTH_PORT,
-        "ip_address": _local_ip_best_effort(),
-        "metadata": {
-            **(gpu or {}),
-            "system": _collect_system_metrics() or None,
-            "vllm": vllm or None,
-        }
-        or None,
-    }
     try:
+        _log_event("register_start", "Attempting to register worker", {
+            "control_plane_url": CONTROL_PLANE_URL,
+            "instance_id": INSTANCE_ID,
+        })
+        vllm = _collect_vllm_signals()
+        gpu = _try_nvidia_smi() or {}
+        if not gpu:
+            gpu = _fake_gpu_metrics(vllm)
+        payload = {
+            "instance_id": INSTANCE_ID,
+            "worker_id": WORKER_ID,
+            "model_id": MODEL_ID or None,
+            "vllm_port": WORKER_VLLM_PORT,
+            "health_port": WORKER_HEALTH_PORT,
+            "ip_address": _local_ip_best_effort(),
+            "metadata": {
+                **(gpu or {}),
+                "system": _collect_system_metrics() or None,
+                "vllm": vllm or None,
+            }
+            or None,
+        }
         resp = requests.post(
             f"{CONTROL_PLANE_URL}/internal/worker/register",
             headers=_auth_headers(),
@@ -680,16 +813,40 @@ def register_worker_once():
                 WORKER_AUTH_TOKEN = str(tok).strip()
                 _persist_token_to_file(WORKER_AUTH_TOKEN)
                 print(f"[{WORKER_ID}] received bootstrap_token prefix={(data or {}).get('bootstrap_token_prefix')}", flush=True)
-        if not ok:
-            print(f"[{WORKER_ID}] register failed: {resp.status_code} {resp.text[:200]}", flush=True)
+                _log_event("register_success", "Worker registered successfully", {
+                    "status_code": resp.status_code,
+                    "token_received": True,
+                })
+            else:
+                _log_event("register_success", "Worker registered successfully (no token)", {
+                    "status_code": resp.status_code,
+                    "token_received": False,
+                })
+        else:
+            error_msg = resp.text[:200] if resp.text else "no response body"
+            print(f"[{WORKER_ID}] register failed: {resp.status_code} {error_msg}", flush=True)
+            _log_event("register_failed", f"Register request failed", {
+                "status_code": resp.status_code,
+                "error": error_msg,
+            })
         return ok
     except Exception as e:
-        print(f"[{WORKER_ID}] register exception: {e}", flush=True)
+        error_str = str(e)
+        print(f"[{WORKER_ID}] register exception: {error_str}", flush=True)
+        _log_event("register_exception", f"Register request exception", {
+            "exception_type": type(e).__name__,
+            "error": error_str,
+            "control_plane_url": CONTROL_PLANE_URL,
+        })
         return False
 
 
 def send_heartbeat(status: str):
     if not CONTROL_PLANE_URL or not INSTANCE_ID:
+        _log_event("heartbeat_skipped", "Missing CONTROL_PLANE_URL or INSTANCE_ID", {
+            "control_plane_url": CONTROL_PLANE_URL or None,
+            "instance_id": INSTANCE_ID or None,
+        })
         return False
     sysm = _collect_system_metrics()
     vllm = _collect_vllm_signals()
@@ -726,26 +883,77 @@ def send_heartbeat(status: str):
             timeout=3,
         )
         ok = resp.status_code // 100 == 2
-        if not ok:
-            print(f"[{WORKER_ID}] heartbeat failed: {resp.status_code} {resp.text[:200]}", flush=True)
+        if ok:
+            # Log successful heartbeat periodically (every 10th heartbeat to avoid spam)
+            import random
+            if random.randint(1, 10) == 1:
+                _log_event("heartbeat_success", "Heartbeat sent successfully", {
+                    "status_code": resp.status_code,
+                    "worker_status": status,
+                    "vllm_ready": vllm.get("queue_depth") is not None,
+                })
+        else:
+            error_msg = resp.text[:200] if resp.text else "no response body"
+            print(f"[{WORKER_ID}] heartbeat failed: {resp.status_code} {error_msg}", flush=True)
+            _log_event("heartbeat_failed", f"Heartbeat request failed", {
+                "status_code": resp.status_code,
+                "error": error_msg,
+                "worker_status": status,
+            })
         return ok
     except Exception as e:
-        print(f"[{WORKER_ID}] heartbeat exception: {e}", flush=True)
+        error_str = str(e)
+        print(f"[{WORKER_ID}] heartbeat exception: {error_str}", flush=True)
+        _log_event("heartbeat_exception", f"Heartbeat request exception", {
+            "exception_type": type(e).__name__,
+            "error": error_str,
+            "control_plane_url": CONTROL_PLANE_URL,
+            "worker_status": status,
+        })
         return False
 
 def loop():
     print(f"Agent Sidecar started for worker_id={WORKER_ID} instance_id={INSTANCE_ID or 'unset'}")
-    print(f"Health endpoints on :{WORKER_HEALTH_PORT} (GET /healthz, /readyz, /metrics)")
+    print(f"Health endpoints on :{WORKER_HEALTH_PORT} (GET /healthz, /readyz, /metrics, /logs, /info)")
+    
+    _log_event("agent_started", "Agent sidecar started", {
+        "worker_id": WORKER_ID,
+        "instance_id": INSTANCE_ID or None,
+        "model_id": MODEL_ID or None,
+        "control_plane_url": CONTROL_PLANE_URL or None,
+        "vllm_base_url": VLLM_BASE_URL,
+        "health_port": WORKER_HEALTH_PORT,
+        "vllm_port": WORKER_VLLM_PORT,
+    })
 
     _load_token_from_file()
 
     http_thread = threading.Thread(target=_serve_http, daemon=True)
     http_thread.start()
+    
+    _log_event("http_server_started", "HTTP server started", {
+        "port": WORKER_HEALTH_PORT,
+    })
 
     registered = False
+    vllm_ready_count = 0
     while True:
         is_ready = check_vllm_ready()
         status = "ready" if is_ready else "starting"
+        
+        # Log vLLM state changes
+        if is_ready:
+            vllm_ready_count += 1
+            if vllm_ready_count == 1:
+                _log_event("vllm_ready", "vLLM became ready", {
+                    "vllm_url": VLLM_BASE_URL,
+                })
+        else:
+            if vllm_ready_count > 0:
+                _log_event("vllm_not_ready", "vLLM is not ready", {
+                    "vllm_url": VLLM_BASE_URL,
+                })
+                vllm_ready_count = 0
 
         if not registered:
             # Register early to allow token bootstrap before first heartbeat.
@@ -756,6 +964,7 @@ def loop():
             hb_ok = send_heartbeat(status=status)
         else:
             print(f"[{WORKER_ID}] skipping heartbeat (no auth token yet)", flush=True)
+            _log_event("heartbeat_skipped", "Skipping heartbeat (no auth token)", {})
         print(f"[{WORKER_ID}] vLLM ready={is_ready} status={status} registered={registered} heartbeat={hb_ok}", flush=True)
         time.sleep(HEARTBEAT_INTERVAL_S)
 

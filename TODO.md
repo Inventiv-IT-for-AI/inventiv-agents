@@ -98,6 +98,13 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
   - Implémenté: fonctions explicites dans `state_machine.rs`
   - Implémenté: historique dans `instance_state_history`
   - Implémenté: logging structuré avec métadonnées
+- ✅ **Worker Event Logging**: Système de logging structuré sur le worker pour diagnostics
+  - Implémenté: fonction `_log_event()` dans `agent.py` avec rotation automatique (10MB, 10k lignes)
+  - Implémenté: endpoint `/logs` pour récupérer les logs via HTTP (`?tail=N&since=ISO8601`)
+  - Implémenté: événements loggés (agent_started, register_start/success/failed, heartbeat_success/failed/exception, vllm_ready/not_ready, etc.)
+  - Implémenté: intégration dans orchestrator (`fetch_worker_logs()`) pour analyser les logs avant de relancer l'install SSH
+  - Implémenté: vérification de l'état des conteneurs via SSH (`check_containers_via_ssh()`) avant retry
+  - Implémenté: logs de diagnostic (`WORKER_CONTAINER_CHECK`, `WORKER_LOG_ERRORS`, `WORKER_LOG_FETCH`) dans l'orchestrator
 - **Tracing**: OTel (optionnel au début) + corrélation `correlation_id` (API ↔ orchestrator ↔ worker ↔ upstream).
   - Partiellement: `correlation_id` ajouté dans logs API, à étendre aux autres services
 - **Monitoring infra**: GPU util, queue depth, vLLM health, erreurs, saturation, qualité du load-balancing.

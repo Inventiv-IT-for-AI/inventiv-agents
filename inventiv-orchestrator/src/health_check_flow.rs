@@ -239,6 +239,130 @@ async fn check_instance_ssh(ip: &str) -> bool {
     .unwrap_or(false)
 }
 
+/// Check container health via SSH: returns (vllm_running, agent_running, vllm_exit_code, agent_exit_code)
+/// Returns None if SSH check fails.
+async fn check_containers_via_ssh(ip: &str) -> Option<(bool, bool, Option<i32>, Option<i32>)> {
+    let clean_ip = ip.split('/').next().unwrap_or(ip);
+    let ssh_key_path = std::env::var("SSH_KEY_PATH").unwrap_or_else(|_| "/app/.ssh/llm-studio-key".to_string());
+    let ssh_user = std::env::var("SSH_USER").unwrap_or_else(|_| "root".to_string());
+    let target = format!("{}@{}", ssh_user, clean_ip);
+    
+    // Check both vLLM and agent containers in one SSH command
+    let check_script = r#"
+docker inspect -f '{{.State.Running}} {{.State.ExitCode}}' vllm 2>/dev/null || echo "false -1"
+docker inspect -f '{{.State.Running}} {{.State.ExitCode}}' inventiv-agent 2>/dev/null || echo "false -1"
+"#;
+    
+    let mut child = match Command::new("ssh")
+        .arg("-i")
+        .arg(&ssh_key_path)
+        .arg("-o")
+        .arg("StrictHostKeyChecking=no")
+        .arg("-o")
+        .arg("UserKnownHostsFile=/dev/null")
+        .arg("-o")
+        .arg("ConnectTimeout=5")
+        .arg(&target)
+        .arg("bash -s")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+    
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(check_script.as_bytes()).await;
+    }
+    
+    let output = match child.wait_with_output().await {
+        Ok(o) => o,
+        Err(_) => return None,
+    };
+    
+    if !output.status.success() {
+        return None;
+    }
+    
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    
+    let (vllm_running, vllm_exit_code) = if lines.len() > 0 {
+        let parts: Vec<&str> = lines[0].trim().split_whitespace().collect();
+        if parts.len() >= 2 {
+            let running = parts[0] == "true";
+            let exit_code = parts[1].parse::<i32>().ok();
+            (running, exit_code)
+        } else {
+            (false, Some(-1))
+        }
+    } else {
+        (false, Some(-1))
+    };
+    
+    let (agent_running, agent_exit_code) = if lines.len() > 1 {
+        let parts: Vec<&str> = lines[1].trim().split_whitespace().collect();
+        if parts.len() >= 2 {
+            let running = parts[0] == "true";
+            let exit_code = parts[1].parse::<i32>().ok();
+            (running, exit_code)
+        } else {
+            (false, Some(-1))
+        }
+    } else {
+        (false, Some(-1))
+    };
+    
+    Some((vllm_running, agent_running, vllm_exit_code, agent_exit_code))
+}
+
+/// Fetch worker logs from the /logs endpoint
+/// Returns None if the request fails
+async fn fetch_worker_logs(ip: &str, port: u16) -> Option<WorkerLogs> {
+    let clean_ip = ip.split('/').next().unwrap_or(ip);
+    let url = format!("http://{}:{}/logs?tail=100", clean_ip, port);
+    let client = reqwest::Client::builder()
+        .connect_timeout(StdDuration::from_secs(2))
+        .timeout(StdDuration::from_secs(5))
+        .build();
+    let Ok(client) = client else {
+        return None;
+    };
+    match client.get(&url).send().await {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                match resp.json::<serde_json::Value>().await {
+                    Ok(data) => {
+                        let events = data.get("events")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let total_events = data.get("total_events")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as usize;
+                        Some(WorkerLogs {
+                            total_events,
+                            events,
+                        })
+                    }
+                    Err(_) => None,
+                }
+            } else {
+                None
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+#[derive(Debug)]
+struct WorkerLogs {
+    total_events: usize,
+    events: Vec<serde_json::Value>,
+}
+
 async fn provider_setting_i64(
     db: &Pool<Postgres>,
     provider_id: uuid::Uuid,
@@ -1838,10 +1962,118 @@ pub async fn check_and_transition_instance(
                 }
             }
             
-            println!(
-                "⚠️ Instance {} SSH is reachable but worker readyz is not and no recent heartbeats - triggering SSH bootstrap",
-                instance_id
-            );
+            // Before retrying SSH install, check container health via SSH and fetch worker logs to diagnose the issue
+            // This helps avoid infinite retry loops when containers are crashing
+            let container_check = check_containers_via_ssh(&ip).await;
+            let worker_logs = fetch_worker_logs(&ip, worker_port).await;
+            
+            if let Some((vllm_running, agent_running, vllm_exit_code, agent_exit_code)) = container_check {
+                if !vllm_running || !agent_running {
+                    println!(
+                        "⚠️ Instance {} containers not running: vllm={} (exit={:?}), agent={} (exit={:?}) - will retry SSH install",
+                        instance_id, vllm_running, vllm_exit_code, agent_running, agent_exit_code
+                    );
+                    // Log container diagnostics and worker logs before retrying
+                    let mut metadata = serde_json::json!({
+                        "ip": ip,
+                        "vllm_running": vllm_running,
+                        "agent_running": agent_running,
+                        "vllm_exit_code": vllm_exit_code,
+                        "agent_exit_code": agent_exit_code,
+                        "action": "retrying_ssh_install"
+                    });
+                    if let Some(logs) = &worker_logs {
+                        metadata["worker_logs_summary"] = serde_json::json!({
+                            "total_events": logs.total_events,
+                            "recent_events": logs.events.iter().take(10).map(|e| serde_json::json!({
+                                "timestamp": e.get("timestamp"),
+                                "event_type": e.get("event_type"),
+                                "message": e.get("message"),
+                            })).collect::<Vec<_>>(),
+                        });
+                    }
+                    let _ = logger::log_event_with_metadata(
+                        &db,
+                        "WORKER_CONTAINER_CHECK",
+                        "failed",
+                        instance_id,
+                        None,
+                        Some(metadata),
+                    ).await;
+                } else {
+                    // Containers are running but readyz doesn't respond - check worker logs for clues
+                    if let Some(logs) = &worker_logs {
+                        // Check for recent errors in logs
+                        let recent_errors: Vec<_> = logs.events.iter()
+                            .filter(|e| {
+                                let event_type = e.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
+                                event_type.contains("failed") || event_type.contains("exception") || event_type.contains("error")
+                            })
+                            .take(5)
+                            .collect();
+                        
+                        if !recent_errors.is_empty() {
+                            println!(
+                                "⚠️ Instance {} containers running but worker logs show errors - will retry SSH install",
+                                instance_id
+                            );
+                            let _ = logger::log_event_with_metadata(
+                                &db,
+                                "WORKER_LOG_ERRORS",
+                                "failed",
+                                instance_id,
+                                None,
+                                Some(serde_json::json!({
+                                    "ip": ip,
+                                    "recent_errors": recent_errors.iter().map(|e| serde_json::json!({
+                                        "timestamp": e.get("timestamp"),
+                                        "event_type": e.get("event_type"),
+                                        "message": e.get("message"),
+                                    })).collect::<Vec<_>>(),
+                                })),
+                            ).await;
+                            maybe_trigger_worker_install_over_ssh(&db, instance_id, &ip, false, None).await;
+                            return;
+                        }
+                    }
+                    // Containers are running but readyz doesn't respond - may be network issue or model loading
+                    println!(
+                        "ℹ️ Instance {} containers are running but readyz not responding - may be network issue or model loading, waiting",
+                        instance_id
+                    );
+                    return;
+                }
+            } else {
+                // Could not check containers via SSH - check worker logs if available
+                if let Some(logs) = &worker_logs {
+                    println!(
+                        "⚠️ Instance {} SSH is reachable but worker readyz is not - fetched {} worker log events, triggering SSH bootstrap",
+                        instance_id, logs.total_events
+                    );
+                    let _ = logger::log_event_with_metadata(
+                        &db,
+                        "WORKER_LOG_FETCH",
+                        "success",
+                        instance_id,
+                        None,
+                        Some(serde_json::json!({
+                            "ip": ip,
+                            "total_events": logs.total_events,
+                            "recent_events": logs.events.iter().take(10).map(|e| serde_json::json!({
+                                "timestamp": e.get("timestamp"),
+                                "event_type": e.get("event_type"),
+                                "message": e.get("message"),
+                            })).collect::<Vec<_>>(),
+                        })),
+                    ).await;
+                } else {
+                    println!(
+                        "⚠️ Instance {} SSH is reachable but worker readyz is not and no recent heartbeats - could not check container status or fetch logs, triggering SSH bootstrap",
+                        instance_id
+                    );
+                }
+            }
+            
             maybe_trigger_worker_install_over_ssh(&db, instance_id, &ip, false, None).await;
             return;
         }

@@ -2,7 +2,7 @@
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![GHCR (build + promote)](https://github.com/Inventiv-IT-for-AI/inventiv-agents/actions/workflows/ghcr.yml/badge.svg)](https://github.com/Inventiv-IT-for-AI/inventiv-agents/actions/workflows/ghcr.yml)
-[![Version](https://img.shields.io/badge/version-0.4.5-blue.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-0.4.8-blue.svg)](VERSION)
 
 **Control-plane + data-plane to run AI agents/instances** — Scalable, modular, and performant LLM inference infrastructure, written in **Rust**.
 
@@ -459,9 +459,17 @@ Auth:
 ### Role
 
 Python agent deployed on GPU instances that:
-- Exposes HTTP endpoints: `/healthz`, `/readyz`, `/metrics`
+- Exposes HTTP endpoints: `/healthz`, `/readyz`, `/metrics`, `/info`, `/logs`
 - Manages the inference engine (vLLM)
 - Communicates with the control-plane via `/internal/worker/register` and `/internal/worker/heartbeat`
+- Structured event logging for diagnostics (stored in `/opt/inventiv-worker/worker-events.log`)
+
+**Endpoints**:
+- `GET /healthz`: Liveness check (always returns 200)
+- `GET /readyz`: Readiness check (200 if vLLM is ready, 503 otherwise)
+- `GET /metrics`: Prometheus metrics (system, GPU, vLLM queue depth)
+- `GET /info`: Agent information (version, build date, checksum, worker/instance/model IDs)
+- `GET /logs?tail=N&since=ISO8601`: Structured event logs (JSON lines format, for diagnostics)
 
 ### Auth token
 
@@ -610,7 +618,7 @@ docker compose logs -f finops
 
 **API**: Swagger UI (`/swagger-ui`) + business endpoints
 
-**Worker**: `/healthz` (liveness), `/readyz` (readiness)
+**Worker**: `/healthz` (liveness), `/readyz` (readiness), `/info` (agent version/checksum), `/logs` (structured event logs for diagnostics)
 
 ### Monitoring
 
