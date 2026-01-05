@@ -3,6 +3,7 @@ import { Server, Zap, Cloud, Database, Archive, AlertTriangle, Clock, CheckCircl
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { apiUrl } from "@/lib/api";
 import type { ActionLog, ActionType, Instance } from "@/lib/types";
@@ -654,59 +655,61 @@ export function InstanceTimelineModal({
                   />
                 </div>
 
-                <div className="hidden lg:block border-l bg-muted/10 min-w-0 flex flex-col overflow-hidden">
-                  <div className="p-4 flex-1 overflow-y-auto">
-                    {!selectedLog ? (
-                      <div className="text-sm text-muted-foreground">Clique une action pour voir le détail.</div>
-                    ) : (
-                      <div className="space-y-3">
-                        <div className="flex items-center gap-2">
-                          <div className="p-2 rounded-md bg-background border">
-                            {(() => {
-                              const Icon = getActionIcon(selectedLog.action_type);
-                              return <Icon className="h-4 w-4" />;
-                            })()}
+                <div className="hidden lg:block border-l bg-muted/10 min-w-0 flex flex-col min-h-0 h-full">
+                  <ScrollArea className="h-full">
+                    <div className="p-4">
+                      {!selectedLog ? (
+                        <div className="text-sm text-muted-foreground">Clique une action pour voir le détail.</div>
+                      ) : (
+                        <div className="space-y-3">
+                          <div className="flex items-center gap-2">
+                            <div className="p-2 rounded-md bg-background border">
+                              {(() => {
+                                const Icon = getActionIcon(selectedLog.action_type);
+                                return <Icon className="h-4 w-4" />;
+                              })()}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="font-semibold truncate">{formatActionLabel(selectedLog.action_type)}</div>
+                              <div className="text-xs text-muted-foreground font-mono">{selectedLog.id}</div>
+                            </div>
                           </div>
-                          <div className="min-w-0">
-                            <div className="font-semibold truncate">{formatActionLabel(selectedLog.action_type)}</div>
-                            <div className="text-xs text-muted-foreground font-mono">{selectedLog.id}</div>
-                          </div>
-                        </div>
 
-                        <div className="grid grid-cols-2 gap-2 text-xs">
-                          <div className="text-muted-foreground">Statut</div>
-                          <div className="font-medium">{selectedLog.status}</div>
-                          <div className="text-muted-foreground">Composant</div>
-                          <div className="font-medium">{selectedLog.component}</div>
-                          <div className="text-muted-foreground">Créé</div>
-                          <div className="font-medium">{formatTimestamp(selectedLog.created_at)}</div>
-                          <div className="text-muted-foreground">Durée</div>
-                          <div className="font-medium font-mono">{formatDuration(selectedLog.duration_ms)}</div>
-                          <div className="text-muted-foreground">Transition</div>
-                          <div className="font-medium font-mono">
-                            {selectedLog.instance_status_before ?? "-"} → {selectedLog.instance_status_after ?? "-"}
+                          <div className="grid grid-cols-2 gap-2 text-xs">
+                            <div className="text-muted-foreground">Statut</div>
+                            <div className="font-medium">{selectedLog.status}</div>
+                            <div className="text-muted-foreground">Composant</div>
+                            <div className="font-medium">{selectedLog.component}</div>
+                            <div className="text-muted-foreground">Créé</div>
+                            <div className="font-medium">{formatTimestamp(selectedLog.created_at)}</div>
+                            <div className="text-muted-foreground">Durée</div>
+                            <div className="font-medium font-mono">{formatDuration(selectedLog.duration_ms)}</div>
+                            <div className="text-muted-foreground">Transition</div>
+                            <div className="font-medium font-mono">
+                              {selectedLog.instance_status_before ?? "-"} → {selectedLog.instance_status_after ?? "-"}
+                            </div>
                           </div>
-                        </div>
 
-                        {selectedLog.error_message ? (
-                          <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md p-2">
-                            {selectedLog.error_message}
-                          </div>
-                        ) : null}
+                          {selectedLog.error_message ? (
+                            <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md p-2">
+                              {selectedLog.error_message}
+                            </div>
+                          ) : null}
 
-                        {selectedLog.metadata && Object.keys(selectedLog.metadata).length > 0 ? (
-                          <div className="text-xs">
-                            <div className="text-muted-foreground mb-1">Métadonnées</div>
-                            <pre className="text-[11px] leading-snug bg-background border rounded-md p-2 overflow-x-auto overflow-y-auto max-h-[400px] whitespace-pre-wrap break-words">
+                          {selectedLog.metadata && Object.keys(selectedLog.metadata).length > 0 ? (
+                            <div className="text-xs">
+                              <div className="text-muted-foreground mb-1">Métadonnées</div>
+                              <pre className="text-[11px] leading-snug bg-background border rounded-md p-2 overflow-x-auto whitespace-pre-wrap break-words">
 {JSON.stringify(selectedLog.metadata, null, 2)}
-                            </pre>
-                          </div>
-                        ) : (
-                          <div className="text-xs text-muted-foreground">Aucune métadonnée.</div>
-                        )}
-                      </div>
-                    )}
-                  </div>
+                              </pre>
+                            </div>
+                          ) : (
+                            <div className="text-xs text-muted-foreground">Aucune métadonnée.</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </ScrollArea>
                 </div>
           </div>
 

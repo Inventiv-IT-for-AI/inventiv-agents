@@ -2,7 +2,7 @@
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![GHCR (build + promote)](https://github.com/Inventiv-IT-for-AI/inventiv-agents/actions/workflows/ghcr.yml/badge.svg)](https://github.com/Inventiv-IT-for-AI/inventiv-agents/actions/workflows/ghcr.yml)
-[![Version](https://img.shields.io/badge/version-0.4.8-blue.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-0.4.9-blue.svg)](VERSION)
 
 **Control-plane + data-plane to run AI agents/instances** — Scalable, modular, and performant LLM inference infrastructure, written in **Rust**.
 
@@ -12,16 +12,16 @@
 
 **Why it's useful**: Enables standardized deployment and scaling of LLM models (vLLM), with integrated financial tracking and granular control over cloud resources.
 
-📘 **Detailed documentation**: [Architecture](docs/architecture.md) | [Domain Design & CQRS](docs/domain_design.md) | [General Specifications](docs/specification_generale.md) | [UI Design System](docs/ui_design_system.md) | [`ia-widgets`](docs/ia_widgets.md) | [Engineering Guidelines](docs/engineering_guidelines.md) | [State Machine & Progress](docs/STATE_MACHINE_AND_PROGRESS.md) | [Agent Version Management](docs/AGENT_VERSION_MANAGEMENT.md) | [Storage Management](docs/STORAGE_MANAGEMENT.md)
+📘 **Detailed documentation**: [Architecture](docs/architecture.md) | [Domain Design & CQRS](docs/domain_design.md) | [General Specifications](docs/specification_generale.md) | [UI Design System](docs/ui_design_system.md) | [`ia-widgets`](docs/ia_widgets.md) | [Engineering Guidelines](docs/engineering_guidelines.md) | [State Machine & Progress](docs/STATE_MACHINE_AND_PROGRESS.md) | [Agent Version Management](docs/AGENT_VERSION_MANAGEMENT.md) | [Storage Management](docs/STORAGE_MANAGEMENT.md) | [Scaleway Provisioning](docs/SCALEWAY_PROVISIONING.md) | [Session Close 2026-01-05](docs/SESSION_CLOSE_20260105.md)
 
 ## Key Features
 
 - ✅ **Provisioning / Termination**: Automatic creation and destruction of GPU instances via providers (Scaleway, Mock)
 - ✅ **Health-check & Reconciliation**: Continuous monitoring of instances, orphan detection, automatic retry
 - ✅ **Redis Event Bus**: Event-driven architecture with `CMD:*` (commands) and `EVT:*` (events)
-- ✅ **Orchestrator (jobs + state machine)**: Asynchronous lifecycle management (booting → ready → terminating → terminated) with explicit state transitions and progress tracking (0-100%)
+- ✅ **Orchestrator (jobs + state machine)**: Asynchronous lifecycle management (provisioning → booting → installing → starting → ready → terminating → terminated) with explicit state transitions and progress tracking (0-100%)
 - ✅ **Worker (agent runtime)**: Python agent deployed on GPU instances, heartbeat, readiness (`/readyz`), metrics, version management (`/info` endpoint)
-- ✅ **Progress Tracking**: Granular progress percentage (0-100%) based on completed actions (SSH install, vLLM ready, model loaded, etc.)
+- ✅ **Progress Tracking**: Granular progress percentage (0-100%) based on completed actions (SSH install, vLLM ready, model loaded, etc.) with support for intermediate states (installing, starting)
 - ✅ **Agent Version Management**: Versioning, SHA256 checksum verification, CI/CD automation, monitoring
 - ✅ **Storage Management**: Automatic volume discovery, tracking, and cleanup on termination
 - ✅ **FinOps (costs/forecast)**: Tracking of real and forecasted costs by instance/type/region/provider, time windows (minute/hour/day/30d/365d)
@@ -300,6 +300,8 @@ In staging/prod, secrets are synchronized on the VM via `SECRETS_DIR` (see `make
 - `20251215010000_create_worker_auth_tokens.sql`: Worker tokens table
 - `20251215020000_users_add_first_last_name.sql`: first_name/last_name fields for users
 - `20251215021000_users_add_username.sql`: Unique username for login
+- `20260105180000_update_vllm_image_to_v013.sql`: Update vLLM image to v0.13.0 (L4/L40S instances)
+- `20260105200000_add_installing_starting_status.sql`: Add intermediate states for granular progress tracking
 
 ### Seeds
 
@@ -331,7 +333,7 @@ psql "postgresql://postgres:password@localhost:5432/llminfra" -f seeds/catalog_s
 
 ### Jobs (orchestrator)
 
-- **Health-check loop**: Transition `booting` → `ready` (check SSH:22 or `/readyz` worker)
+- **Health-check loop**: Transition `booting`/`installing`/`starting` → `ready` (check SSH:22 or `/readyz` worker)
 - **Provisioning**: Management of "stuck" instances, automatic retry
 - **Terminator**: Cleanup of instances in `terminating`
 - **Watch-dog**: Detection of "orphan" instances (deleted by provider)
@@ -788,14 +790,16 @@ See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for detailed guidelines and [do
 
 ### Stable
 
-- ✅ Real Scaleway Provisioning/Termination
+- ✅ Real Scaleway Provisioning/Termination (L4-1-24G validated with Block Storage 200GB, SSH operational)
 - ✅ Mock Provisioning/Termination with automatic Docker runtime management
-- ✅ Health-check & Reconciliation
+- ✅ Health-check & Reconciliation (supports booting/installing/starting states)
 - ✅ FinOps dashboard (real/forecast/cumulative costs in EUR)
 - ✅ Session auth + user management
 - ✅ Worker auth (token per instance)
 - ✅ Action logs + paginated search
 - ✅ Modular provider architecture (`inventiv-providers` package)
+- ✅ Progress tracking (0-100%) with granular steps (SSH install, vLLM ready, model loaded, etc.) and intermediate states (installing, starting)
+- ✅ State machine with intermediate states (installing, starting) for better progress visibility
 
 ### Experimental
 

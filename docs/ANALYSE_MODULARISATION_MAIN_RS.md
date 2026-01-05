@@ -604,3 +604,4 @@ impl ModelsService {
 
 **Prochaine étape**: Valider cette analyse avec l'équipe avant de commencer le refactoring.
 
+

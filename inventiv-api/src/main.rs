@@ -1,4 +1,3 @@
-use axum::body::Body;
 use axum::body::Bytes;
 use axum::middleware;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -20,7 +19,6 @@ use std::fs;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
-use tokio_stream::StreamExt;
 use tower_http::cors::{Any, CorsLayer};
 
 // Swagger
@@ -219,6 +217,7 @@ async fn main() {
             "/models/:id",
             get(get_model).put(update_model).delete(delete_model),
         )
+        .route("/models/:id/recommended-data-volume", get(get_recommended_data_volume))
         // Instances
         .route("/instances", get(list_instances))
         .route("/instances/search", get(search_instances))
@@ -1053,10 +1052,8 @@ async fn list_system_activity(
 }
 
 // Re-export from worker_routing module for backward compatibility
-pub(crate) use worker_routing::{bump_runtime_model_counters, header_value, resolve_openai_model_id, select_ready_worker_for_model};
-
-// Note: The actual implementations are in worker_routing.rs
-// These are re-exported here for backward compatibility with existing code in main.rs
+// Note: worker_routing functions are used directly via worker_routing::* in other modules
+// No need to re-export here since they're accessed via the module path
 
 async fn openai_list_models(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Return *live* models based on worker heartbeats:
@@ -1913,6 +1910,96 @@ async fn update_model(
         )
             .into_response(),
     }
+}
+
+#[utoipa::path(
+    get,
+    path = "/models/{id}/recommended-data-volume",
+    params(
+        ("id" = Uuid, Path, description = "Model UUID"),
+        ("provider_id" = Option<Uuid>, Query, description = "Optional provider ID to use provider-specific default")
+    ),
+    responses(
+        (status = 200, description = "Recommended data volume size", body = RecommendedDataVolumeResponse),
+        (status = 404, description = "Model not found")
+    )
+)]
+async fn get_recommended_data_volume(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let Ok(uid) = uuid::Uuid::parse_str(&id) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_id"}))).into_response();
+    };
+    
+    // Get model from DB
+    let model: Option<LlmModel> = sqlx::query_as(
+        r#"SELECT id, name, model_id, required_vram_gb, context_length, is_active, data_volume_gb, metadata, created_at, updated_at
+           FROM models WHERE id = $1"#,
+    )
+    .bind(uid)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap_or(None);
+    
+    let Some(model) = model else {
+        return (StatusCode::NOT_FOUND, Json(json!({"error":"not_found"}))).into_response();
+    };
+    
+    // Get default_gb from provider settings or env
+    let default_gb: i64 = if let Some(provider_id_str) = params.get("provider_id") {
+        if let Ok(provider_id) = uuid::Uuid::parse_str(provider_id_str) {
+            sqlx::query_scalar("SELECT value_int FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_DATA_VOLUME_GB_DEFAULT'")
+                .bind(provider_id)
+                .fetch_optional(&state.db)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| {
+                    std::env::var("WORKER_DATA_VOLUME_GB_DEFAULT")
+                        .ok()
+                        .and_then(|v| v.trim().parse::<i64>().ok())
+                        .filter(|gb| *gb > 0)
+                        .unwrap_or(200)
+                })
+        } else {
+            std::env::var("WORKER_DATA_VOLUME_GB_DEFAULT")
+                .ok()
+                .and_then(|v| v.trim().parse::<i64>().ok())
+                .filter(|gb| *gb > 0)
+                .unwrap_or(200)
+        }
+    } else {
+        std::env::var("WORKER_DATA_VOLUME_GB_DEFAULT")
+            .ok()
+            .and_then(|v| v.trim().parse::<i64>().ok())
+            .filter(|gb| *gb > 0)
+            .unwrap_or(200)
+    };
+    
+    // Calculate recommended size using centralized logic
+    let recommended_gb = inventiv_common::worker_storage::recommended_data_volume_gb(&model.model_id, default_gb)
+        .unwrap_or(default_gb);
+    
+    #[derive(Serialize)]
+    struct RecommendedDataVolumeResponse {
+        model_id: String,
+        model_name: String,
+        recommended_data_volume_gb: i64,
+        default_gb: i64,
+        stored_data_volume_gb: Option<i64>,
+    }
+    
+    let response = RecommendedDataVolumeResponse {
+        model_id: model.model_id.clone(),
+        model_name: model.name.clone(),
+        recommended_data_volume_gb: recommended_gb,
+        default_gb,
+        stored_data_volume_gb: model.data_volume_gb,
+    };
+    
+    (StatusCode::OK, Json(response)).into_response()
 }
 
 #[utoipa::path(

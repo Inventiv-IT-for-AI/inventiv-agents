@@ -82,10 +82,10 @@ async fn resolve_vllm_image_impl(
     }
     
     // 5. Hardcoded default (stable version, not "latest")
-    // Default: v0.6.2.post1 is a stable version
+    // Default: v0.13.0 is a stable version available on Docker Hub
     // Note: For P100 (RENDER-S), this may need to be a version compiled with sm_60 support
     // For L4/L40S, this version should work fine
-    let default_image = "vllm/vllm-openai:v0.6.2.post1".to_string();
+    let default_image = "vllm/vllm-openai:v0.13.0".to_string();
     eprintln!("ℹ️ [resolve_vllm_image] Using hardcoded default: {} (consider configuring instance_types.allocation_params.vllm_image)", default_image);
     default_image
 }
@@ -721,50 +721,76 @@ async fn maybe_trigger_worker_install_over_ssh(
 
         // If an install is still in progress, check if it has exceeded timeout
         if status == "in_progress" {
-            // Get SSH timeout setting (same logic as below)
-            let ssh_timeout_s: u64 = if let Some(pid) = provider_id {
-                provider_setting_i64(db, pid, "WORKER_SSH_BOOTSTRAP_TIMEOUT_S")
-                    .await
-                    .and_then(|v| u64::try_from(v).ok())
-                    .filter(|v| *v > 0)
-                    .or_else(|| {
-                        std::env::var("WORKER_SSH_BOOTSTRAP_TIMEOUT_S")
-                            .ok()
-                            .and_then(|v| v.trim().parse::<u64>().ok())
-                            .filter(|v| *v > 0)
-                    })
-                    .unwrap_or(900)
-            } else {
-                std::env::var("WORKER_SSH_BOOTSTRAP_TIMEOUT_S")
-                    .ok()
-                    .and_then(|v| v.trim().parse::<u64>().ok())
-                    .filter(|v| *v > 0)
-                    .unwrap_or(900)
-            };
-            
-            // If SSH install has exceeded timeout, mark it as failed
-            if age_s > ssh_timeout_s as i64 {
+            // If forced (manual reinstall), cancel the in-progress installation and start a new one
+            if force {
                 println!(
-                    "⚠️ WORKER_SSH_INSTALL for instance {} has been in_progress for {}s (timeout: {}s), marking as failed",
-                    instance_id, age_s, ssh_timeout_s
+                    "⚠️ WORKER_SSH_INSTALL for instance {} is in_progress but force=true (reinstall requested) - marking as cancelled and starting new installation",
+                    instance_id
                 );
                 let _ = logger::log_event_complete_with_metadata(
                     db,
                     last.id,
                     "failed",
                     (age_s * 1000) as i32,
-                    Some(&format!("SSH install exceeded timeout ({}s > {}s)", age_s, ssh_timeout_s)),
+                    Some("Cancelled due to forced reinstall"),
                     Some(serde_json::json!({
-                        "ssh_timeout_s": ssh_timeout_s,
                         "age_s": age_s,
-                        "ssh_timed_out": true
+                        "cancelled_by_reinstall": true
                     })),
                 )
                 .await;
-                // Don't return - allow retry logic below to handle it
+                // Don't return - allow new installation to proceed below
             } else {
-                // Still within timeout, don't start another one
-                return;
+                // Get SSH timeout setting (same logic as below)
+                let ssh_timeout_s: u64 = if let Some(pid) = provider_id {
+                    provider_setting_i64(db, pid, "WORKER_SSH_BOOTSTRAP_TIMEOUT_S")
+                        .await
+                        .and_then(|v| u64::try_from(v).ok())
+                        .filter(|v| *v > 0)
+                        .or_else(|| {
+                            std::env::var("WORKER_SSH_BOOTSTRAP_TIMEOUT_S")
+                                .ok()
+                                .and_then(|v| v.trim().parse::<u64>().ok())
+                                .filter(|v| *v > 0)
+                        })
+                        .unwrap_or(900)
+                } else {
+                    std::env::var("WORKER_SSH_BOOTSTRAP_TIMEOUT_S")
+                        .ok()
+                        .and_then(|v| v.trim().parse::<u64>().ok())
+                        .filter(|v| *v > 0)
+                        .unwrap_or(900)
+                };
+                
+                // If SSH install has exceeded timeout, mark it as failed
+                // Add a small buffer (60s) to account for the timeout check happening slightly after the actual timeout
+                if age_s > (ssh_timeout_s as i64 + 60) {
+                    println!(
+                        "⚠️ WORKER_SSH_INSTALL for instance {} has been in_progress for {}s (timeout: {}s), marking as failed",
+                        instance_id, age_s, ssh_timeout_s
+                    );
+                    let _ = logger::log_event_complete_with_metadata(
+                        db,
+                        last.id,
+                        "failed",
+                        (age_s * 1000) as i32,
+                        Some(&format!("SSH install exceeded timeout ({}s > {}s)", age_s, ssh_timeout_s)),
+                        Some(serde_json::json!({
+                            "ssh_timeout_s": ssh_timeout_s,
+                            "age_s": age_s,
+                            "ssh_timed_out": true
+                        })),
+                    )
+                    .await;
+                    // Don't return - allow retry logic below to handle it
+                } else {
+                    // Still within timeout, don't start another one
+                    println!(
+                        "ℹ️ WORKER_SSH_INSTALL for instance {} is still in_progress ({}s / {}s timeout) - waiting",
+                        instance_id, age_s, ssh_timeout_s
+                    );
+                    return;
+                }
             }
         }
 
@@ -884,7 +910,13 @@ echo "::phase::start"
 echo "[inventiv-worker] ssh bootstrap starting"
 
 echo "::phase::mount_data_volume"
-# Mount the attached data volume (Scaleway SBS) and use it for Docker + HF cache.
+# Storage Strategy (Official Scaleway Recommendations):
+# - L4: Block Storage only (mounted at /mnt/inventiv-data -> /opt/inventiv-worker)
+# - L40S/H100: Scratch Storage (/scratch, temporary) + Block Storage (/mnt/inventiv-data, persistent)
+# - Block Storage: Used for persistent data (models, results, checkpoints)
+# - Scratch Storage: Used for temporary data (cache, intermediate results) - auto-mounted by Scaleway
+#
+# Mount the attached Block Storage volume (Scaleway SBS) and use it for Docker + HF cache.
 # The root disk on GPU images is often too small for pulling vLLM images.
 DATA_MNT="/mnt/inventiv-data"
 mkdir -p "$DATA_MNT"
@@ -896,32 +928,120 @@ if [[ "$root_src" =~ ^/dev/ ]]; then
   root_base="/dev/$(basename "$root_src" | sed -E 's/p?[0-9]+$//')"
 fi
 
-candidate=""
-while read -r name type; do
-  [[ "$type" == "disk" ]] || continue
-  dev="/dev/$name"
-  [[ -n "$root_base" && "$dev" == "$root_base" ]] && continue
-  # ignore disks that are already mounted
-  if lsblk -n -o MOUNTPOINT "$dev" 2>/dev/null | grep -q '/'; then
-    continue
-  fi
-  candidate="$dev"
-  break
-done < <(lsblk -ndo NAME,TYPE 2>/dev/null || true)
+# Function to force SCSI rescan (helps detect newly attached Block Storage volumes)
+force_scsi_rescan() {{
+  echo "[inventiv-worker] Forcing SCSI rescan to detect Block Storage volumes..."
+  for host in /sys/class/scsi_host/host*/scan; do
+    if [[ -f "$host" ]]; then
+      echo "- - -" > "$host" 2>/dev/null || true
+    fi
+  done
+  # Wait a moment for kernel to process
+  sleep 2
+  # Trigger udev events
+  udevadm settle --timeout=5 || true
+}}
 
-if [[ -n "$candidate" ]]; then
+# Function to find Block Storage candidate with retries
+find_block_storage_candidate() {{
+  local max_attempts=10
+  local attempt=1
+  
+  while [[ $attempt -le $max_attempts ]]; do
+    echo "[inventiv-worker] Attempt $attempt/$max_attempts: Looking for Block Storage volume..."
+    
+    # Force rescan on first few attempts
+    if [[ $attempt -le 3 ]]; then
+      force_scsi_rescan
+    fi
+    
+    # Method 1: Check lsblk for unmounted disks
+    local candidate=""
+    while read -r name type size; do
+      [[ "$type" == "disk" ]] || continue
+      dev="/dev/$name"
+      [[ -n "$root_base" && "$dev" == "$root_base" ]] && continue
+      # ignore disks that are already mounted
+      if lsblk -n -o MOUNTPOINT "$dev" 2>/dev/null | grep -q '/'; then
+        continue
+      fi
+      # Prefer larger disks (Block Storage is typically > 20GB)
+      local size_bytes=$(lsblk -b -n -o SIZE "$dev" 2>/dev/null | head -1 || echo "0")
+      if [[ $size_bytes -gt 20000000000 ]]; then  # > 20GB
+        candidate="$dev"
+        echo "[inventiv-worker] Found candidate Block Storage: $candidate (size: $(numfmt --to=iec-i --suffix=B $size_bytes 2>/dev/null || echo 'unknown'))"
+        break
+      fi
+    done < <(lsblk -ndo NAME,TYPE,SIZE 2>/dev/null || true)
+    
+    if [[ -n "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+    
+    # Method 2: Check /dev/disk/by-id/ for Scaleway volumes (if available)
+    if [[ -d /dev/disk/by-id ]]; then
+      for link in /dev/disk/by-id/scw-*; do
+        if [[ -L "$link" ]]; then
+          local real_dev=$(readlink -f "$link" 2>/dev/null || true)
+          if [[ -n "$real_dev" && "$real_dev" != "$root_src" ]]; then
+            # Check if it's already mounted
+            if ! lsblk -n -o MOUNTPOINT "$real_dev" 2>/dev/null | grep -q '/'; then
+              candidate="$real_dev"
+              echo "[inventiv-worker] Found candidate Block Storage via by-id: $candidate"
+              echo "$candidate"
+              return 0
+            fi
+          fi
+        fi
+      done
+    fi
+    
+    if [[ $attempt -lt $max_attempts ]]; then
+      echo "[inventiv-worker] Block Storage not found yet, waiting 3 seconds before retry..."
+      sleep 3
+    fi
+    
+    attempt=$((attempt + 1))
+  done
+  
+  return 1
+}}
+
+candidate=""
+if candidate=$(find_block_storage_candidate); then
+  echo "[inventiv-worker] ✅ Block Storage candidate found: $candidate"
+  
   if ! blkid "$candidate" >/dev/null 2>&1; then
+    echo "[inventiv-worker] Formatting Block Storage volume $candidate with ext4..."
     mkfs.ext4 -F -L inventiv-data "$candidate"
   fi
+  
   uuid="$(blkid -s UUID -o value "$candidate" || true)"
   if [[ -n "$uuid" ]]; then
-    grep -q "$uuid" /etc/fstab || echo "UUID=$uuid $DATA_MNT ext4 defaults,nofail 0 2" >> /etc/fstab
+    echo "[inventiv-worker] Block Storage UUID: $uuid"
+    if ! grep -q "$uuid" /etc/fstab 2>/dev/null; then
+      echo "UUID=$uuid $DATA_MNT ext4 defaults,nofail 0 2" >> /etc/fstab
+      echo "[inventiv-worker] Added Block Storage to /etc/fstab"
+    fi
   fi
+  
   mount -a || true
-  mountpoint -q "$DATA_MNT" || mount "$candidate" "$DATA_MNT"
+  if ! mountpoint -q "$DATA_MNT"; then
+    echo "[inventiv-worker] Mounting Block Storage $candidate to $DATA_MNT..."
+    mount "$candidate" "$DATA_MNT" || {{
+      echo "[inventiv-worker] ❌ Failed to mount $candidate to $DATA_MNT" >&2
+      candidate=""
+    }}
+  fi
+else
+  echo "[inventiv-worker] ⚠️ WARNING: Block Storage volume not found after 10 attempts" >&2
 fi
 
 if mountpoint -q "$DATA_MNT"; then
+  echo "[inventiv-worker] Block Storage mounted at $DATA_MNT"
+  df -h "$DATA_MNT" || true
+  
   mkdir -p "$DATA_MNT/docker" "$DATA_MNT/worker"
   # Put worker files on the data disk
   if [[ -d /opt/inventiv-worker && ! -L /opt/inventiv-worker ]]; then
@@ -930,17 +1050,46 @@ if mountpoint -q "$DATA_MNT"; then
   ln -sfn "$DATA_MNT/worker" /opt/inventiv-worker
 
   # Put Docker storage on the data disk (avoid huge image pulls on root)
+  echo "[inventiv-worker] Configuring Docker to use Block Storage at $DATA_MNT/docker"
   systemctl stop docker >/dev/null 2>&1 || true
+  
+  # Wait for Docker to fully stop
+  sleep 2
+  
   if [[ -d /var/lib/docker && ! -L /var/lib/docker ]]; then
     # If it already has content, keep a backup rather than deleting.
     if [[ "$(ls -A /var/lib/docker 2>/dev/null | wc -l | tr -d ' ')" != "0" ]]; then
+      echo "[inventiv-worker] Moving existing Docker data to backup"
       mv /var/lib/docker "/var/lib/docker.bak.$(date +%s)"
     else
       rm -rf /var/lib/docker
     fi
   fi
+  
+  # Verify symlink creation
   ln -sfn "$DATA_MNT/docker" /var/lib/docker
+  if [[ -L /var/lib/docker ]]; then
+    echo "[inventiv-worker] ✅ Docker symlink created: /var/lib/docker -> $(readlink -f /var/lib/docker)"
+  else
+    echo "[inventiv-worker] ❌ ERROR: Failed to create Docker symlink" >&2
+    exit 1
+  fi
+  
   systemctl start docker >/dev/null 2>&1 || true
+  
+  # Verify Docker is using the Block Storage
+  sleep 2
+  if docker info >/dev/null 2>&1; then
+    DOCKER_ROOT=$(docker info 2>/dev/null | grep -i "docker root dir" | awk '{{print $4}}' || echo "unknown")
+    echo "[inventiv-worker] Docker root directory: $DOCKER_ROOT"
+    df -h "$DATA_MNT" || true
+  fi
+else
+  echo "[inventiv-worker] ⚠️ WARNING: Block Storage NOT mounted at $DATA_MNT - Docker will use root disk (may run out of space)" >&2
+  echo "[inventiv-worker] Available disks:" >&2
+  lsblk -o NAME,TYPE,SIZE,MOUNTPOINT || true
+  echo "[inventiv-worker] Mounted filesystems:" >&2
+  df -h || true
 fi
 
 echo "::phase::docker_install"
@@ -1199,6 +1348,8 @@ echo "[inventiv-worker] ssh bootstrap done"
     );
 
     let started = std::time::Instant::now();
+    // Use a longer ConnectTimeout for instances that may have SSH service still starting
+    // This is especially important for Scaleway instances that may take time to fully boot
     let mut child = match Command::new("ssh")
         .arg("-i")
         .arg(&ssh_key_path)
@@ -1207,7 +1358,11 @@ echo "[inventiv-worker] ssh bootstrap done"
         .arg("-o")
         .arg("UserKnownHostsFile=/dev/null")
         .arg("-o")
-        .arg("ConnectTimeout=10")
+        .arg("ConnectTimeout=30")
+        .arg("-o")
+        .arg("ServerAliveInterval=10")
+        .arg("-o")
+        .arg("ServerAliveCountMax=3")
         .arg(&target)
         .arg("bash -s")
         .stdin(Stdio::piped())
@@ -1269,6 +1424,7 @@ echo "[inventiv-worker] ssh bootstrap done"
                 let stderr = String::from_utf8_lossy(&output.stderr).to_string();
                 let phases = extract_phases(&stdout);
                 let last_phase = phases.last().cloned();
+                let last_phase_str = last_phase.as_deref();
 
                 if let serde_json::Value::Object(ref mut obj) = meta {
                     obj.insert(
@@ -1288,7 +1444,7 @@ echo "[inventiv-worker] ssh bootstrap done"
                         serde_json::json!(tail_str(&stderr, 8000)),
                     );
                     obj.insert("phases".to_string(), serde_json::json!(phases));
-                    if let Some(p) = last_phase {
+                    if let Some(p) = &last_phase {
                         obj.insert("last_phase".to_string(), serde_json::json!(p));
                     }
                     obj.insert(
@@ -1306,6 +1462,21 @@ echo "[inventiv-worker] ssh bootstrap done"
                         Some(meta),
                     )
                     .await;
+                    
+                    // Transition to "starting" status when SSH installation completes successfully
+                    // This indicates worker containers are starting and we're waiting for them to be ready
+                    if last_phase_str == Some("done") {
+                        eprintln!("🔄 [health_check_flow] Transitioning instance {} from installing to starting (SSH install done)", instance_id);
+                        match state_machine::installing_to_starting(
+                            db,
+                            instance_id,
+                            "SSH installation completed - worker containers starting",
+                        ).await {
+                            Ok(true) => eprintln!("✅ [health_check_flow] Successfully transitioned to starting"),
+                            Ok(false) => eprintln!("⚠️ [health_check_flow] Transition to starting skipped (already in different status)"),
+                            Err(e) => eprintln!("❌ [health_check_flow] Failed to transition to starting: {:?}", e),
+                        }
+                    }
                 } else {
                     let msg = format!(
                         "ssh bootstrap failed (exit={}): {}",
@@ -1934,6 +2105,9 @@ pub async fn check_and_transition_instance(
         }
     };
 
+    eprintln!("🔍 [health_check_flow] Health check evaluation for instance {}: is_healthy={}, expect_worker={}, is_healthy_from_heartbeat={}, is_ready_http={}, model_check_ok={}, heartbeat_age_secs={:?}", 
+        instance_id, is_healthy, expect_worker, is_healthy_from_heartbeat, is_ready_http, model_check_ok, heartbeat_age_secs);
+    
     if is_healthy {
         println!(
             "✅ Instance {} health check PASSED! Transitioning to ready",
@@ -1991,7 +2165,14 @@ pub async fn check_and_transition_instance(
         .unwrap_or(None);
         
         if current_status.as_deref() != Some("ready") {
-            let _ = state_machine::booting_to_ready(&db, instance_id, "Health check passed").await;
+            eprintln!("🔄 [health_check_flow] Transitioning instance {} from {:?} to ready (health check passed)", instance_id, current_status);
+            match state_machine::booting_to_ready(&db, instance_id, "Health check passed").await {
+                Ok(true) => eprintln!("✅ [health_check_flow] Successfully transitioned to ready"),
+                Ok(false) => eprintln!("⚠️ [health_check_flow] Transition to ready skipped (status may have changed: {:?})", current_status),
+                Err(e) => eprintln!("❌ [health_check_flow] Failed to transition to ready: {:?}", e),
+            }
+        } else {
+            eprintln!("ℹ️ [health_check_flow] Instance {} already in ready status", instance_id);
         }
     } else {
         // For worker targets: if SSH is up but readyz isn't, check if worker is sending heartbeats
@@ -2083,10 +2264,11 @@ pub async fn check_and_transition_instance(
                             })).collect::<Vec<_>>(),
                         });
                     }
+                    // This is a normal retry scenario - containers not running yet during installation
                     let _ = logger::log_event_with_metadata(
                         &db,
                         "WORKER_CONTAINER_CHECK",
-                        "failed",
+                        "retry",
                         instance_id,
                         None,
                         Some(metadata),
@@ -2104,14 +2286,66 @@ pub async fn check_and_transition_instance(
                             .collect();
                         
                         if !recent_errors.is_empty() {
+                            // Check if there's already an SSH install in progress before triggering a new one
+                            let has_in_progress_install: bool = sqlx::query_scalar(
+                                r#"
+                                SELECT EXISTS(
+                                    SELECT 1 FROM action_logs
+                                    WHERE instance_id = $1
+                                      AND action_type = 'WORKER_SSH_INSTALL'
+                                      AND status = 'in_progress'
+                                      AND created_at > NOW() - INTERVAL '20 minutes'
+                                )
+                                "#,
+                            )
+                            .bind(instance_id)
+                            .fetch_one(&db)
+                            .await
+                            .unwrap_or(false);
+                            
+                            if has_in_progress_install {
+                                println!(
+                                    "ℹ️ Instance {} containers running but worker logs show errors - SSH install already in progress, waiting",
+                                    instance_id
+                                );
+                                let log_id = logger::log_event_with_metadata(
+                                    &db,
+                                    "WORKER_LOG_ERRORS",
+                                    "in_progress",
+                                    instance_id,
+                                    None,
+                                    Some(serde_json::json!({
+                                        "ip": ip,
+                                        "recent_errors": recent_errors.iter().map(|e| serde_json::json!({
+                                            "timestamp": e.get("timestamp"),
+                                            "event_type": e.get("event_type"),
+                                            "message": e.get("message"),
+                                        })).collect::<Vec<_>>(),
+                                    })),
+                                ).await.ok();
+                                
+                                // Complete the log immediately - these errors are normal during startup
+                                // and indicate the worker is trying to connect but failing (retry scenario)
+                                if let Some(lid) = log_id {
+                                    let _ = logger::log_event_complete(
+                                        &db,
+                                        lid,
+                                        "retry",
+                                        0,
+                                        Some("Worker logs show connection errors during startup - SSH install already in progress"),
+                                    ).await;
+                                }
+                                return;
+                            }
+                            
                             println!(
                                 "⚠️ Instance {} containers running but worker logs show errors - will retry SSH install",
                                 instance_id
                             );
-                            let _ = logger::log_event_with_metadata(
+                            let log_id = logger::log_event_with_metadata(
                                 &db,
                                 "WORKER_LOG_ERRORS",
-                                "failed",
+                                "in_progress",
                                 instance_id,
                                 None,
                                 Some(serde_json::json!({
@@ -2122,7 +2356,20 @@ pub async fn check_and_transition_instance(
                                         "message": e.get("message"),
                                     })).collect::<Vec<_>>(),
                                 })),
-                            ).await;
+                            ).await.ok();
+                            
+                            // Complete the log immediately - these errors are normal during startup
+                            // and indicate the worker is trying to connect but failing (retry scenario)
+                            if let Some(lid) = log_id {
+                                let _ = logger::log_event_complete(
+                                    &db,
+                                    lid,
+                                    "retry",
+                                    0,
+                                    Some("Worker logs show connection errors during startup - retrying"),
+                                ).await;
+                            }
+                            
                             maybe_trigger_worker_install_over_ssh(&db, instance_id, &ip, false, None).await;
                             return;
                         }
@@ -2136,6 +2383,31 @@ pub async fn check_and_transition_instance(
                 }
             } else {
                 // Could not check containers via SSH - check worker logs if available
+                // But first check if there's already an SSH install in progress
+                let has_in_progress_install: bool = sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(
+                        SELECT 1 FROM action_logs
+                        WHERE instance_id = $1
+                          AND action_type = 'WORKER_SSH_INSTALL'
+                          AND status = 'in_progress'
+                          AND created_at > NOW() - INTERVAL '20 minutes'
+                    )
+                    "#,
+                )
+                .bind(instance_id)
+                .fetch_one(&db)
+                .await
+                .unwrap_or(false);
+                
+                if has_in_progress_install {
+                    println!(
+                        "ℹ️ Instance {} SSH is reachable but worker readyz is not - SSH install already in progress, waiting",
+                        instance_id
+                    );
+                    return;
+                }
+                
                 if let Some(logs) = &worker_logs {
                     println!(
                         "⚠️ Instance {} SSH is reachable but worker readyz is not - fetched {} worker log events, triggering SSH bootstrap",
@@ -2203,12 +2475,37 @@ pub async fn check_and_transition_instance(
                 
                 if let Some(age_s) = instance_age {
                     // Wait at least 2 minutes for Scaleway instance to fully boot and SSH to become available
-                    if age_s >= 120 {
+                    if age_s >= 120 && age_s < 300 {
+                        // After 2 minutes but before 5 minutes, try SSH installation even if port 22 is not yet accessible
+                        // The SSH service may not be fully started yet, but the connection attempt will wait
                         println!(
-                            "⏳ Instance {} has been booting for {}s but SSH is not yet reachable - will retry when SSH becomes available",
+                            "⏳ Instance {} has been booting for {}s - SSH port 22 not yet accessible, but attempting SSH installation anyway (SSH service may still be starting)",
                             instance_id, age_s
                         );
-                        // Don't increment failures - SSH may still be starting up
+                        maybe_trigger_worker_install_over_ssh(&db, instance_id, &ip, false, None).await;
+                        return;
+                    } else if age_s >= 300 {
+                        // After 5 minutes, mark instance as failed if SSH is still not accessible
+                        // This indicates a serious boot problem
+                        let error_msg = format!(
+                            "Instance failed to boot: SSH port 22 not accessible after {} seconds. Instance may not be booting correctly or SSH service is not starting.",
+                            age_s
+                        );
+                        eprintln!("❌ {}", error_msg);
+                        
+                        let _ = sqlx::query(
+                            "UPDATE instances 
+                             SET status='failed', 
+                                 error_code=COALESCE(error_code,'SSH_NOT_ACCESSIBLE'),
+                                 error_message=COALESCE($2,error_message),
+                                 failed_at=COALESCE(failed_at,NOW())
+                             WHERE id=$1"
+                        )
+                        .bind(instance_id)
+                        .bind(&error_msg)
+                        .execute(&db)
+                        .await;
+                        
                         return;
                     }
                 }

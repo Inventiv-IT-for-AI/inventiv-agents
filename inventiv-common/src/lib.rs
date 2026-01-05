@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub mod bus;
+pub mod worker_storage;
 pub mod worker_target;
 
 // --- Enums ---

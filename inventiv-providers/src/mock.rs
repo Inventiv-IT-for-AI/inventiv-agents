@@ -130,6 +130,7 @@ impl MockProvider {
             "--remove-orphans",
         ]);
         // Set working directory to project root so docker-compose can find the file
+        // This also ensures that relative paths in docker-compose.mock-runtime.yml resolve correctly
         cmd.current_dir(&project_root);
         cmd.env("CONTROLPLANE_NETWORK_NAME", &network_name);
         cmd.env("INSTANCE_ID", instance_id.to_string());
@@ -417,6 +418,7 @@ impl CloudProvider for MockProvider {
         instance_type: &str,
         _image_id: &str,
         _cloud_init: Option<&str>,
+        _volumes: Option<&[String]>, // Optional list of volume IDs to attach at creation (ignored for mock)
     ) -> Result<String> {
         self.validate_zone_and_type(zone, instance_type).await?;
 

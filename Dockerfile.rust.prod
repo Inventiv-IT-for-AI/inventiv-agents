@@ -25,7 +25,15 @@ RUN cargo build --release -p "${SERVICE_NAME}" && \
     strip "target/release/${SERVICE_NAME}" || true
 
 FROM debian:bookworm-slim AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && \
+    # Install Scaleway CLI (required for Block Storage volume attachment)
+    # Scaleway CLI handles synchronization between Block Storage API and Instance API
+    ARCH=$(dpkg --print-architecture) && \
+    SCW_ARCH=$(if [ "$ARCH" = "amd64" ]; then echo "amd64"; elif [ "$ARCH" = "arm64" ]; then echo "arm64"; else echo "amd64"; fi) && \
+    SCW_VERSION="2.49.0" && \
+    curl -fsSL "https://github.com/scaleway/scaleway-cli/releases/download/v${SCW_VERSION}/scaleway-cli_${SCW_VERSION}_linux_${SCW_ARCH}" -o /usr/local/bin/scw && \
+    chmod +x /usr/local/bin/scw && \
+    rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 ARG SERVICE_NAME

@@ -23,24 +23,38 @@ async fn log_state_transition(
     .await;
 }
 
-/// Transition BOOTING -> READY (idempotent).
+/// Transition BOOTING/INSTALLING/STARTING -> READY (idempotent).
 pub async fn booting_to_ready(
     db: &Pool<Postgres>,
     instance_id: Uuid,
     reason: &str,
 ) -> Result<bool, sqlx::Error> {
+    // Get current status BEFORE update for logging
+    let prev_status: Option<String> = sqlx::query_scalar(
+        "SELECT status::text FROM instances WHERE id = $1"
+    )
+    .bind(instance_id)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    
+    eprintln!("🔄 [state_machine] booting_to_ready: instance {}, current_status={:?}", instance_id, prev_status);
+    
     let res = sqlx::query(
         "UPDATE instances
          SET status = 'ready',
              ready_at = NOW(),
              last_health_check = NOW()
-         WHERE id = $1 AND status = 'booting'",
+         WHERE id = $1 AND status IN ('booting', 'installing', 'starting')",
     )
     .bind(instance_id)
     .execute(db)
     .await?;
 
     if res.rows_affected() > 0 {
+        eprintln!("✅ [state_machine] booting_to_ready: Successfully updated instance {} to ready (rows_affected={})", instance_id, res.rows_affected());
+        
         let log_id = logger::log_event_with_metadata(
             db,
             "INSTANCE_READY",
@@ -56,9 +70,76 @@ pub async fn booting_to_ready(
                 .await
                 .ok();
         }
-        log_state_transition(db, instance_id, "booting", "ready", reason).await;
+        let from_status = prev_status.as_deref().unwrap_or("booting");
+        log_state_transition(db, instance_id, from_status, "ready", reason).await;
         Ok(true)
     } else {
+        eprintln!("⚠️ [state_machine] booting_to_ready: No rows affected for instance {} (current_status={:?}, may already be ready or in different state)", instance_id, prev_status);
+        Ok(false)
+    }
+}
+
+/// Transition BOOTING -> INSTALLING (idempotent).
+/// Called when SSH becomes accessible and worker installation begins.
+pub async fn booting_to_installing(
+    db: &Pool<Postgres>,
+    instance_id: Uuid,
+    reason: &str,
+) -> Result<bool, sqlx::Error> {
+    let res = sqlx::query(
+        "UPDATE instances
+         SET status = 'installing'
+         WHERE id = $1 AND status = 'booting'",
+    )
+    .bind(instance_id)
+    .execute(db)
+    .await?;
+
+    if res.rows_affected() > 0 {
+        log_state_transition(db, instance_id, "booting", "installing", reason).await;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+/// Transition INSTALLING -> STARTING (idempotent).
+/// Called when SSH installation completes successfully and worker containers are starting.
+/// Also accepts BOOTING status in case the transition to installing was missed.
+pub async fn installing_to_starting(
+    db: &Pool<Postgres>,
+    instance_id: Uuid,
+    reason: &str,
+) -> Result<bool, sqlx::Error> {
+    // Get current status BEFORE update for logging
+    let current_status: Option<String> = sqlx::query_scalar(
+        "SELECT status::text FROM instances WHERE id = $1"
+    )
+    .bind(instance_id)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    
+    let from_status = current_status.as_deref().unwrap_or("unknown");
+    
+    eprintln!("🔄 [state_machine] installing_to_starting: instance {}, current_status={:?}", instance_id, current_status);
+    
+    let res = sqlx::query(
+        "UPDATE instances
+         SET status = 'starting'
+         WHERE id = $1 AND status IN ('installing', 'booting')",
+    )
+    .bind(instance_id)
+    .execute(db)
+    .await?;
+
+    if res.rows_affected() > 0 {
+        eprintln!("✅ [state_machine] installing_to_starting: Successfully updated instance {} to starting (from {:?}, rows_affected={})", instance_id, from_status, res.rows_affected());
+        log_state_transition(db, instance_id, from_status, "starting", reason).await;
+        Ok(true)
+    } else {
+        eprintln!("⚠️ [state_machine] installing_to_starting: No rows affected for instance {} (current_status={:?}, may already be starting or in different state)", instance_id, current_status);
         Ok(false)
     }
 }
@@ -86,13 +167,23 @@ pub async fn booting_to_startup_failed(
     .await
     .ok();
 
+    // Get current status for logging
+    let current_status: Option<String> = sqlx::query_scalar(
+        "SELECT status::text FROM instances WHERE id = $1"
+    )
+    .bind(instance_id)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    
     let res = sqlx::query(
         "UPDATE instances
          SET status = 'startup_failed',
              error_code = $2,
              error_message = $3,
              failed_at = COALESCE(failed_at, NOW())
-         WHERE id = $1 AND status = 'booting'",
+         WHERE id = $1 AND status IN ('booting', 'installing', 'starting')",
     )
     .bind(instance_id)
     .bind(error_code)
@@ -107,14 +198,15 @@ pub async fn booting_to_startup_failed(
     }
 
     if res.rows_affected() > 0 {
-        log_state_transition(db, instance_id, "booting", "startup_failed", error_message).await;
+        let from_status = current_status.as_deref().unwrap_or("booting");
+        log_state_transition(db, instance_id, from_status, "startup_failed", error_message).await;
         Ok(true)
     } else {
         Ok(false)
     }
 }
 
-/// Update health check failures for BOOTING instances (idempotent).
+/// Update health check failures for BOOTING/INSTALLING/STARTING instances (idempotent).
 pub async fn update_booting_health_failures(
     db: &Pool<Postgres>,
     instance_id: Uuid,
@@ -124,7 +216,7 @@ pub async fn update_booting_health_failures(
         "UPDATE instances
          SET health_check_failures = $2,
              last_health_check = NOW()
-         WHERE id = $1 AND status = 'booting'",
+         WHERE id = $1 AND status IN ('booting', 'installing', 'starting')",
     )
     .bind(instance_id)
     .bind(new_failures)

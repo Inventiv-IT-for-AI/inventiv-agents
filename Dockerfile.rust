@@ -3,6 +3,7 @@ WORKDIR /app
 
 # Needed by orchestrator for SSH bootstrap fallback installs.
 # Also install Docker CLI for Mock provider runtime management (via Docker socket).
+# Install Scaleway CLI for Block Storage volume attachment (required for L4/L40S instances).
 RUN apt-get update && \
     apt-get install -y openssh-client curl ca-certificates && \
     # Install Docker CLI (static binary, works on any arch)
@@ -21,6 +22,12 @@ RUN apt-get update && \
     mkdir -p /usr/local/lib/docker/cli-plugins && \
     curl -fsSL "https://github.com/docker/compose/releases/download/v2.27.1/docker-compose-linux-${DOCKER_ARCH}" -o /usr/local/lib/docker/cli-plugins/docker-compose && \
     chmod +x /usr/local/lib/docker/cli-plugins/docker-compose && \
+    # Install Scaleway CLI (required for Block Storage volume attachment)
+    # Scaleway CLI handles synchronization between Block Storage API and Instance API
+    SCW_ARCH=$(if [ "$ARCH" = "amd64" ]; then echo "amd64"; elif [ "$ARCH" = "arm64" ]; then echo "arm64"; else echo "amd64"; fi) && \
+    SCW_VERSION="2.49.0" && \
+    curl -fsSL "https://github.com/scaleway/scaleway-cli/releases/download/v${SCW_VERSION}/scaleway-cli_${SCW_VERSION}_linux_${SCW_ARCH}" -o /usr/local/bin/scw && \
+    chmod +x /usr/local/bin/scw && \
     rm -rf /var/lib/apt/lists/*
 
 # Install cargo-watch for hot reload

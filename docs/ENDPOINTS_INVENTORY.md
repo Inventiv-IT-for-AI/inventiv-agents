@@ -281,3 +281,4 @@
 
 **Note**: Ce document sert de référence pendant le refactoring. Mettre à jour au fur et à mesure de l'extraction.
 
+

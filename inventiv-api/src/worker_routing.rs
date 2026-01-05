@@ -143,14 +143,44 @@ pub async fn resolve_openai_model_id(
         ));
     };
 
-    // Offering id: org_slug/model_code
+    // Step 1: If it looks like a UUID, try resolve -> HF repo id.
+    if let Ok(uid) = uuid::Uuid::parse_str(&raw) {
+        let hf: Option<String> =
+            sqlx::query_scalar("SELECT model_id FROM models WHERE id = $1 AND is_active = true")
+                .bind(uid)
+                .fetch_optional(db)
+                .await
+                .ok()
+                .flatten();
+        return Ok(hf.unwrap_or(raw));
+    }
+
+    // Step 2: Check if it matches an active catalog entry by HF repo id FIRST
+    // This handles models like "Qwen/Qwen2.5-0.5B-Instruct" which contain "/"
+    // We check this BEFORE checking for offering ids to avoid false positives
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM models WHERE model_id = $1 AND is_active = true)",
+    )
+    .bind(&raw)
+    .fetch_one(db)
+    .await
+    .unwrap_or(false);
+
+    if exists {
+        return Ok(raw);
+    }
+
+    // Step 3: Only if it's NOT a public model, check if it's an offering id: org_slug/model_code
+    // This allows org offerings to override public models if needed, but prevents
+    // public HF models from being mistaken for offering ids
     if let Some((org_slug, code)) = raw.split_once('/') {
         let org_slug = org_slug.trim();
         let code = code.trim();
         if org_slug.is_empty() || code.is_empty() {
+            // Invalid format, but not a public model either
             return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error":"invalid_model","message":"invalid_offering_id"})),
+                StatusCode::NOT_FOUND,
+                Json(json!({"error":"model_not_found", "model": raw})),
             ));
         }
 
@@ -205,35 +235,11 @@ pub async fn resolve_openai_model_id(
         return Ok(hf_model_id);
     }
 
-    // If it looks like a UUID, try resolve -> HF repo id.
-    if let Ok(uid) = uuid::Uuid::parse_str(&raw) {
-        let hf: Option<String> =
-            sqlx::query_scalar("SELECT model_id FROM models WHERE id = $1 AND is_active = true")
-                .bind(uid)
-                .fetch_optional(db)
-                .await
-                .ok()
-                .flatten();
-        return Ok(hf.unwrap_or(raw));
-    }
-
-    // If it matches an active catalog entry by HF repo id, return it; else keep as-is.
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM models WHERE model_id = $1 AND is_active = true)",
-    )
-    .bind(&raw)
-    .fetch_one(db)
-    .await
-    .unwrap_or(false);
-
-    if exists {
-        Ok(raw)
-    } else {
-        Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({"error":"model_not_found", "model": raw})),
-        ))
-    }
+    // Step 4: Not a UUID, not a public model, not an offering id -> not found
+    Err((
+        StatusCode::NOT_FOUND,
+        Json(json!({"error":"model_not_found", "model": raw})),
+    ))
 }
 
 

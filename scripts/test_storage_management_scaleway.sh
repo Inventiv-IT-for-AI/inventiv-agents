@@ -68,6 +68,14 @@ login() {
         -H "Content-Type: application/json" \
         -d "{\"email\":\"${username}\",\"password\":\"${password}\"}")
     
+    # Also try with "admin" as email if username doesn't work
+    if echo "$response" | grep -q "error\|invalid"; then
+        rm -f "$COOKIE_FILE"
+        response=$(curl -s -c "$COOKIE_FILE" -X POST "${API_BASE_URL}/auth/login" \
+            -H "Content-Type: application/json" \
+            -d "{\"email\":\"admin\",\"password\":\"${password}\"}")
+    fi
+    
     if echo "$response" | grep -q "error"; then
         log_error "Échec de la connexion: $response"
         log_info "Tentative avec email complet..."
@@ -118,12 +126,12 @@ get_zone_id() {
 }
 
 get_instance_type_id() {
-    log_info "Récupération de l'ID du type d'instance RENDER-S..." >&2
+    log_info "Récupération de l'ID du type d'instance L4-1-24G..." >&2
     local raw_id=$(docker compose exec -T db psql -U postgres -d llminfra -t -c \
-        "SELECT it.id::text FROM instance_types it JOIN providers p ON it.provider_id = p.id WHERE p.code = 'scaleway' AND it.code = 'RENDER-S' LIMIT 1" 2>/dev/null)
+        "SELECT it.id::text FROM instance_types it JOIN providers p ON it.provider_id = p.id WHERE p.code = 'scaleway' AND it.code = 'L4-1-24G' LIMIT 1" 2>/dev/null)
     local instance_type_id=$(clean_uuid "$raw_id")
     if [[ -z "$instance_type_id" ]]; then
-        log_error "Type d'instance RENDER-S non trouvé dans la DB" >&2
+        log_error "Type d'instance L4-1-24G non trouvé dans la DB" >&2
         exit 1
     fi
     echo "$instance_type_id"
@@ -157,7 +165,7 @@ create_instance() {
     log_info "Création d'une instance Scaleway..."
     # L'API attend les codes (zone, instance_type), pas les UUIDs
     local zone_code="fr-par-2"
-    local instance_type_code="RENDER-S"
+    local instance_type_code="L4-1-24G"
     local model_id=$(get_model_id)
     
     log_info "Zone: $zone_code"
@@ -176,6 +184,7 @@ create_instance() {
     
     log_info "Payload JSON: $json_payload"
     
+    # Use the cookie from login() function
     local response=$(curl -s -b "${COOKIE_FILE:-/tmp/test_cookies.txt}" -X POST "${API_BASE_URL}/deployments" \
         -H "Content-Type: application/json" \
         -d "$json_payload")

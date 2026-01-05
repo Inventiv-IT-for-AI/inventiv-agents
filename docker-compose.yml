@@ -97,7 +97,7 @@ services:
       [
         "sh",
         "-c",
-        "FEAT=\"\"; if [ -n \"$$ORCHESTRATOR_FEATURES\" ]; then FEAT=\"--features $$ORCHESTRATOR_FEATURES\"; fi; cargo watch -w inventiv-orchestrator -w inventiv-common -w sqlx-migrations -x \"run --release -p inventiv-orchestrator $$FEAT\"",
+        "echo '🔍 Checking compilation before starting...' && FEAT=\"\"; if [ -n \"$$ORCHESTRATOR_FEATURES\" ]; then FEAT=\"--features $$ORCHESTRATOR_FEATURES\"; fi && cargo check --package inventiv-orchestrator --release $$FEAT && echo '✅ Compilation check passed, starting with cargo watch...' && cargo watch -w inventiv-orchestrator -w inventiv-common -w sqlx-migrations -x \"run --release -p inventiv-orchestrator $$FEAT\"",
       ]
     volumes:
       - .:/app # Source code mount for hot reload
@@ -118,6 +118,7 @@ services:
       - SCALEWAY_PROJECT_ID=${SCALEWAY_PROJECT_ID:-}
       - SCALEWAY_ACCESS_KEY=${SCALEWAY_ACCESS_KEY:-}
       - SCALEWAY_SECRET_KEY=${SCALEWAY_SECRET_KEY:-}
+      - SCALEWAY_ORGANIZATION_ID=${SCALEWAY_ORGANIZATION_ID:-}
       - SCALEWAY_SSH_PUBLIC_KEY_FILE=/app/.ssh/llm-studio-key.pub
       - WORKER_AUTH_TOKEN=${WORKER_AUTH_TOKEN:-dev-worker-token}
       - WORKER_HEALTH_PORT=${WORKER_HEALTH_PORT:-8080}
@@ -147,7 +148,14 @@ services:
       dockerfile: Dockerfile.rust
       args:
         SERVICE_NAME: inventiv-api
-    command: cargo watch -w inventiv-api -w inventiv-common -w sqlx-migrations -x "run --release -p inventiv-api"
+    # Build check before starting: fail fast if compilation fails
+    command: >
+      sh -c "
+        echo '🔍 Checking compilation before starting...' &&
+        cargo check --package inventiv-api --release &&
+        echo '✅ Compilation check passed, starting with cargo watch...' &&
+        cargo watch -w inventiv-api -w inventiv-common -w sqlx-migrations -x 'run --release -p inventiv-api'
+      "
     volumes:
       - .:/app # Source code mount for hot reload
       # Default admin password file (dev/local)
@@ -179,7 +187,14 @@ services:
       dockerfile: Dockerfile.rust
       args:
         SERVICE_NAME: inventiv-finops
-    command: cargo watch -w inventiv-finops -w inventiv-common -w sqlx-migrations -x "run --release -p inventiv-finops"
+    # Build check before starting: fail fast if compilation fails
+    command: >
+      sh -c "
+        echo '🔍 Checking compilation before starting...' &&
+        cargo check --package inventiv-finops --release &&
+        echo '✅ Compilation check passed, starting with cargo watch...' &&
+        cargo watch -w inventiv-finops -w inventiv-common -w sqlx-migrations -x 'run --release -p inventiv-finops'
+      "
     volumes:
       - .:/app # Source code mount for hot reload
     environment:

@@ -23,17 +23,20 @@ pub async fn enrich_instances_with_progress(
 /// 
 /// Progress stages (granular breakdown):
 /// 
-/// **provisioning (0-20%)**:
+/// **provisioning (0-25%)**:
 ///   - 5%: Request created
 ///   - 20%: PROVIDER_CREATE completed (instance created at provider)
+///   - 25%: PROVIDER_VOLUME_RESIZE completed (Block Storage resized, if applicable - Scaleway only)
 /// 
-/// **booting (20-100%)**:
-///   - 20%: PROVIDER_CREATE completed
+/// **booting (25-100%)**:
+///   - 25%: PROVIDER_CREATE completed (beginning of booting phase)
 ///   - 30%: PROVIDER_START completed (instance powered on)
 ///   - 40%: PROVIDER_GET_IP completed (IP address assigned)
-///   - 50%: WORKER_SSH_INSTALL completed (Docker, dependencies, agent installed)
-///   - 60%: WORKER_VLLM_HTTP_OK completed (vLLM HTTP endpoint responding)
-///   - 75%: WORKER_MODEL_LOADED completed (LLM model loaded in vLLM)
+///   - 45%: PROVIDER_SECURITY_GROUP completed (ports opened, if applicable - Scaleway only)
+///   - 50%: WORKER_SSH_ACCESSIBLE completed (SSH accessible on port 22)
+///   - 60%: WORKER_SSH_INSTALL completed (Docker, dependencies, agent installed)
+///   - 70%: WORKER_VLLM_HTTP_OK completed (vLLM HTTP endpoint responding)
+///   - 80%: WORKER_MODEL_LOADED completed (LLM model loaded in vLLM)
 ///   - 90%: WORKER_VLLM_WARMUP completed (model warmed up, ready for inference)
 ///   - 95%: HEALTH_CHECK success (worker health endpoint confirms readiness)
 ///   - 100%: ready (VM fully operational)
@@ -82,28 +85,7 @@ pub async fn calculate_instance_progress(
     
     // For real providers (Scaleway, etc.), check actual actions
     if status_lower == "provisioning" {
-        let has_provider_create = sqlx::query_scalar::<_, bool>(
-            r#"
-            SELECT EXISTS(
-                SELECT 1 FROM action_logs
-                WHERE instance_id = $1
-                  AND action_type = 'PROVIDER_CREATE'
-                  AND status = 'success'
-            )
-            "#,
-        )
-        .bind(instance_id)
-        .fetch_one(db)
-        .await?;
-        
-        if has_provider_create {
-            return Ok(20); // Moved to booting phase
-        }
-        return Ok(5); // Just created, minimal progress
-    }
-    
-    if status_lower == "booting" {
-        // Step 1: PROVIDER_CREATE (20%)
+        // Check for PROVIDER_CREATE (20%)
         let has_provider_create = sqlx::query_scalar::<_, bool>(
             r#"
             SELECT EXISTS(
@@ -119,10 +101,29 @@ pub async fn calculate_instance_progress(
         .await?;
         
         if !has_provider_create {
-            return Ok(10);
+            return Ok(5); // Just created, minimal progress
         }
         
-        // Step 2: PROVIDER_START (30%)
+        // Check for PROVIDER_VOLUME_RESIZE (25%) - Optional, Scaleway only
+        let has_volume_resize = sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT EXISTS(
+                SELECT 1 FROM action_logs
+                WHERE instance_id = $1
+                  AND action_type = 'PROVIDER_VOLUME_RESIZE'
+                  AND status = 'success'
+            )
+            "#,
+        )
+        .bind(instance_id)
+        .fetch_one(db)
+        .await?;
+        
+        if has_volume_resize {
+            return Ok(25);
+        }
+        
+        // Check for PROVIDER_START (30%)
         let has_provider_start = sqlx::query_scalar::<_, bool>(
             r#"
             SELECT EXISTS(
@@ -137,31 +138,29 @@ pub async fn calculate_instance_progress(
         .fetch_one(db)
         .await?;
         
-        if !has_provider_start {
-            return Ok(20);
-        }
-        
-        // Step 3: PROVIDER_GET_IP (40%)
-        let has_provider_ip = sqlx::query_scalar::<_, bool>(
-            r#"
-            SELECT EXISTS(
-                SELECT 1 FROM action_logs
-                WHERE instance_id = $1
-                  AND action_type = 'PROVIDER_GET_IP'
-                  AND status = 'success'
-                  AND metadata->>'ip_address' IS NOT NULL
-            )
-            "#,
-        )
-        .bind(instance_id)
-        .fetch_one(db)
-        .await?;
-        
-        if !has_provider_ip {
+        if has_provider_start {
             return Ok(30);
         }
         
-        // Step 4: WORKER_SSH_INSTALL (50%)
+        // PROVIDER_CREATE completed but not yet started
+        return Ok(20);
+    }
+    
+    if status_lower == "booting" {
+        return calculate_booting_progress(db, instance_id).await;
+    }
+    
+    // Handle "installing" status (same logic as "booting" since installation happens during booting)
+    if status_lower == "installing" {
+        // Use the same logic as "booting" - installation is part of the booting process
+        return calculate_booting_progress(db, instance_id).await;
+    }
+    
+    // Handle "starting" status (after SSH installation, containers are starting)
+    if status_lower == "starting" {
+        // Step 1: WORKER_SSH_INSTALL must be completed (60%)
+        // Note: We check for 'success' status, which indicates SSH install completed successfully
+        // The 'last_phase' check is optional as it may not always be present in metadata
         let has_ssh_install = sqlx::query_scalar::<_, bool>(
             r#"
             SELECT EXISTS(
@@ -177,28 +176,12 @@ pub async fn calculate_instance_progress(
         .await?;
         
         if !has_ssh_install {
-            // Check if SSH install is in progress
-            let ssh_in_progress = sqlx::query_scalar::<_, bool>(
-                r#"
-                SELECT EXISTS(
-                    SELECT 1 FROM action_logs
-                    WHERE instance_id = $1
-                      AND action_type = 'WORKER_SSH_INSTALL'
-                      AND status = 'in_progress'
-                )
-                "#,
-            )
-            .bind(instance_id)
-            .fetch_one(db)
-            .await?;
-            
-            if ssh_in_progress {
-                return Ok(45); // SSH install in progress
-            }
-            return Ok(40);
+            // SSH install not completed yet - should not be in "starting" status
+            // But if we're in "starting", assume at least 60% (SSH install should be done)
+            return Ok(60);
         }
         
-        // Step 5: WORKER_VLLM_HTTP_OK (60%) - vLLM HTTP endpoint responding
+        // Step 2: WORKER_VLLM_HTTP_OK (70%) - vLLM HTTP endpoint responding
         let has_vllm_http = sqlx::query_scalar::<_, bool>(
             r#"
             SELECT EXISTS(
@@ -214,10 +197,10 @@ pub async fn calculate_instance_progress(
         .await?;
         
         if !has_vllm_http {
-            return Ok(50);
+            return Ok(60); // SSH install done, waiting for vLLM HTTP
         }
         
-        // Step 6: WORKER_MODEL_LOADED (75%) - LLM model loaded in vLLM
+        // Step 3: WORKER_MODEL_LOADED (80%) - LLM model loaded in vLLM
         let has_model_loaded = sqlx::query_scalar::<_, bool>(
             r#"
             SELECT EXISTS(
@@ -233,10 +216,10 @@ pub async fn calculate_instance_progress(
         .await?;
         
         if !has_model_loaded {
-            return Ok(60);
+            return Ok(70); // vLLM HTTP OK, waiting for model to load
         }
         
-        // Step 7: WORKER_VLLM_WARMUP (90%) - Model warmed up
+        // Step 4: WORKER_VLLM_WARMUP (90%) - Model warmed up
         let has_warmup = sqlx::query_scalar::<_, bool>(
             r#"
             SELECT EXISTS(
@@ -252,10 +235,10 @@ pub async fn calculate_instance_progress(
         .await?;
         
         if !has_warmup {
-            return Ok(75);
+            return Ok(80); // Model loaded, waiting for warmup
         }
         
-        // Step 8: HEALTH_CHECK success (95%) - Worker health endpoint confirms readiness
+        // Step 5: HEALTH_CHECK success (95%) - Worker health endpoint confirms readiness
         let has_health_check_success = sqlx::query_scalar::<_, bool>(
             r#"
             SELECT EXISTS(
@@ -279,6 +262,234 @@ pub async fn calculate_instance_progress(
     
     // Default: minimal progress
     Ok(0)
+}
+
+/// Calculate progress for "booting" status (extracted to avoid duplication)
+async fn calculate_booting_progress(
+    db: &Pool<Postgres>,
+    instance_id: Uuid,
+) -> Result<u8, sqlx::Error> {
+    // Step 1: PROVIDER_CREATE (20%)
+    let has_provider_create = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM action_logs
+            WHERE instance_id = $1
+              AND action_type = 'PROVIDER_CREATE'
+              AND status = 'success'
+        )
+        "#,
+    )
+    .bind(instance_id)
+    .fetch_one(db)
+    .await?;
+    
+    if !has_provider_create {
+        return Ok(10);
+    }
+    
+    // Step 2: PROVIDER_VOLUME_RESIZE (25%) - Optional, Scaleway only
+    let has_volume_resize = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM action_logs
+            WHERE instance_id = $1
+              AND action_type = 'PROVIDER_VOLUME_RESIZE'
+              AND status = 'success'
+        )
+        "#,
+    )
+    .bind(instance_id)
+    .fetch_one(db)
+    .await?;
+    
+    // Step 3: PROVIDER_START (30%)
+    let has_provider_start = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM action_logs
+            WHERE instance_id = $1
+              AND action_type = 'PROVIDER_START'
+              AND status = 'success'
+        )
+        "#,
+    )
+    .bind(instance_id)
+    .fetch_one(db)
+    .await?;
+    
+    if !has_provider_start {
+        return Ok(if has_volume_resize { 25 } else { 20 });
+    }
+    
+    // Step 4: PROVIDER_GET_IP (40%)
+    let has_provider_ip = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM action_logs
+            WHERE instance_id = $1
+              AND action_type = 'PROVIDER_GET_IP'
+              AND status = 'success'
+              AND metadata->>'ip_address' IS NOT NULL
+        )
+        "#,
+    )
+    .bind(instance_id)
+    .fetch_one(db)
+    .await?;
+    
+    if !has_provider_ip {
+        return Ok(30);
+    }
+    
+    // Step 5: PROVIDER_SECURITY_GROUP (45%) - Optional, Scaleway only
+    let has_security_group = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM action_logs
+            WHERE instance_id = $1
+              AND action_type = 'PROVIDER_SECURITY_GROUP'
+              AND status = 'success'
+        )
+        "#,
+    )
+    .bind(instance_id)
+    .fetch_one(db)
+    .await?;
+    
+    // Step 6: WORKER_SSH_ACCESSIBLE (50%)
+    let has_ssh_accessible = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM action_logs
+            WHERE instance_id = $1
+              AND action_type = 'WORKER_SSH_ACCESSIBLE'
+              AND status = 'success'
+        )
+        "#,
+    )
+    .bind(instance_id)
+    .fetch_one(db)
+    .await?;
+    
+    if !has_ssh_accessible {
+        return Ok(if has_security_group { 45 } else { 40 });
+    }
+    
+    // Step 7: WORKER_SSH_INSTALL (60%)
+    let has_ssh_install = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM action_logs
+            WHERE instance_id = $1
+              AND action_type = 'WORKER_SSH_INSTALL'
+              AND status = 'success'
+        )
+        "#,
+    )
+    .bind(instance_id)
+    .fetch_one(db)
+    .await?;
+    
+    if !has_ssh_install {
+        // Check if SSH install is in progress
+        let ssh_in_progress = sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT EXISTS(
+                SELECT 1 FROM action_logs
+                WHERE instance_id = $1
+                  AND action_type = 'WORKER_SSH_INSTALL'
+                  AND status = 'in_progress'
+            )
+            "#,
+        )
+        .bind(instance_id)
+        .fetch_one(db)
+        .await?;
+        
+        if ssh_in_progress {
+            return Ok(55); // SSH install in progress
+        }
+        return Ok(50);
+    }
+    
+    // Step 8: WORKER_VLLM_HTTP_OK (70%) - vLLM HTTP endpoint responding
+    let has_vllm_http = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM action_logs
+            WHERE instance_id = $1
+              AND action_type = 'WORKER_VLLM_HTTP_OK'
+              AND status = 'success'
+        )
+        "#,
+    )
+    .bind(instance_id)
+    .fetch_one(db)
+    .await?;
+    
+    if !has_vllm_http {
+        return Ok(60);
+    }
+    
+    // Step 9: WORKER_MODEL_LOADED (80%) - LLM model loaded in vLLM
+    let has_model_loaded = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM action_logs
+            WHERE instance_id = $1
+              AND action_type = 'WORKER_MODEL_LOADED'
+              AND status = 'success'
+        )
+        "#,
+    )
+    .bind(instance_id)
+    .fetch_one(db)
+    .await?;
+    
+    if !has_model_loaded {
+        return Ok(70);
+    }
+    
+    // Step 10: WORKER_VLLM_WARMUP (90%) - Model warmed up
+    let has_warmup = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM action_logs
+            WHERE instance_id = $1
+              AND action_type = 'WORKER_VLLM_WARMUP'
+              AND status = 'success'
+        )
+        "#,
+    )
+    .bind(instance_id)
+    .fetch_one(db)
+    .await?;
+    
+    if !has_warmup {
+        return Ok(80);
+    }
+    
+    // Step 11: HEALTH_CHECK success (95%) - Worker health endpoint confirms readiness
+    let has_health_check_success = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM action_logs
+            WHERE instance_id = $1
+              AND action_type = 'HEALTH_CHECK'
+              AND status = 'success'
+        )
+        "#,
+    )
+    .bind(instance_id)
+    .fetch_one(db)
+    .await?;
+    
+    if has_health_check_success {
+        return Ok(95); // Almost ready, waiting for final transition to 'ready'
+    }
+    
+    return Ok(90); // Warmup completed, waiting for health checks
 }
 
 /// Calculate progress for Mock provider instances (simulated based on time elapsed)

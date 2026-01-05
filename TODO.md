@@ -7,13 +7,14 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 ## ✅ Réalisé (livré dans le code)
 
 ### Control-plane & provisioning
-- **Provisioning Scaleway** (orchestrator): création VM + volume data, poweron, récupération IP, transitions d'état.
-- **Provisioning Mock** (inventiv-providers): gestion automatique des runtimes Docker Compose, récupération IP, transitions d'état.
-- **Architecture providers modulaire**: package `inventiv-providers` avec trait `CloudProvider`, séparation orchestrator/providers.
-- **State machine + jobs**: provisioning/health-check/terminator/watch-dog + requeue.
-- **Auto-install worker**: bootstrap via SSH avec phases `::phase::…`, logs enrichis dans `action_logs.metadata`.
-- **Sizing stockage par modèle**: taille recommandée depuis la table `models` (fallbacks contrôlés).
-- **HF token**: support `WORKER_HF_TOKEN_FILE` (secret file) + alias `HUGGINGFACE_TOKEN`.
+- ✅ **Provisioning Scaleway** (orchestrator): création VM avec image uniquement, Block Storage automatique (20GB), agrandissement à 200GB via CLI, poweron, récupération IP, Security Groups, SSH accessible (~20s), transitions d'état. **Validé pour L4-1-24G**.
+- ✅ **Provisioning Mock** (inventiv-providers): gestion automatique des runtimes Docker Compose, récupération IP, transitions d'état.
+- ✅ **Architecture providers modulaire**: package `inventiv-providers` avec trait `CloudProvider`, séparation orchestrator/providers.
+- ✅ **State machine + jobs**: provisioning/health-check/terminator/watch-dog + requeue.
+- ✅ **Auto-install worker**: bootstrap via SSH avec phases `::phase::…`, logs enrichis dans `action_logs.metadata`.
+- ✅ **Sizing stockage par modèle**: taille recommandée depuis la table `models` (fallbacks contrôlés).
+- ✅ **HF token**: support `WORKER_HF_TOKEN_FILE` (secret file) + alias `HUGGINGFACE_TOKEN`.
+- ✅ **Scaleway Block Storage**: Séquence validée - création automatique avec image (20GB bootable), agrandissement à 200GB avant démarrage, SSH opérationnel après ~20 secondes.
 
 ### Modèles & readiness
 - **Catalogue `models`**: champs `is_active`, `data_volume_gb`, metadata (seed enrichi).
@@ -24,7 +25,8 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 ### OpenAI-compatible API + API keys
 - **OpenAI proxy** (inventiv-api): `/v1/models`, `/v1/chat/completions` (streaming), `/v1/completions`, `/v1/embeddings`.
 - **API keys (client)**: CRUD + auth `Authorization: Bearer <key>` (séparé des tokens workers).
-- **Live capacity**: `/v1/models` reflète les modèles réellement servis par des workers “fresh” (avec tolérance staleness).
+- **Live capacity**: `/v1/models` reflète les modèles réellement servis par des workers "fresh" (avec tolérance staleness).
+- ✅ **Résolution modèles HuggingFace**: Correction de la logique pour éviter les faux positifs avec les offering ids (`org_slug/model_code`)
 
 ### Runtime models dashboard + Workbench
 - **Runtime models**: endpoint + page UI `/models` (instances, GPUs, VRAM, requests, failed).
@@ -55,14 +57,32 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 
 ## 🐛 Bugs connus / dettes techniques (à suivre)
 
-- **SSE**: implémentation actuelle basée sur polling DB (efficace mais pas “event-sourced” → à améliorer via NOTIFY/LISTEN ou Redis streams).
+- **SSE**: implémentation actuelle basée sur polling DB (efficace mais pas "event-sourced" → à améliorer via NOTIFY/LISTEN ou Redis streams).
 - **Observabilité**: pas encore de stack métriques/traces end-to-end (Prometheus/Grafana/OTel) + alerting.
 - ✅ **FinOps**: coûts OK + **comptage tokens in/out** implémenté (voir section "FinOps full features").
-- **Docs**: certains documents restent “vision” (router, bare-metal) vs “implémenté”.
+- **Docs**: certains documents restent "vision" (router, bare-metal) vs "implémenté".
 - **Mock provider routing**: le test E2E OpenAI proxy override `instances.ip_address` vers `mock-vllm` (hack local). À remplacer par un mécanisme propre (voir backlog).
 - **Docker CLI version**: orchestrator utilise Docker CLI 27.4.0 (compatible API 1.44+). À documenter les prérequis Docker dans la doc.
+- ✅ **Progression "starting"**: Corrigé - les instances "starting" affichent maintenant la progression correcte
+- ✅ **Health checks "starting"**: Corrigé - les instances "starting" sont maintenant vérifiées par le health check job
+- ✅ **Résolution modèles publics**: Corrigé - les modèles HuggingFace publics fonctionnent sans organisation
 
 ---
+
+## 🚧 À faire (backlog)
+
+### Scaleway Provider - Implémentation de la séquence validée
+- [ ] **Adapter le code Scaleway Provider** pour utiliser la séquence validée :
+  - Créer instance avec image uniquement (pas de volumes)
+  - Détecter et agrandir le Block Storage créé automatiquement (20GB → 200GB) via CLI
+  - Configurer Security Groups (ports 22, 8000, 8080)
+  - Vérifier SSH accessible avant installation worker
+- [ ] **Mettre à jour la state machine générique** pour supporter les nouvelles étapes :
+  - `PROVIDER_VOLUME_RESIZE` (25%)
+  - `PROVIDER_SECURITY_GROUP` (45%)
+  - `WORKER_SSH_ACCESSIBLE` (50%)
+- [ ] **Tester avec autres types d'instances** : L40S, H100 (séquence devrait être identique)
+- [ ] **Documentation** : Mettre à jour les guides utilisateur avec la nouvelle séquence
 
 ## 🚧 À faire (backlog)
 
@@ -82,6 +102,10 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
   - Implémenté: calcul automatique dans `inventiv-api/src/progress.rs`
   - Implémenté: affichage dans UI avec colonne dédiée
   - Implémenté: étapes granulaires (SSH install, vLLM HTTP, model loaded, warmup, health check)
+  - ✅ **Séquence Scaleway validée**: Étapes spécifiques ajoutées (PROVIDER_VOLUME_RESIZE 25%, PROVIDER_SECURITY_GROUP 45%, WORKER_SSH_ACCESSIBLE 50%)
+  - ✅ **Statuts "installing" et "starting"**: Ajout des statuts intermédiaires pour tracking granulaire
+  - ✅ **Gestion progression multi-statuts**: Calcul de progression corrigé pour "installing" et "starting"
+  - ✅ **Health checks multi-statuts**: Health check job vérifie maintenant "booting", "installing", et "starting"
 - ✅ **Agent Version Management**: Versioning et checksum SHA256 pour `agent.py`
   - Implémenté: constantes `AGENT_VERSION` et `AGENT_BUILD_DATE` dans agent.py
   - Implémenté: endpoint `/info` pour exposer version/checksum
@@ -98,6 +122,8 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
   - Implémenté: fonctions explicites dans `state_machine.rs`
   - Implémenté: historique dans `instance_state_history`
   - Implémenté: logging structuré avec métadonnées
+  - ✅ **Statuts intermédiaires**: Ajout de "installing" et "starting" pour tracking granulaire
+  - ✅ **Transitions multi-statuts**: Support des transitions depuis "booting" ou "installing" vers "starting"
 - ✅ **Worker Event Logging**: Système de logging structuré sur le worker pour diagnostics
   - Implémenté: fonction `_log_event()` dans `agent.py` avec rotation automatique (10MB, 10k lignes)
   - Implémenté: endpoint `/logs` pour récupérer les logs via HTTP (`?tail=N&since=ISO8601`)
@@ -197,9 +223,9 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 ## 🧪 Tests & Validation (nouvelles fonctionnalités)
 
 ### Progress Tracking
+- ✅ **Test E2E Scaleway** : Validé avec script `test-scaleway/test_complete_validation.rs` - toutes les étapes fonctionnent
 - [ ] **Test unitaire** : Vérifier le calcul de progression pour chaque étape
 - [ ] **Test E2E Mock** : Valider la progression simulée pour instances Mock
-- [ ] **Test E2E Scaleway** : Valider la progression réelle pour instances Scaleway
 - [ ] **Test UI** : Vérifier l'affichage de la colonne progress dans la table
 - [ ] **Test SSE** : Vérifier la mise à jour en temps réel du progress
 

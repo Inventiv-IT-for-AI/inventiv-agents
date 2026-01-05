@@ -20,7 +20,7 @@ mod recovery_job;
 mod services; // NEW
 mod terminator_job;
 mod watch_dog_job;
-mod worker_storage;
+// worker_storage moved to inventiv-common
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres};
 use tokio::time::{sleep, Duration};

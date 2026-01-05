@@ -406,63 +406,131 @@ pub async fn terminator_terminating_instances(
                     .await
                 {
                     Ok(true) => {
+                        // Even if terminate_instance returns Ok(true), the instance may still be stopping
+                        // Check instance state to determine if this is a retry or truly completed
+                        let instance_state = provider.get_server_state(&zone, &provider_instance_id).await.ok().flatten();
+                        let is_still_stopping = instance_state.as_deref()
+                            .map(|s| matches!(s, "stopping" | "stopped" | "stopped_in_place"))
+                            .unwrap_or(false);
+                        
                         if let Some(lid) = log_id {
                             let duration = start.elapsed().as_millis() as i32;
-                            logger::log_event_complete(
-                                pool,
-                                lid,
-                                "success",
-                                duration,
-                                Some("Termination retried"),
-                            )
-                            .await
-                            .ok();
+                            if is_still_stopping {
+                                // Instance is still stopping - this is a normal retry
+                                let state_str = instance_state.as_deref().unwrap_or("stopping");
+                                logger::log_event_complete(
+                                    pool,
+                                    lid,
+                                    "retry",
+                                    duration,
+                                    Some(&format!("Instance is {} - retrying termination", state_str)),
+                                )
+                                .await
+                                .ok();
+                            } else {
+                                // Termination request accepted, but instance may still exist
+                                // This is still a retry until instance is fully deleted
+                                logger::log_event_complete(
+                                    pool,
+                                    lid,
+                                    "retry",
+                                    duration,
+                                    Some("Termination retried - waiting for instance deletion"),
+                                )
+                                .await
+                                .ok();
+                            }
                         }
                         progressed += 1;
                     }
                     Ok(false) => {
+                        // Provider returned non-success - this might be normal if instance is still stopping
+                        // Check instance state to determine if this is a retry or a real failure
+                        let instance_state = provider.get_server_state(&zone, &provider_instance_id).await.ok().flatten();
+                        let is_stopping = instance_state.as_deref()
+                            .map(|s| matches!(s, "stopping" | "stopped" | "stopped_in_place"))
+                            .unwrap_or(false);
+                        
                         if let Some(lid) = log_id {
                             let duration = start.elapsed().as_millis() as i32;
-                            logger::log_event_complete(
-                                pool,
-                                lid,
-                                "failed",
-                                duration,
-                                Some("Provider returned non-success"),
-                            )
-                            .await
-                            .ok();
+                            if is_stopping {
+                                // Instance is stopping - this is a normal retry, not a failure
+                                let state_str = instance_state.as_deref().unwrap_or("stopping");
+                                logger::log_event_complete(
+                                    pool,
+                                    lid,
+                                    "retry",
+                                    duration,
+                                    Some(&format!("Instance is {} - retrying termination", state_str)),
+                                )
+                                .await
+                                .ok();
+                            } else {
+                                // Real failure - instance is not stopping
+                                logger::log_event_complete(
+                                    pool,
+                                    lid,
+                                    "failed",
+                                    duration,
+                                    Some("Provider returned non-success"),
+                                )
+                                .await
+                                .ok();
+                                let _ = sqlx::query(
+                                    "UPDATE instances
+                                     SET last_reconciliation = NULL,
+                                         error_code = COALESCE(error_code, 'TERMINATOR_RETRY_FAILED'),
+                                         error_message = COALESCE(error_message, 'Provider returned non-success on terminate')
+                                     WHERE id = $1"
+                                )
+                                    .bind(instance_id)
+                                    .execute(pool)
+                                    .await;
+                            }
                         }
-                        let _ = sqlx::query(
-                            "UPDATE instances
-                             SET last_reconciliation = NULL,
-                                 error_code = COALESCE(error_code, 'TERMINATOR_RETRY_FAILED'),
-                                 error_message = COALESCE(error_message, 'Provider returned non-success on terminate')
-                             WHERE id = $1"
-                        )
-                            .bind(instance_id)
-                            .execute(pool)
-                            .await;
                     }
                     Err(e) => {
                         let msg = e.to_string();
+                        // Check if error indicates instance is stopping (normal retry scenario)
+                        let is_stopping_retry = msg.contains("current state: stopping") 
+                            || msg.contains("current state: stopped")
+                            || msg.contains("failed to stop");
+                        
                         if let Some(lid) = log_id {
                             let duration = start.elapsed().as_millis() as i32;
-                            logger::log_event_complete(pool, lid, "failed", duration, Some(&msg))
-                                .await
-                                .ok();
+                            if is_stopping_retry {
+                                // Extract state from error message if available
+                                let state_msg = if msg.contains("current state:") {
+                                    msg.split("current state: ").nth(1)
+                                        .and_then(|s| s.split_whitespace().next())
+                                        .map(|s| format!("Instance is {} - retrying termination", s))
+                                        .unwrap_or_else(|| "Instance is stopping - retrying termination".to_string())
+                                } else {
+                                    "Instance is stopping - retrying termination".to_string()
+                                };
+                                
+                                // This is a normal retry, not a failure
+                                logger::log_event_complete(pool, lid, "retry", duration, Some(&state_msg))
+                                    .await
+                                    .ok();
+                            } else {
+                                // Real error - log as failed
+                                logger::log_event_complete(pool, lid, "failed", duration, Some(&msg))
+                                    .await
+                                    .ok();
+                                let _ = sqlx::query(
+                                    "UPDATE instances
+                                     SET last_reconciliation = NULL,
+                                         error_code = COALESCE(error_code, 'TERMINATOR_RETRY_FAILED'),
+                                         error_message = COALESCE(error_message, $2)
+                                     WHERE id = $1",
+                                )
+                                .bind(instance_id)
+                                .bind(&msg)
+                                .execute(pool)
+                                .await;
+                            }
                         }
-                        let _ = sqlx::query(
-                            "UPDATE instances
-                             SET last_reconciliation = NULL,
-                                 error_code = COALESCE(error_code, 'TERMINATOR_RETRY_FAILED'),
-                                 error_message = COALESCE(error_message, $2)
-                             WHERE id = $1",
-                        )
-                        .bind(instance_id)
-                        .bind(&msg)
-                        .execute(pool)
-                        .await;
                     }
                 }
             }
@@ -493,34 +561,86 @@ pub async fn terminator_terminating_instances(
                 if let Some(lid) = log_id {
                     let duration = start.elapsed().as_millis() as i32;
                     match &terminate_res {
-                        Ok(true) => logger::log_event_complete(
-                            pool,
-                            lid,
-                            "success",
-                            duration,
-                            Some("Termination retried (after check failure)"),
-                        )
-                        .await
-                        .ok(),
-                        Ok(false) => logger::log_event_complete(
-                            pool,
-                            lid,
-                            "failed",
-                            duration,
-                            Some("Provider returned non-success"),
-                        )
-                        .await
-                        .ok(),
-                        Err(e2) => logger::log_event_complete(
-                            pool,
-                            lid,
-                            "failed",
-                            duration,
-                            Some(&e2.to_string()),
-                        )
-                        .await
-                        .ok(),
-                    };
+                        Ok(true) => {
+                            logger::log_event_complete(
+                                pool,
+                                lid,
+                                "success",
+                                duration,
+                                Some("Termination retried (after check failure)"),
+                            )
+                            .await
+                            .ok();
+                        }
+                        Ok(false) => {
+                            // Check if instance is stopping (normal retry scenario)
+                            let instance_state = provider.get_server_state(&zone, &provider_instance_id).await.ok().flatten();
+                            let is_stopping = instance_state.as_deref()
+                                .map(|s| matches!(s, "stopping" | "stopped" | "stopped_in_place"))
+                                .unwrap_or(false);
+                            
+                            if is_stopping {
+                                let state_str = instance_state.as_deref().unwrap_or("stopping");
+                                logger::log_event_complete(
+                                    pool,
+                                    lid,
+                                    "retry",
+                                    duration,
+                                    Some(&format!("Instance is {} - retrying termination (after check failure)", state_str)),
+                                )
+                                .await
+                                .ok();
+                            } else {
+                                logger::log_event_complete(
+                                    pool,
+                                    lid,
+                                    "failed",
+                                    duration,
+                                    Some("Provider returned non-success"),
+                                )
+                                .await
+                                .ok();
+                            }
+                        }
+                        Err(e2) => {
+                            let err_msg = e2.to_string();
+                            // Check if error indicates instance is stopping (normal retry scenario)
+                            let is_stopping_retry = err_msg.contains("current state: stopping") 
+                                || err_msg.contains("current state: stopped")
+                                || err_msg.contains("failed to stop");
+                            
+                            if is_stopping_retry {
+                                let state_msg = if err_msg.contains("current state:") {
+                                    err_msg.split("current state: ").nth(1)
+                                        .and_then(|s| s.split_whitespace().next())
+                                        .map(|s| format!("Instance is {} - retrying termination (after check failure)", s))
+                                        .unwrap_or_else(|| "Instance is stopping - retrying termination (after check failure)".to_string())
+                                } else {
+                                    "Instance is stopping - retrying termination (after check failure)".to_string()
+                                };
+                                
+                                logger::log_event_complete(
+                                    pool,
+                                    lid,
+                                    "retry",
+                                    duration,
+                                    Some(&state_msg),
+                                )
+                                .await
+                                .ok();
+                            } else {
+                                logger::log_event_complete(
+                                    pool,
+                                    lid,
+                                    "failed",
+                                    duration,
+                                    Some(&err_msg),
+                                )
+                                .await
+                                .ok();
+                            }
+                        }
+                    }
                 }
 
                 let _ = sqlx::query(

@@ -61,7 +61,7 @@ async fn recover_stuck_instances(
     .fetch_all(pool)
     .await?;
 
-    for (instance_id, provider_id, provider_instance_id_opt, zone_opt) in stuck_terminating {
+    for (instance_id, _provider_id, provider_instance_id_opt, zone_opt) in stuck_terminating {
         if let Some(zone) = zone_opt {
             if let Some(provider_instance_id) = provider_instance_id_opt {
                 eprintln!(

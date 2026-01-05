@@ -53,6 +53,7 @@ export function CreateInstanceModal({
 
     const [models, setModels] = useState<LlmModel[]>([]);
     const [selectedModelId, setSelectedModelId] = useState<string>("");
+    const [recommendedDataVolume, setRecommendedDataVolume] = useState<number | null>(null);
     const selectedModel = useMemo(() => {
         if (!selectedModelId) return null;
         return models.find((m) => m.id === selectedModelId) ?? null;
@@ -238,6 +239,43 @@ export function CreateInstanceModal({
             cancelled = true;
         };
     }, [open, selectedCombo?.type?.id, selectedModelId]);
+
+    // Fetch recommended data volume when a model is selected
+    useEffect(() => {
+        if (!open || !selectedModelId) {
+            setRecommendedDataVolume(null);
+            return;
+        }
+        let cancelled = false;
+
+        const fetchRecommendedDataVolume = async () => {
+            try {
+                // Optionally include provider_id if a provider is selected
+                const providerId = selectedCombo?.provider?.id;
+                const url = providerId
+                    ? apiUrl(`models/${selectedModelId}/recommended-data-volume?provider_id=${providerId}`)
+                    : apiUrl(`models/${selectedModelId}/recommended-data-volume`);
+                
+                const res = await fetch(url);
+                if (res.ok && !cancelled) {
+                    const data = await res.json();
+                    setRecommendedDataVolume(data.recommended_data_volume_gb);
+                } else if (!cancelled) {
+                    setRecommendedDataVolume(null);
+                }
+            } catch (error) {
+                console.error("Failed to fetch recommended data volume:", error);
+                if (!cancelled) {
+                    setRecommendedDataVolume(null);
+                }
+            }
+        };
+
+        void fetchRecommendedDataVolume();
+        return () => {
+            cancelled = true;
+        };
+    }, [open, selectedModelId, selectedCombo?.provider?.id]);
 
     const handleDeploy = async () => {
         setErrorMsg(null);
@@ -538,10 +576,15 @@ export function CreateInstanceModal({
                                 <div className="text-xs text-muted-foreground">
                                     VRAM req: <span className="font-mono text-foreground">{selectedModel.required_vram_gb}GB</span>
                                     {" • "}ctx: <span className="font-mono text-foreground">{selectedModel.context_length}</span>
-                                    {selectedModel.data_volume_gb ? (
+                                    {(selectedModel.data_volume_gb || recommendedDataVolume !== null) ? (
                                         <>
                                             {" • "}disk:{" "}
-                                            <span className="font-mono text-foreground">{selectedModel.data_volume_gb}GB</span>
+                                            <span className="font-mono text-foreground">
+                                                {selectedModel.data_volume_gb ?? recommendedDataVolume ?? "-"}GB
+                                                {!selectedModel.data_volume_gb && recommendedDataVolume !== null && (
+                                                    <span className="text-muted-foreground/70 ml-1">(recommandé)</span>
+                                                )}
+                                            </span>
                                         </>
                                     ) : null}
                                 </div>

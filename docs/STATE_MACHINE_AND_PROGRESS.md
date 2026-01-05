@@ -64,20 +64,34 @@ Le système calcule automatiquement un **pourcentage de progression** (`progress
 
 ### Étapes de progression
 
-#### Phase `provisioning` (0-20%)
+#### Phase `provisioning` (0-25%)
 - **5%** : `REQUEST_CREATE` complété (requête créée dans la DB)
 - **20%** : `PROVIDER_CREATE` complété (instance créée chez le provider)
+- **25%** : `PROVIDER_VOLUME_RESIZE` complété (Block Storage agrandi, si applicable - Scaleway uniquement)
 
-#### Phase `booting` (20-100%)
-- **20%** : `PROVIDER_CREATE` complété (début du booting)
+#### Phase `booting` (25-100%)
+- **25%** : `PROVIDER_CREATE` complété (début du booting)
 - **30%** : `PROVIDER_START` complété (instance démarrée/powered on)
 - **40%** : `PROVIDER_GET_IP` complété (adresse IP assignée)
-- **50%** : `WORKER_SSH_INSTALL` complété (Docker, dépendances, agent installé)
-- **60%** : `WORKER_VLLM_HTTP_OK` complété (endpoint HTTP vLLM répond)
-- **75%** : `WORKER_MODEL_LOADED` complété (modèle LLM chargé dans vLLM)
+- **45%** : `PROVIDER_SECURITY_GROUP` complété (ports ouverts, si applicable - Scaleway uniquement)
+- **50%** : `WORKER_SSH_ACCESSIBLE` complété (SSH accessible sur port 22)
+- **60%** : `WORKER_SSH_INSTALL` complété (Docker, dépendances, agent installé)
+- **70%** : `WORKER_VLLM_HTTP_OK` complété (endpoint HTTP vLLM répond)
+- **80%** : `WORKER_MODEL_LOADED` complété (modèle LLM chargé dans vLLM)
 - **90%** : `WORKER_VLLM_WARMUP` complété (modèle préchauffé, prêt pour l'inférence)
 - **95%** : `HEALTH_CHECK` success (endpoint health du worker confirme la readiness)
 - **100%** : `ready` (VM pleinement opérationnelle)
+
+### Séquence spécifique Scaleway
+
+Pour les instances Scaleway GPU (L4-1-24G, L40S, H100), la séquence inclut des étapes supplémentaires :
+
+1. **Création avec image uniquement** : Scaleway crée automatiquement un Block Storage de 20GB avec le snapshot de l'image (bootable)
+2. **Agrandissement Block Storage** : Le volume est agrandi à 200GB via CLI avant le démarrage
+3. **Configuration Security Groups** : Ouverture des ports SSH (22) et worker (8000, 8080)
+4. **Vérification SSH** : Attente de l'accessibilité SSH (max 3 minutes, généralement ~20 secondes)
+
+Voir [Scaleway Provisioning](SCALEWAY_PROVISIONING.md) pour les détails complets.
 
 #### États terminaux
 - **100%** : `ready`
@@ -116,8 +130,11 @@ Chaque étape du cycle de vie génère une action dans `action_logs` :
 - `PROVIDER_CREATE` : Instance créée chez le provider
 - `PERSIST_PROVIDER_ID` : ID provider persisté en DB
 - `PROVIDER_CREATE_VOLUME` : Volume de données créé (si applicable)
+- `PROVIDER_VOLUME_RESIZE` : Volume agrandi (Scaleway uniquement - Block Storage 20GB → 200GB)
 - `PROVIDER_START` : Instance démarrée
 - `PROVIDER_GET_IP` : Adresse IP récupérée
+- `PROVIDER_SECURITY_GROUP` : Security Groups configurés (Scaleway uniquement - ports SSH et worker)
+- `WORKER_SSH_ACCESSIBLE` : SSH accessible sur port 22
 - `INSTANCE_CREATED` : Instance créée (transition vers `booting`)
 
 #### Booting

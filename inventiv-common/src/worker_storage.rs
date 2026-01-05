@@ -8,7 +8,7 @@ use std::env;
 /// - WORKER_DATA_VOLUME_GB_DEFAULT: fallback size when model is unknown (integer GB)
 ///
 /// Notes:
-/// - Keeping this in orchestrator avoids VM disk-full failures during bootstrap/model pull.
+/// - Keeping this in common allows sharing between API (for UI display) and orchestrator (for provisioning).
 /// - Provider-specific volume perf (IOPS) stays configured via instance_types.allocation_params.<provider>.data_volume_perf_iops.
 pub fn recommended_data_volume_gb(model_id: &str, default_gb: i64) -> Option<i64> {
     if let Ok(v) = env::var("WORKER_DATA_VOLUME_GB") {
@@ -30,22 +30,22 @@ pub fn recommended_data_volume_gb(model_id: &str, default_gb: i64) -> Option<i64
         || model.contains("0.6b")
         || model.contains("0_6b")
     {
-        return Some(80);
+        return Some(50);
     }
     if model.contains("1b")
         || model.contains("1.5b")
         || model.contains("1_5b")
         || model.contains("2b")
     {
-        return Some(120);
+        return Some(70);
     }
 
     // Common mid-size LLMs.
     if model.contains("7b") || model.contains("8b") {
-        return Some(200);
+        return Some(100);
     }
     if model.contains("12b") || model.contains("13b") || model.contains("14b") {
-        return Some(300);
+        return Some(120);
     }
 
     // Larger sizes (safer defaults, especially with vLLM caches).
@@ -54,14 +54,13 @@ pub fn recommended_data_volume_gb(model_id: &str, default_gb: i64) -> Option<i64
         || model.contains("30b")
         || model.contains("32b")
     {
-        return Some(500);
+        return Some(180);
     }
     if model.contains("70b") || model.contains("72b") {
-        return Some(1000);
+        return Some(450);
     }
 
     // Fallback for unknown models.
     Some(default_gb).filter(|gb| *gb > 0)
 }
 
-// Note: default_gb is provided by caller (provider settings / env / built-in).
