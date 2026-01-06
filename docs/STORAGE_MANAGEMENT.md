@@ -28,6 +28,8 @@ CREATE TABLE instance_volumes (
     created_at timestamptz DEFAULT now(),
     attached_at timestamptz,
     deleted_at timestamptz,
+    reconciled_at timestamptz,  -- Timestamp de réconciliation complète (après vérification provider)
+    last_reconciliation timestamptz,  -- Dernière tentative de réconciliation (pour backoff)
     error_message text,
     is_boot boolean DEFAULT false NOT NULL
 );
@@ -86,6 +88,23 @@ if let Ok(attached_volumes) = provider.list_attached_volumes(&zone, &provider_in
 
 ## Gestion du cycle de vie
 
+### Principe de préservation des données
+
+**Toutes les données de volumes sont préservées** dans la table `instance_volumes` pour :
+- **Audit** : Traçabilité complète de tous les volumes alloués et libérés
+- **FinOps** : Calculs et recalculs précis des coûts basés sur l'usage détaillé à la seconde près
+- **Debug** : Analyse des problèmes de suppression ou de réconciliation
+- **Analyse** : Statistiques sur les volumes créés/supprimés par type, zone, instance
+
+**Champs de suivi** :
+- `created_at` : Création du volume
+- `attached_at` : Attachement à l'instance
+- `deleted_at` : Demande de suppression (marqué par terminator)
+- `reconciled_at` : Réconciliation complète (marqué par job-volume-reconciliation après vérification provider)
+- `last_reconciliation` : Dernière tentative de réconciliation (pour backoff)
+
+**Aucune donnée n'est jamais supprimée** - seulement marquée avec des timestamps pour indiquer l'état du cycle de vie.
+
 ### Création
 
 #### Volumes de données explicites
@@ -106,8 +125,27 @@ if let Ok(attached_volumes) = provider.list_attached_volumes(&zone, &provider_in
 2. **Découverte des volumes** : `list_attached_volumes` pour trouver tous les volumes
 3. **Marquage pour suppression** : Tous les volumes avec `delete_on_terminate=true`
 4. **Suppression séquentielle** : `PROVIDER_DELETE_VOLUME` pour chaque volume
-5. **Suppression de l'instance** : `PROVIDER_DELETE`
-6. **Transition d'état** : `terminating → terminated`
+5. **Marquage dans DB** : `status='deleted'`, `deleted_at=NOW()` (marque la demande de suppression)
+6. **Suppression de l'instance** : `PROVIDER_DELETE`
+7. **Transition d'état** : `terminating → terminated`
+
+#### Réconciliation des volumes
+
+Le job `job-volume-reconciliation` vérifie périodiquement (toutes les 60s) :
+- **Volumes marqués `deleted_at` mais non réconciliés** : Vérifie si le volume existe encore chez le provider
+  - Si existe : Retry la suppression
+  - Si n'existe plus : Marque `reconciled_at=NOW()` (réconciliation complète)
+
+**Important** : Toutes les données sont **préservées** dans la DB pour :
+- **Audit** : Traçabilité complète de tous les volumes alloués et libérés
+- **FinOps** : Calculs et recalculs précis des coûts basés sur l'usage détaillé à la seconde près
+- **Debug** : Analyse des problèmes de suppression
+- **Analyse** : Statistiques sur les volumes créés/supprimés
+
+**Champs de réconciliation** :
+- `deleted_at` : Timestamp de la demande de suppression (marqué par terminator)
+- `reconciled_at` : Timestamp de la réconciliation complète (marqué par job-volume-reconciliation après vérification provider)
+- `last_reconciliation` : Timestamp de la dernière tentative de réconciliation (pour backoff)
 
 #### Logging
 
@@ -115,6 +153,11 @@ Chaque suppression de volume génère une action :
 - **Action type** : `PROVIDER_DELETE_VOLUME`
 - **Métadonnées** : `zone`, `volume_id`, `volume_type`, `size_bytes`
 - **Status** : `success` ou `failed` avec message d'erreur
+
+Chaque réconciliation génère une action :
+- **Action type** : `VOLUME_RECONCILIATION_RETRY_DELETE` ou `VOLUME_RECONCILIATION_ORPHAN`
+- **Métadonnées** : `zone`, `volume_id`, `instance_id`, `reason`
+- **Status** : `success` (volume confirmé supprimé) ou `failed` (retry nécessaire)
 
 ### Cas spéciaux
 

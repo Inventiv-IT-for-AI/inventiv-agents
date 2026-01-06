@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { apiUrl } from "@/lib/api";
 import type { ActionLog, ActionType, Instance } from "@/lib/types";
@@ -11,6 +12,7 @@ import type { LoadRangeResult } from "ia-widgets";
 import { IACopyButton, IADataTable, type IADataTableColumn } from "ia-widgets";
 import { displayOrDash } from "@/lib/utils";
 import { useRealtimeEvents } from "@/hooks/useRealtimeEvents";
+import { InstanceVolumesHistory } from "./InstanceVolumesHistory";
 
 interface InstanceTimelineModalProps {
   open: boolean;
@@ -39,10 +41,12 @@ export function InstanceTimelineModal({
   const [recentLogs, setRecentLogs] = useState<ActionLog[]>([]);
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const [tableHeight, setTableHeight] = useState(400);
+  const [activeTab, setActiveTab] = useState<"actions" | "volumes">("actions");
 
   useEffect(() => {
     if (open && instanceId) {
       setSelectedLog(null);
+      setActiveTab("actions");
       void fetchActionTypes();
       void fetchInstance();
       void fetchRecentLogs();
@@ -424,7 +428,7 @@ export function InstanceTimelineModal({
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <DialogTitle className="truncate">Actions de l&apos;instance</DialogTitle>
+                  <DialogTitle className="truncate">Instance</DialogTitle>
                   <Badge variant="outline" className="text-xs">{displayOrDash(instance?.status)}</Badge>
                 </div>
                 <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground font-mono break-all">
@@ -469,248 +473,243 @@ export function InstanceTimelineModal({
               </div>
             </div>
 
-            <div className="mt-3 grid grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-2 text-xs">
-              <div className="flex items-baseline gap-2 min-w-0 col-span-2 lg:col-span-2">
-                <span className="text-muted-foreground">Model</span>
-                <span className="text-muted-foreground">:</span>
-                <span className="font-medium min-w-0 truncate">
-                  {instance?.model_name && instance?.model_code
-                    ? `${instance.model_name} (${instance.model_code})`
-                    : instance?.model_code
-                      ? instance.model_code
-                      : "-"}
-                </span>
-              </div>
-              <div className="flex items-baseline gap-2 min-w-0">
-                <span className="text-muted-foreground">Mode</span>
-                <span className="text-muted-foreground">:</span>
-                <span className="font-medium">{vllmMode}</span>
-              </div>
-              <div className="flex items-baseline gap-2 min-w-0">
-                <span className="text-muted-foreground">Créée</span>
-                <span className="text-muted-foreground">:</span>
-                <span className="font-medium min-w-0 truncate">{formatTimestamp(instance?.created_at)}</span>
-              </div>
-              <div className="flex items-baseline gap-2 min-w-0">
-                <span className="text-muted-foreground">Dernier ping</span>
-                <span className="text-muted-foreground">:</span>
-                <span className="font-medium min-w-0 truncate">{formatTimestamp(lastPing)}</span>
-              </div>
-              <div className="flex items-baseline gap-2 min-w-0">
-                <span className="text-muted-foreground">Région</span>
-                <span className="text-muted-foreground">:</span>
-                <span className="font-medium min-w-0 truncate">{displayOrDash(instance?.region)}</span>
-              </div>
-              <div className="flex items-baseline gap-2 min-w-0">
-                <span className="text-muted-foreground">Zone</span>
-                <span className="text-muted-foreground">:</span>
-                <span className="font-medium min-w-0 truncate">{displayOrDash(instance?.zone)}</span>
-              </div>
-              <div className="flex items-baseline gap-2 min-w-0 col-span-2 lg:col-span-2">
-                <span className="text-muted-foreground">Type</span>
-                <span className="text-muted-foreground">:</span>
-                <span className="font-medium min-w-0 truncate">{displayOrDash(instance?.instance_type)}</span>
-              </div>
-              <div className="flex items-baseline gap-2 min-w-0">
-                <span className="text-muted-foreground">CPU</span>
-                <span className="text-muted-foreground">:</span>
-                <span className="font-medium">{typeof instance?.cpu_count === "number" && instance.cpu_count > 0 ? instance.cpu_count : "-"}</span>
-              </div>
-              <div className="flex items-baseline gap-2 min-w-0">
-                <span className="text-muted-foreground">RAM</span>
-                <span className="text-muted-foreground">:</span>
-                <span className="font-medium">{typeof instance?.ram_gb === "number" && instance.ram_gb > 0 ? `${instance.ram_gb} GB` : "-"}</span>
-              </div>
-              <div className="flex items-baseline gap-2 min-w-0">
-                <span className="text-muted-foreground">GPU</span>
-                <span className="text-muted-foreground">:</span>
-                <span className="font-medium">{instance?.gpu_count ?? "-"}</span>
-              </div>
-              <div className="flex items-baseline gap-2 min-w-0">
-                <span className="text-muted-foreground">VRAM</span>
-                <span className="text-muted-foreground">:</span>
-                <span className="font-medium">{instance?.gpu_vram ? `${instance.gpu_vram} GB` : "-"}</span>
-              </div>
-              <div className="flex items-baseline gap-2 min-w-0 col-span-2 lg:col-span-2">
-                <span className="text-muted-foreground">IP</span>
-                <span className="text-muted-foreground">:</span>
-                <span className="font-medium font-mono flex items-center gap-2 min-w-0 truncate">
-                  {displayOrDash(instance?.ip_address)}
-                  {instance?.ip_address ? <IACopyButton text={instance.ip_address} /> : null}
-                </span>
-              </div>
-              <div className="flex items-baseline gap-2 min-w-0 col-span-2 lg:col-span-2">
-                <span className="text-muted-foreground">Provider</span>
-                <span className="text-muted-foreground">:</span>
-                <span className="font-medium min-w-0 truncate">{displayOrDash(instance?.provider_name)}</span>
-              </div>
-              <div className="flex items-baseline gap-2 min-w-0 col-span-2 lg:col-span-2">
-                <span className="text-muted-foreground">Provider instance</span>
-                <span className="text-muted-foreground">:</span>
-                <span className="font-medium font-mono min-w-0 truncate">
-                  {displayOrDash(instance?.provider_instance_id)}
-                </span>
-              </div>
-              <div className="flex flex-col gap-1 min-w-0 col-span-2 lg:col-span-4">
-                <div className="flex items-baseline gap-2 min-w-0">
-                  <span className="text-muted-foreground">Storage</span>
-                  <span className="text-muted-foreground">:</span>
+            <div className="mt-3 space-y-3 text-[10px]">
+              {/* Model & Mode */}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-muted-foreground">Model</span>
                   <span className="font-medium min-w-0 truncate">
-                    {(() => {
-                      const count = instance?.storage_count ?? (instance?.storages?.length ?? 0);
-                      // Prefer aggregated sizes from list/search payload; fallback to detailed storages (instance/:id).
-                      const sizesFromSummary = (instance?.storage_sizes_gb ?? [])
-                        .filter((n) => typeof n === "number" && n > 0)
-                        .map((n) => `${n}GB`);
-                      const sizesFromDetails = (instance?.storages ?? [])
-                        .map((s) => s.size_gb)
-                        .filter((n): n is number => typeof n === "number" && n > 0)
-                        .map((n) => `${n}GB`);
-                      const sizes = (sizesFromSummary.length ? sizesFromSummary : sizesFromDetails).join(", ");
-                      return count > 0 ? `${count} storages${sizes ? ` (${sizes})` : ""}` : "-";
-                    })()}
+                    {instance?.model_name && instance?.model_code
+                      ? `${instance.model_name} (${instance.model_code})`
+                      : instance?.model_code
+                        ? instance.model_code
+                        : "-"}
                   </span>
                 </div>
-                {instance?.storages?.length ? (
-                  <div className="text-xs text-muted-foreground space-y-1">
-                    {instance.storages.map((s, idx) => (
-                      <div key={`${s.provider_volume_id}:${idx}`} className="truncate">
-                        <span className="font-medium text-foreground/90">Storage {idx + 1}</span>
-                        <span className="text-muted-foreground">:</span>{" "}
-                        <span className="font-medium">{s.volume_type}</span>
-                        {" - "}
-                        <span className="font-medium">{s.size_gb ? `${s.size_gb}GB` : "-"}</span>
-                        {" - "}
-                        <span className="font-mono">{s.name ?? "-"}</span>
-                        {" - "}
-                        <span className="font-mono">{s.provider_volume_id}</span>
-                        {s.is_boot ? <span className="text-muted-foreground"> (boot)</span> : null}
-                      </div>
-                    ))}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-muted-foreground">•</span>
+                  <span className="text-muted-foreground">Mode</span>
+                  <span className="font-medium">{vllmMode}</span>
+                </div>
+              </div>
+
+              {/* Caractéristiques techniques */}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-muted-foreground">CPU</span>
+                  <span className="font-medium">{typeof instance?.cpu_count === "number" && instance.cpu_count > 0 ? instance.cpu_count : "-"}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-muted-foreground">•</span>
+                  <span className="text-muted-foreground">RAM</span>
+                  <span className="font-medium">{typeof instance?.ram_gb === "number" && instance.ram_gb > 0 ? `${instance.ram_gb} GB` : "-"}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-muted-foreground">•</span>
+                  <span className="text-muted-foreground">GPU</span>
+                  <span className="font-medium">{instance?.gpu_count ?? "-"}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-muted-foreground">•</span>
+                  <span className="text-muted-foreground">VRAM</span>
+                  <span className="font-medium">{instance?.gpu_vram ? `${instance.gpu_vram} GB` : "-"}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-muted-foreground">•</span>
+                  <span className="text-muted-foreground">Type</span>
+                  <span className="font-medium min-w-0 truncate">{displayOrDash(instance?.instance_type)}</span>
+                </div>
+              </div>
+
+              {/* Infos Provider */}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-muted-foreground">Provider</span>
+                  <span className="font-medium min-w-0 truncate">{displayOrDash(instance?.provider_name)}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-muted-foreground">•</span>
+                  <span className="text-muted-foreground">Région</span>
+                  <span className="font-medium min-w-0 truncate">{displayOrDash(instance?.region)}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-muted-foreground">•</span>
+                  <span className="text-muted-foreground">Zone</span>
+                  <span className="font-medium min-w-0 truncate">{displayOrDash(instance?.zone)}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-muted-foreground">•</span>
+                  <span className="text-muted-foreground">IP</span>
+                  <span className="font-medium font-mono flex items-center gap-1 min-w-0 truncate">
+                    {displayOrDash(instance?.ip_address)}
+                    {instance?.ip_address ? <IACopyButton text={instance.ip_address} /> : null}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-muted-foreground">•</span>
+                  <span className="text-muted-foreground">Provider ID</span>
+                  <span className="font-medium font-mono min-w-0 truncate">
+                    {displayOrDash(instance?.provider_instance_id)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Infos de santé */}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-muted-foreground">Créée</span>
+                  <span className="font-medium min-w-0 truncate">{formatTimestamp(instance?.created_at)}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-muted-foreground">•</span>
+                  <span className="text-muted-foreground">Dernier ping</span>
+                  <span className="font-medium min-w-0 truncate">{formatTimestamp(lastPing)}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-muted-foreground">•</span>
+                  <span className="text-muted-foreground">Readiness</span>
+                  <div className="flex items-center gap-1">
+                    <Badge variant="outline" className="text-[9px] py-0 px-1.5 h-4">
+                      vLLM {readiness.vllmHttp ?? "—"}
+                    </Badge>
+                    <Badge variant="outline" className="text-[9px] py-0 px-1.5 h-4">
+                      Model {readiness.modelLoaded ?? "—"}
+                    </Badge>
+                    <Badge variant="outline" className="text-[9px] py-0 px-1.5 h-4">
+                      Warmup {readiness.warmup ?? "—"}
+                    </Badge>
                   </div>
-                ) : null}
+                </div>
               </div>
-              <div className="flex items-center gap-2 min-w-0 col-span-2 lg:col-span-4">
-                <span className="text-muted-foreground">Readiness</span>
-                <span className="text-muted-foreground">:</span>
-                <Badge variant="outline" className="text-[11px]">
-                  vLLM HTTP {readiness.vllmHttp ?? "—"}
-                </Badge>
-                <Badge variant="outline" className="text-[11px]">
-                  Model {readiness.modelLoaded ?? "—"}
-                </Badge>
-                <Badge variant="outline" className="text-[11px]">
-                  Warmup {readiness.warmup ?? "—"}
-                </Badge>
-              </div>
+            </div>
+
+            {/* Tabs positioned right after instance details */}
+            <div className="mt-4 border-t pt-4">
+              <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "actions" | "volumes")} className="w-full">
+                <TabsList className="grid w-full grid-cols-2">
+                  <TabsTrigger value="actions" className="text-xs">Actions</TabsTrigger>
+                  <TabsTrigger value="volumes" className="text-xs">Volumes</TabsTrigger>
+                </TabsList>
+              </Tabs>
             </div>
           </DialogHeader>
 
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] flex-1 min-h-0 overflow-hidden">
-                <div ref={tableContainerRef} className="min-w-0 flex flex-col overflow-hidden px-3 pt-2">
-                  <IADataTable<ActionLog>
-                    // Use a stable listId so column prefs persist across instances (localStorage key is derived from listId).
-                    listId="monitoring:instance_actions"
-                    dataKey={queryKey}
-                    title={<span className="text-sm font-medium pl-1">Actions</span>}
-                    height={tableHeight}
-                    rowHeight={40}
-                    columns={columns}
-                    loadRange={loadRange}
-                    onCountsChange={handleCountsChange}
-                    leftMeta={
-                      <span className="text-xs text-muted-foreground font-mono">
-                        {counts.filtered !== counts.total
-                          ? `Filtré ${counts.filtered} - Total ${counts.total}`
-                          : `Total ${counts.total}`}
-                      </span>
-                    }
-                    rightHeader={
-                      <div className="flex items-center gap-2">
-                        {counts.filtered > 0 ? (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-7 text-xs"
-                            onClick={copyAllActionsToClipboard}
-                            disabled={copyingActions}
-                            title="Copier toutes les actions en JSON"
-                          >
-                            {copiedActions ? (
-                              <>
-                                <Check className="h-3 w-3 mr-1 text-green-600" />
-                                Copié
-                              </>
-                            ) : (
-                              <>
-                                <Copy className="h-3 w-3 mr-1" />
-                                {copyingActions ? "Copie..." : "Copier JSON"}
-                              </>
-                            )}
-                          </Button>
-                        ) : null}
-                      </div>
-                    }
-                    onRowClick={(row) => setSelectedLog(row)}
-                  />
-                </div>
-
-                <div className="hidden lg:block border-l bg-muted/10 min-w-0 flex flex-col min-h-0 h-full">
-                  <ScrollArea className="h-full">
-                    <div className="p-4">
-                      {!selectedLog ? (
-                        <div className="text-sm text-muted-foreground">Clique une action pour voir le détail.</div>
-                      ) : (
-                        <div className="space-y-3">
-                          <div className="flex items-center gap-2">
-                            <div className="p-2 rounded-md bg-background border">
-                              {(() => {
-                                const Icon = getActionIcon(selectedLog.action_type);
-                                return <Icon className="h-4 w-4" />;
-                              })()}
-                            </div>
-                            <div className="min-w-0">
-                              <div className="font-semibold truncate">{formatActionLabel(selectedLog.action_type)}</div>
-                              <div className="text-xs text-muted-foreground font-mono">{selectedLog.id}</div>
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-2 text-xs">
-                            <div className="text-muted-foreground">Statut</div>
-                            <div className="font-medium">{selectedLog.status}</div>
-                            <div className="text-muted-foreground">Composant</div>
-                            <div className="font-medium">{selectedLog.component}</div>
-                            <div className="text-muted-foreground">Créé</div>
-                            <div className="font-medium">{formatTimestamp(selectedLog.created_at)}</div>
-                            <div className="text-muted-foreground">Durée</div>
-                            <div className="font-medium font-mono">{formatDuration(selectedLog.duration_ms)}</div>
-                            <div className="text-muted-foreground">Transition</div>
-                            <div className="font-medium font-mono">
-                              {selectedLog.instance_status_before ?? "-"} → {selectedLog.instance_status_after ?? "-"}
-                            </div>
-                          </div>
-
-                          {selectedLog.error_message ? (
-                            <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md p-2">
-                              {selectedLog.error_message}
-                            </div>
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "actions" | "volumes")} className="h-full flex flex-col">
+              <TabsContent value="actions" className="flex-1 min-h-0 mt-0 p-3">
+                <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] h-full gap-4 min-h-0 overflow-hidden">
+                  <div ref={tableContainerRef} className="min-w-0 flex flex-col overflow-hidden">
+                    <IADataTable<ActionLog>
+                      // Use a stable listId so column prefs persist across instances (localStorage key is derived from listId).
+                      listId="monitoring:instance_actions"
+                      dataKey={queryKey}
+                      title={<span className="text-sm font-medium pl-1">Actions</span>}
+                      height={tableHeight}
+                      rowHeight={40}
+                      columns={columns}
+                      loadRange={loadRange}
+                      onCountsChange={handleCountsChange}
+                      leftMeta={
+                        <span className="text-xs text-muted-foreground font-mono">
+                          {counts.filtered !== counts.total
+                            ? `Filtré ${counts.filtered} - Total ${counts.total}`
+                            : `Total ${counts.total}`}
+                        </span>
+                      }
+                      rightHeader={
+                        <div className="flex items-center gap-2">
+                          {counts.filtered > 0 ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 text-xs"
+                              onClick={copyAllActionsToClipboard}
+                              disabled={copyingActions}
+                              title="Copier toutes les actions en JSON"
+                            >
+                              {copiedActions ? (
+                                <>
+                                  <Check className="h-3 w-3 mr-1 text-green-600" />
+                                  Copié
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="h-3 w-3 mr-1" />
+                                  {copyingActions ? "Copie..." : "Copier JSON"}
+                                </>
+                              )}
+                            </Button>
                           ) : null}
-
-                          {selectedLog.metadata && Object.keys(selectedLog.metadata).length > 0 ? (
-                            <div className="text-xs">
-                              <div className="text-muted-foreground mb-1">Métadonnées</div>
-                              <pre className="text-[11px] leading-snug bg-background border rounded-md p-2 overflow-x-auto whitespace-pre-wrap break-words">
-{JSON.stringify(selectedLog.metadata, null, 2)}
-                              </pre>
-                            </div>
-                          ) : (
-                            <div className="text-xs text-muted-foreground">Aucune métadonnée.</div>
-                          )}
                         </div>
-                      )}
-                    </div>
-                  </ScrollArea>
+                      }
+                      onRowClick={(row) => setSelectedLog(row)}
+                    />
+                  </div>
+
+                  <div className="hidden lg:block border-l bg-muted/10 min-w-0 flex flex-col min-h-0 h-full">
+                    <ScrollArea className="h-full">
+                      <div className="p-4">
+                        {!selectedLog ? (
+                          <div className="text-sm text-muted-foreground">Clique une action pour voir le détail.</div>
+                        ) : (
+                          <div className="space-y-3">
+                            <div className="flex items-center gap-2">
+                              <div className="p-2 rounded-md bg-background border">
+                                {(() => {
+                                  const Icon = getActionIcon(selectedLog.action_type);
+                                  return <Icon className="h-4 w-4" />;
+                                })()}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="font-semibold truncate">{formatActionLabel(selectedLog.action_type)}</div>
+                                <div className="text-xs text-muted-foreground font-mono">{selectedLog.id}</div>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-2 text-xs">
+                              <div className="text-muted-foreground">Statut</div>
+                              <div className="font-medium">{selectedLog.status}</div>
+                              <div className="text-muted-foreground">Composant</div>
+                              <div className="font-medium">{selectedLog.component}</div>
+                              <div className="text-muted-foreground">Créé</div>
+                              <div className="font-medium">{formatTimestamp(selectedLog.created_at)}</div>
+                              <div className="text-muted-foreground">Durée</div>
+                              <div className="font-medium font-mono">{formatDuration(selectedLog.duration_ms)}</div>
+                              <div className="text-muted-foreground">Transition</div>
+                              <div className="font-medium font-mono">
+                                {selectedLog.instance_status_before ?? "-"} → {selectedLog.instance_status_after ?? "-"}
+                              </div>
+                            </div>
+
+                            {selectedLog.error_message ? (
+                              <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md p-2">
+                                {selectedLog.error_message}
+                              </div>
+                            ) : null}
+
+                            {selectedLog.metadata && Object.keys(selectedLog.metadata).length > 0 ? (
+                              <div className="text-xs">
+                                <div className="text-muted-foreground mb-1">Métadonnées</div>
+                                <pre className="text-[11px] leading-snug bg-background border rounded-md p-2 overflow-x-auto whitespace-pre-wrap break-words">
+{JSON.stringify(selectedLog.metadata, null, 2)}
+                                </pre>
+                              </div>
+                            ) : (
+                              <div className="text-xs text-muted-foreground">Aucune métadonnée.</div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </ScrollArea>
+                  </div>
                 </div>
+              </TabsContent>
+              <TabsContent value="volumes" className="flex-1 min-h-0 mt-0 p-3">
+                <div className="h-full overflow-auto">
+                  <InstanceVolumesHistory storages={instance?.storages} />
+                </div>
+              </TabsContent>
+            </Tabs>
           </div>
 
           <DialogFooter className="px-5 py-3 border-t sm:justify-between flex-shrink-0">

@@ -1616,11 +1616,27 @@ pub struct InstanceResponse {
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct InstanceStorageInfo {
+    // Identifiants
+    pub id: uuid::Uuid,
     pub provider_volume_id: String,
     pub name: Option<String>,
     pub volume_type: String,
     pub size_gb: Option<i64>,
     pub is_boot: bool,
+    
+    // Statut et cycle de vie
+    pub status: String,  // 'attached', 'detached', 'deleting', 'deleted'
+    pub delete_on_terminate: bool,
+    
+    // Timestamps (historique complet)
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub attached_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub reconciled_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_reconciliation: Option<chrono::DateTime<chrono::Utc>>,
+    
+    // Erreurs et réconciliation
+    pub error_message: Option<String>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -3094,17 +3110,44 @@ async fn get_instance(
             // Enrich instance with progress percentage
             progress::enrich_instances_with_progress(&state.db, std::slice::from_mut(&mut inst)).await;
             let storages: Vec<InstanceStorageInfo> =
-                sqlx::query_as::<Postgres, (String, Option<String>, String, i64, bool)>(
+                sqlx::query_as::<Postgres, (
+                    uuid::Uuid,           // id
+                    String,                // provider_volume_id
+                    Option<String>,        // provider_volume_name
+                    String,                // volume_type
+                    i64,                   // size_bytes
+                    bool,                  // is_boot
+                    String,                // status
+                    bool,                  // delete_on_terminate
+                    chrono::DateTime<chrono::Utc>,  // created_at
+                    Option<chrono::DateTime<chrono::Utc>>,  // attached_at
+                    Option<chrono::DateTime<chrono::Utc>>,  // deleted_at
+                    Option<chrono::DateTime<chrono::Utc>>,  // reconciled_at
+                    Option<chrono::DateTime<chrono::Utc>>,  // last_reconciliation
+                    Option<String>,        // error_message
+                )>(
                     r#"
                 SELECT
-                  provider_volume_id,
-                  provider_volume_name,
-                  volume_type,
-                  size_bytes,
-                  is_boot
-                FROM instance_volumes
-                WHERE instance_id = $1 AND deleted_at IS NULL
-                ORDER BY is_boot DESC, size_bytes DESC
+                  iv.id,
+                  iv.provider_volume_id,
+                  iv.provider_volume_name,
+                  iv.volume_type,
+                  iv.size_bytes,
+                  iv.is_boot,
+                  iv.status,
+                  iv.delete_on_terminate,
+                  iv.created_at,
+                  iv.attached_at,
+                  iv.deleted_at,
+                  iv.reconciled_at,
+                  iv.last_reconciliation,
+                  iv.error_message
+                FROM instance_volumes iv
+                WHERE iv.instance_id = $1
+                ORDER BY 
+                  -- Actifs en premier, puis par date de création décroissante
+                  CASE WHEN iv.deleted_at IS NULL THEN 0 ELSE 1 END,
+                  iv.created_at DESC
                 "#,
                 )
                 .bind(id)
@@ -3113,8 +3156,9 @@ async fn get_instance(
                 .unwrap_or_default()
                 .into_iter()
                 .map(
-                    |(provider_volume_id, name, volume_type, size_bytes, is_boot)| {
+                    |(id, provider_volume_id, name, volume_type, size_bytes, is_boot, status, delete_on_terminate, created_at, attached_at, deleted_at, reconciled_at, last_reconciliation, error_message)| {
                         InstanceStorageInfo {
+                            id,
                             provider_volume_id,
                             name,
                             volume_type,
@@ -3129,6 +3173,14 @@ async fn get_instance(
                                 None
                             },
                             is_boot,
+                            status,
+                            delete_on_terminate,
+                            created_at,
+                            attached_at,
+                            deleted_at,
+                            reconciled_at,
+                            last_reconciliation,
+                            error_message,
                         }
                     },
                 )

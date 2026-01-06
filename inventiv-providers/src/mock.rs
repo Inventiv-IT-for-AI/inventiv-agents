@@ -619,6 +619,28 @@ impl CloudProvider for MockProvider {
             })
             .collect())
     }
+
+    async fn list_attached_volumes(
+        &self,
+        _zone: &str,
+        _server_id: &str,
+    ) -> Result<Vec<inventory::AttachedVolume>> {
+        // Mock provider doesn't track volumes separately - they're part of the Docker runtime
+        // Return empty list as volumes are managed by Docker Compose
+        Ok(vec![])
+    }
+
+    async fn delete_volume(&self, _zone: &str, _volume_id: &str) -> Result<bool> {
+        // Mock provider doesn't have separate volumes - they're part of Docker runtime
+        // Volumes are cleaned up when the runtime is stopped
+        Ok(true)
+    }
+
+    async fn check_volume_exists(&self, _zone: &str, _volume_id: &str) -> Result<bool> {
+        // Mock provider doesn't track volumes separately
+        // Always return false as volumes don't exist independently
+        Ok(false)
+    }
 }
 
 

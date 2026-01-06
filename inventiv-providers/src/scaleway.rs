@@ -1330,6 +1330,51 @@ impl CloudProvider for ScalewayProvider {
         ))
     }
 
+    async fn check_volume_exists(&self, zone: &str, volume_id: &str) -> Result<bool> {
+        // Try Instance API first (for local volumes like l_ssd)
+        let instance_url = format!(
+            "https://api.scaleway.com/instance/v1/zones/{}/volumes/{}",
+            zone, volume_id
+        );
+        
+        let resp = self
+            .client
+            .get(&instance_url)
+            .headers(self.headers())
+            .send()
+            .await?;
+        
+        if resp.status().is_success() {
+            return Ok(true);
+        }
+        
+        // If Instance API fails, try Block Storage API (for SBS volumes)
+        let block_url = format!(
+            "https://api.scaleway.com/block/v1/zones/{}/volumes/{}",
+            zone, volume_id
+        );
+        
+        let resp2 = self
+            .client
+            .get(&block_url)
+            .headers(self.headers())
+            .send()
+            .await?;
+        
+        if resp2.status().is_success() {
+            return Ok(true);
+        }
+        
+        // If both APIs return 404, volume doesn't exist
+        if resp2.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        
+        // For other errors, assume volume doesn't exist (conservative approach)
+        // This avoids false positives in reconciliation
+        Ok(false)
+    }
+
     async fn resize_block_storage(
         &self,
         zone: &str,

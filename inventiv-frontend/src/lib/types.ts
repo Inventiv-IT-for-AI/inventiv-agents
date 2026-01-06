@@ -45,11 +45,27 @@ export type Instance = {
 };
 
 export type InstanceStorageInfo = {
+    // Identifiants
+    id: string;
     provider_volume_id: string;
     name?: string | null;
     volume_type: string;
     size_gb?: number | null;
     is_boot: boolean;
+    
+    // Statut et cycle de vie
+    status: string;  // 'attached', 'detached', 'deleting', 'deleted'
+    delete_on_terminate: boolean;
+    
+    // Timestamps (historique complet)
+    created_at: string;
+    attached_at?: string | null;
+    deleted_at?: string | null;
+    reconciled_at?: string | null;
+    last_reconciliation?: string | null;
+    
+    // Erreurs et réconciliation
+    error_message?: string | null;
 };
 
 export type Provider = {

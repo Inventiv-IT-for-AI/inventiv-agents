@@ -189,6 +189,13 @@ pub trait CloudProvider: Send + Sync {
         Ok(vec![])
     }
 
+    // Optional: check if a volume exists at the provider.
+    // Used for volume reconciliation to detect orphan volumes or verify deletions.
+    // Default implementation returns Ok(false) (not supported).
+    async fn check_volume_exists(&self, _zone: &str, _volume_id: &str) -> Result<bool> {
+        Ok(false)
+    }
+
     // Optional: provider-specific instance type behavior
     // Default implementations return conservative defaults (no special handling needed)
 

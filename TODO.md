@@ -66,10 +66,44 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 - ✅ **Progression "starting"**: Corrigé - les instances "starting" affichent maintenant la progression correcte
 - ✅ **Health checks "starting"**: Corrigé - les instances "starting" sont maintenant vérifiées par le health check job
 - ✅ **Résolution modèles publics**: Corrigé - les modèles HuggingFace publics fonctionnent sans organisation
+- ⚠️ **Volumes non libérés**: Certaines terminaisons d'instances ne libèrent pas correctement les block storage associés (voir section "Fiabilité Workers & Instances").
 
 ---
 
 ## 🚧 À faire (backlog)
+
+### Fiabilité Workers & Instances (Priorité)
+
+#### 1. Détection des Workers Morts
+- [ ] Créer `job-worker-watchdog.rs` pour détecter workers sans heartbeat récent (> 5 min)
+- [ ] Transition automatique `ready` → `worker_dead` si heartbeat > seuil configurable
+- [ ] Option de réinstallation automatique pour les workers morts
+- [ ] Tests unitaires et E2E
+
+#### 2. Amélioration des Health Checks
+- [ ] Implémenter backoff exponentiel pour health checks échoués
+- [ ] Réduire timeouts par défaut (configurables via env vars)
+- [ ] Ajouter cache des résultats de health checks (< 30s)
+- [ ] Métriques de latence des health checks
+
+#### 3. Extension du Job Recovery
+- [ ] Détecter `installing` / `starting` bloquées > seuil configurable
+- [ ] Ajouter alertes (logs structurés) pour instances bloquées
+- [ ] Circuit breaker pour instances avec trop d'échecs consécutifs
+
+#### 4. Réconciliation des Volumes (EN COURS)
+- [ ] Créer `job-volume-reconciliation.rs` pour détecter volumes orphelins
+- [ ] Détecter volumes dans DB mais pas chez provider (nettoyer DB)
+- [ ] Détecter volumes chez provider mais pas dans DB (tracker et supprimer)
+- [ ] Retry automatique avec backoff pour suppressions échouées
+- [ ] Vérifier volumes marqués `deleted_at` mais qui existent encore chez provider
+- [ ] Tests E2E pour valider la réconciliation
+
+#### 5. Métriques et Observabilité
+- [ ] Exposer métriques Prometheus pour tous les jobs (latence, taux d'échec, instances traitées)
+- [ ] Dashboard Grafana (optionnel)
+- [ ] Système d'alertes basé sur métriques (instances bloquées, workers morts, volumes orphelins)
+- [ ] Étendre utilisation de `correlation_id` pour tracing end-to-end
 
 ### Scaleway Provider - Implémentation de la séquence validée
 - [ ] **Adapter le code Scaleway Provider** pour utiliser la séquence validée :

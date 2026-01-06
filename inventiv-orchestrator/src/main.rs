@@ -19,6 +19,7 @@ mod provisioning_job;
 mod recovery_job;
 mod services; // NEW
 mod terminator_job;
+mod volume_reconciliation_job;
 mod watch_dog_job;
 // worker_storage moved to inventiv-common
 use sqlx::postgres::PgPoolOptions;
@@ -413,6 +414,12 @@ async fn main() {
     let redis_recovery = state.redis_client.clone();
     tokio::spawn(async move {
         recovery_job::run(db_recovery, redis_recovery).await;
+    });
+
+    // job-volume-reconciliation (reconcile volumes between DB and provider)
+    let db_volume_reconciliation = state.db.clone();
+    tokio::spawn(async move {
+        volume_reconciliation_job::run(db_volume_reconciliation).await;
     });
 
     // 5. Start HTTP Server (Admin API - Simplified for internal health/debug only)
