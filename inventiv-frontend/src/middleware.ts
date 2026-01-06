@@ -15,8 +15,13 @@ export function middleware(request: NextRequest) {
   console.log("[Middleware] All cookies:", allCookies.map(c => `${c.name}=${c.value.substring(0, 20)}...`));
   console.log("[Middleware] Cookie header:", request.headers.get("cookie"));
 
-  // Allow access to login page and API routes
-  if (pathname.startsWith("/login") || pathname.startsWith("/api")) {
+  // Allow access to login page, forgot password, reset password, and API routes
+  if (
+    pathname.startsWith("/login") ||
+    pathname.startsWith("/forgot-password") ||
+    pathname.startsWith("/reset-password") ||
+    pathname.startsWith("/api")
+  ) {
     return NextResponse.next();
   }
 

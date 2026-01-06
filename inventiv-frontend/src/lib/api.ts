@@ -20,3 +20,6 @@ export const API_BASE_URL =
 // Helper function to build API URLs
 export const apiUrl = (path: string) =>
   `${API_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
+
+// Re-export api-client functions for convenience
+export { apiFetch, apiRequest, apiJson } from "./api-client";

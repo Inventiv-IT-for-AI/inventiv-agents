@@ -209,12 +209,17 @@ export function VirtualizedRemoteList<T>({
   };
 
   return (
-    <ScrollAreaPrimitive.Root className={cn("relative w-full overflow-hidden", className)} style={{ height }}>
+    <ScrollAreaPrimitive.Root 
+      className={cn("relative w-full overflow-hidden", className)} 
+      style={{ height }}
+      suppressHydrationWarning
+    >
       <ScrollAreaPrimitive.Viewport
         ref={viewportRef}
         className="h-full w-full"
         onScroll={onScroll}
         style={{ height }}
+        suppressHydrationWarning
       >
         <div style={wrapperStyle}>
           {header ? (

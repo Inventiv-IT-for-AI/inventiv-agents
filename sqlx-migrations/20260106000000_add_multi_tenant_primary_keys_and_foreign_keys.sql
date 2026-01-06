@@ -1,35 +1,100 @@
 -- Migration: Add PRIMARY KEY and FOREIGN KEY constraints for multi-tenant tables
 -- These constraints were missing from the baseline schema and are critical for referential integrity
+-- This migration is idempotent and safe to run multiple times
 
--- PRIMARY KEY constraints
-ALTER TABLE ONLY public.organizations
-    ADD CONSTRAINT organizations_pkey PRIMARY KEY (id);
+-- PRIMARY KEY constraints (idempotent)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint 
+        WHERE conname = 'organizations_pkey'
+    ) THEN
+        ALTER TABLE ONLY public.organizations
+            ADD CONSTRAINT organizations_pkey PRIMARY KEY (id);
+    END IF;
+END $$;
 
-ALTER TABLE ONLY public.organization_memberships
-    ADD CONSTRAINT organization_memberships_pkey PRIMARY KEY (organization_id, user_id);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint 
+        WHERE conname = 'organization_memberships_pkey'
+    ) THEN
+        ALTER TABLE ONLY public.organization_memberships
+            ADD CONSTRAINT organization_memberships_pkey PRIMARY KEY (organization_id, user_id);
+    END IF;
+END $$;
 
-ALTER TABLE ONLY public.organization_models
-    ADD CONSTRAINT organization_models_pkey PRIMARY KEY (id);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint 
+        WHERE conname = 'organization_models_pkey'
+    ) THEN
+        ALTER TABLE ONLY public.organization_models
+            ADD CONSTRAINT organization_models_pkey PRIMARY KEY (id);
+    END IF;
+END $$;
 
-ALTER TABLE ONLY public.organization_model_shares
-    ADD CONSTRAINT organization_model_shares_pkey PRIMARY KEY (id);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint 
+        WHERE conname = 'organization_model_shares_pkey'
+    ) THEN
+        ALTER TABLE ONLY public.organization_model_shares
+            ADD CONSTRAINT organization_model_shares_pkey PRIMARY KEY (id);
+    END IF;
+END $$;
 
-ALTER TABLE ONLY public.workbench_projects
-    ADD CONSTRAINT workbench_projects_pkey PRIMARY KEY (id);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint 
+        WHERE conname = 'workbench_projects_pkey'
+    ) THEN
+        ALTER TABLE ONLY public.workbench_projects
+            ADD CONSTRAINT workbench_projects_pkey PRIMARY KEY (id);
+    END IF;
+END $$;
 
-ALTER TABLE ONLY public.workbench_runs
-    ADD CONSTRAINT workbench_runs_pkey PRIMARY KEY (id);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint 
+        WHERE conname = 'workbench_runs_pkey'
+    ) THEN
+        ALTER TABLE ONLY public.workbench_runs
+            ADD CONSTRAINT workbench_runs_pkey PRIMARY KEY (id);
+    END IF;
+END $$;
 
 -- Note: api_keys already has PRIMARY KEY (api_keys_pkey) in baseline
 
--- FOREIGN KEY constraints for organization_memberships
-ALTER TABLE ONLY public.organization_memberships
-    ADD CONSTRAINT organization_memberships_organization_id_fkey 
-    FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+-- FOREIGN KEY constraints for organization_memberships (idempotent)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint 
+        WHERE conname = 'organization_memberships_organization_id_fkey'
+    ) THEN
+        ALTER TABLE ONLY public.organization_memberships
+            ADD CONSTRAINT organization_memberships_organization_id_fkey 
+            FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+    END IF;
+END $$;
 
-ALTER TABLE ONLY public.organization_memberships
-    ADD CONSTRAINT organization_memberships_user_id_fkey 
-    FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint 
+        WHERE conname = 'organization_memberships_user_id_fkey'
+    ) THEN
+        ALTER TABLE ONLY public.organization_memberships
+            ADD CONSTRAINT organization_memberships_user_id_fkey 
+            FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+    END IF;
+END $$;
 
 -- FOREIGN KEY constraints for organization_models
 ALTER TABLE ONLY public.organization_models
@@ -72,9 +137,22 @@ ALTER TABLE ONLY public.workbench_runs
     FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
 
 -- FOREIGN KEY constraints for users.current_organization_id
-ALTER TABLE ONLY public.users
-    ADD CONSTRAINT users_current_organization_id_fkey 
-    FOREIGN KEY (current_organization_id) REFERENCES public.organizations(id) ON DELETE SET NULL;
+-- NOTE: This column may have been removed in a later migration (20260107000002_remove_current_org_from_users.sql)
+-- Only add the FK if the column exists
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'users' AND column_name = 'current_organization_id'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM pg_constraint 
+        WHERE conname = 'users_current_organization_id_fkey'
+    ) THEN
+        ALTER TABLE ONLY public.users
+            ADD CONSTRAINT users_current_organization_id_fkey 
+            FOREIGN KEY (current_organization_id) REFERENCES public.organizations(id) ON DELETE SET NULL;
+    END IF;
+END $$;
 
 -- FOREIGN KEY constraints for api_keys.organization_id
 ALTER TABLE ONLY public.api_keys

@@ -615,7 +615,8 @@ CREATE TABLE public.settings_definitions (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     default_bool boolean,
     default_text text,
-    default_json jsonb
+    default_json jsonb,
+    CONSTRAINT settings_definitions_pkey PRIMARY KEY (key)
 );
 
 CREATE TABLE public.ssh_keys (

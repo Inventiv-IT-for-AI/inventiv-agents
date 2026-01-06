@@ -181,6 +181,7 @@ export type Organization = {
     slug: string;
     created_at: string;
     role?: string | null;
+    member_count?: number;
 };
 
 export type OrganizationMember = {

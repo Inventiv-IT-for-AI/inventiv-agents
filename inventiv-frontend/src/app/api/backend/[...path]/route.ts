@@ -57,6 +57,9 @@ async function proxy(req: NextRequest, ctx: { params: Promise<{ path?: string[] 
   const { path = [] } = await ctx.params;
   const url = buildTargetUrl(req, path);
   const method = req.method.toUpperCase();
+  console.log("[Proxy] Request:", method, url);
+  console.log("[Proxy] API_INTERNAL_URL:", process.env.API_INTERNAL_URL);
+  console.log("[Proxy] NEXT_PUBLIC_API_URL:", process.env.NEXT_PUBLIC_API_URL);
 
   // Retry only for idempotent methods on transient network failures.
   const maxAttempts = method === "GET" || method === "HEAD" ? 2 : 1;
@@ -114,6 +117,12 @@ async function proxy(req: NextRequest, ctx: { params: Promise<{ path?: string[] 
       return response;
     } catch (e) {
       lastErr = e;
+      console.error(`[Proxy] Error on attempt ${attempt}/${maxAttempts}:`, e);
+      console.error(`[Proxy] Error details:`, {
+        message: e instanceof Error ? e.message : String(e),
+        stack: e instanceof Error ? e.stack : undefined,
+        target: url,
+      });
       // small backoff
       if (attempt < maxAttempts) {
         await new Promise((r) => setTimeout(r, 50));
@@ -122,6 +131,7 @@ async function proxy(req: NextRequest, ctx: { params: Promise<{ path?: string[] 
     }
   }
 
+  console.error(`[Proxy] All attempts failed. Last error:`, lastErr);
   return new Response(
     JSON.stringify({
       error: "proxy_error",

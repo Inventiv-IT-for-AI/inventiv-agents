@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Settings, Activity, Archive, BarChart3, Server, Users, Terminal, KeyRound, Cpu, MessageSquare } from "lucide-react";
+import { LayoutDashboard, Settings, Activity, Archive, BarChart3, Server, Users, Terminal, KeyRound, Cpu, MessageSquare, Building2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import type { Me } from "@/components/account/AccountSection";
@@ -54,8 +54,9 @@ export function Sidebar() {
                         <SidebarLink href="/workbench" icon={Terminal} label="Workbench" />
                         <SidebarLink href="/monitoring" icon={BarChart3} label="Monitoring" />
                         <SidebarLink href="/api-keys" icon={KeyRound} label="API Keys" />
-                        {isAdmin ? <SidebarLink href="/settings" icon={Settings} label="Settings" /> : null}
+                        <SidebarLink href="/organizations" icon={Building2} label="Organizations" />
                         {isAdmin ? <SidebarLink href="/users" icon={Users} label="Users" /> : null}
+                        {isAdmin ? <SidebarLink href="/settings" icon={Settings} label="Settings" /> : null}
                     </div>
                 </div>
                 <div className="px-3 py-2">

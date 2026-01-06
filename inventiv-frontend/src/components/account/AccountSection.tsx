@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from "react";
 import { useRouter } from "next/navigation";
 import type { Organization } from "@/lib/types";
-import { apiUrl } from "@/lib/api";
+import { apiUrl, apiRequest } from "@/lib/api";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -97,9 +97,9 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
   }, [displayName]);
 
   const fetchMe = useCallback(async () => {
-    const res = await fetch(apiUrl("/auth/me"));
+    const res = await apiRequest("/auth/me");
     if (!res.ok) {
-      if (res.status === 401) router.replace("/login");
+      // 401 is handled automatically by apiRequest (redirects to /login)
       setMe(null);
       onMeChange?.(null);
       return;
@@ -113,18 +113,15 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
       first_name: data.first_name ?? "",
       last_name: data.last_name ?? "",
     });
-  }, [onMeChange, router]);
+  }, [onMeChange]);
 
   const fetchOrgs = useCallback(async () => {
     setOrgError(null);
     setOrgLoading(true);
     try {
-      const res = await fetch(apiUrl("/organizations"));
+      const res = await apiRequest("/organizations");
       if (!res.ok) {
-        if (res.status === 401) {
-          router.replace("/login");
-          return;
-        }
+        // 401 is handled automatically by apiRequest (redirects to /login)
         setOrgs([]);
         setOrgError("Erreur lors du chargement des organisations");
         return;
@@ -138,7 +135,7 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
     } finally {
       setOrgLoading(false);
     }
-  }, [router]);
+  }, []);
 
   useEffect(() => {
     void fetchMe().catch(() => null);
@@ -150,7 +147,7 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
 
   const logout = async () => {
     try {
-      await fetch(apiUrl("/auth/logout"), { method: "POST" });
+      await apiRequest("/auth/logout", { method: "POST" });
     } finally {
       router.replace("/login");
     }
@@ -160,7 +157,7 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
     setProfileError(null);
     setProfileSaving(true);
     try {
-      const res = await fetch(apiUrl("/auth/me"), {
+      const res = await apiRequest("/auth/me", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -171,10 +168,7 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
         }),
       });
       if (!res.ok) {
-        if (res.status === 401) {
-          router.replace("/login");
-          return;
-        }
+        // 401 is handled automatically by apiRequest (redirects to /login)
         const body = await res.json().catch(() => null);
         const code = body?.error || body?.message;
         const msg =
@@ -210,16 +204,13 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
     setOrgError(null);
     setOrgLoading(true);
     try {
-      const res = await fetch(apiUrl("/organizations/current"), {
+      const res = await apiRequest("/organizations/current", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ organization_id: organizationId }),
       });
       if (!res.ok) {
-        if (res.status === 401) {
-          router.replace("/login");
-          return;
-        }
+        // 401 is handled automatically by apiRequest (redirects to /login)
         const body = await res.json().catch(() => null);
         const code = body?.error || body?.message;
         const msg =
@@ -246,16 +237,13 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
     setOrgError(null);
     setOrgLoading(true);
     try {
-      const res = await fetch(apiUrl("/organizations/current"), {
+      const res = await apiRequest("/organizations/current", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ organization_id: null }),
       });
       if (!res.ok) {
-        if (res.status === 401) {
-          router.replace("/login");
-          return;
-        }
+        // 401 is handled automatically by apiRequest (redirects to /login)
         setOrgError("Impossible de revenir en mode Personal");
         const body = await res.text().catch(() => "");
         snackbar.error("Impossible de revenir en mode Personal", {
@@ -287,7 +275,7 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
     }
     setCreateOrgSaving(true);
     try {
-      const res = await fetch(apiUrl("/organizations"), {
+      const res = await apiRequest("/organizations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -297,10 +285,7 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
         }),
       });
       if (!res.ok) {
-        if (res.status === 401) {
-          router.replace("/login");
-          return;
-        }
+        // 401 is handled automatically by apiRequest (redirects to /login)
         const body = await res.json().catch(() => null);
         const code = body?.error || body?.message;
         const msg =
@@ -342,7 +327,7 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
     }
     setPwdSaving(true);
     try {
-      const res = await fetch(apiUrl("/auth/me/password"), {
+      const res = await apiRequest("/auth/me/password", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -351,10 +336,7 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
         }),
       });
       if (!res.ok) {
-        if (res.status === 401) {
-          router.replace("/login");
-          return;
-        }
+        // 401 is handled automatically by apiRequest (redirects to /login)
         const body = await res.json().catch(() => null);
         const code = body?.error || body?.message;
         const msg =

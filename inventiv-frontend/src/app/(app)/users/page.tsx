@@ -1,25 +1,33 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from "react";
-import { apiUrl } from "@/lib/api";
+import { apiUrl, apiRequest } from "@/lib/api";
+import type { Organization } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { IADataTable, type DataTableSortState, type IADataTableColumn, type LoadRangeResult } from "ia-widgets";
 import { IAAlert, IAAlertDescription, IAAlertTitle } from "ia-designsys";
 import { useSnackbar } from "ia-widgets";
+import { Building2, Users as UsersIcon } from "lucide-react";
 
 type User = {
   id: string;
   username: string;
   email: string;
-  role: string;
+  role: string; // Global role (admin, user, etc.)
   first_name?: string | null;
   last_name?: string | null;
   created_at: string;
   updated_at: string;
+  // Organization context (nullable - user may not be in any org)
+  organization_id?: string | null;
+  organization_name?: string | null;
+  organization_slug?: string | null;
+  organization_role?: string | null; // Role in the organization (owner, admin, manager, user)
 };
 
 export default function UsersPage() {
@@ -32,6 +40,11 @@ export default function UsersPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [selected, setSelected] = useState<User | null>(null);
+
+  // Filters
+  const [organizations, setOrganizations] = useState<Organization[]>([]);
+  const [filterOrganizationId, setFilterOrganizationId] = useState<string | null>(null);
+  const [filterOrganizationRole, setFilterOrganizationRole] = useState<string | null>(null);
 
   const [form, setForm] = useState({
     username: "admin",
@@ -59,9 +72,25 @@ export default function UsersPage() {
     }
   };
 
+  // Fetch organizations for filter
+  useEffect(() => {
+    const fetchOrgs = async () => {
+      try {
+        const res = await apiRequest("/organizations");
+        if (res.ok) {
+          const data = (await res.json()) as Organization[];
+          setOrganizations(Array.isArray(data) ? data : []);
+        }
+      } catch (e) {
+        console.error("Failed to fetch organizations:", e);
+      }
+    };
+    void fetchOrgs();
+  }, []);
+
   useEffect(() => {
     void fetchUsers();
-  }, [refreshTick]);
+  }, [refreshTick, filterOrganizationId, filterOrganizationRole]);
 
   const openCreate = () => {
     setForm({ username: "admin", email: "", password: "", role: "admin", first_name: "", last_name: "" });
@@ -178,10 +207,22 @@ export default function UsersPage() {
       const params = new URLSearchParams();
       params.set("offset", String(offset));
       params.set("limit", String(limit));
+      if (filterOrganizationId) {
+        params.set("organization_id", filterOrganizationId);
+      }
+      if (filterOrganizationRole) {
+        params.set("organization_role", filterOrganizationRole);
+      }
       if (sort) {
-        const by = ({ username: "username", email: "email", role: "role", created_at: "created_at", updated_at: "updated_at" } as Record<string, string>)[
-          sort.columnId
-        ];
+        const by = ({
+          username: "username",
+          email: "email",
+          role: "role",
+          created_at: "created_at",
+          updated_at: "updated_at",
+          organization_name: "organization_name",
+          organization_role: "organization_role",
+        } as Record<string, string>)[sort.columnId];
         if (by) {
           params.set("sort_by", by);
           params.set("sort_dir", sort.direction);
@@ -199,25 +240,64 @@ export default function UsersPage() {
         filteredCount: data.filtered_count,
       };
     },
-    [sort]
+    [sort, filterOrganizationId, filterOrganizationRole]
   );
 
   const columns = useMemo<IADataTableColumn<User>[]>(() => {
     return [
-      { id: "username", label: "Username", width: 200, sortable: true, cell: ({ row }) => <span className="font-mono text-xs">{row.username}</span> },
-      { id: "email", label: "Email", width: 280, sortable: true, cell: ({ row }) => <span className="font-medium">{row.email}</span> },
+      { id: "username", label: "Username", width: 180, sortable: true, cell: ({ row }) => <span className="font-mono text-xs">{row.username}</span> },
+      { id: "email", label: "Email", width: 240, sortable: true, cell: ({ row }) => <span className="font-medium">{row.email}</span> },
       {
         id: "name",
         label: "Nom",
-        width: 220,
+        width: 180,
         sortable: false,
         cell: ({ row }) => <span>{`${row.first_name ?? ""} ${row.last_name ?? ""}`.trim() || "-"}</span>,
       },
-      { id: "role", label: "Rôle", width: 140, sortable: true, cell: ({ row }) => row.role },
+      { id: "role", label: "Rôle global", width: 120, sortable: true, cell: ({ row }) => <span className="text-xs">{row.role}</span> },
+      {
+        id: "organization_name",
+        label: "Organisation",
+        width: 200,
+        sortable: true,
+        cell: ({ row }) => (
+          <div className="flex items-center gap-2">
+            {row.organization_name ? (
+              <>
+                <Building2 className="h-3 w-3 text-muted-foreground" />
+                <span className="text-sm">{row.organization_name}</span>
+              </>
+            ) : (
+              <span className="text-xs text-muted-foreground italic">Aucune</span>
+            )}
+          </div>
+        ),
+      },
+      {
+        id: "organization_role",
+        label: "Rôle org",
+        width: 120,
+        sortable: true,
+        cell: ({ row }) => {
+          if (!row.organization_role) return <span className="text-xs text-muted-foreground">-</span>;
+          const roleLabels: Record<string, string> = {
+            owner: "Owner",
+            admin: "Admin",
+            manager: "Manager",
+            user: "User",
+          };
+          const role = row.organization_role.toLowerCase();
+          return (
+            <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-primary/10 text-primary">
+              {roleLabels[role] || role}
+            </span>
+          );
+        },
+      },
       {
         id: "created_at",
         label: "Créé",
-        width: 200,
+        width: 180,
         sortable: true,
         cell: ({ row }) => <span className="font-mono text-xs">{new Date(row.created_at).toISOString().slice(0, 19).replace("T", " ")}</span>,
       },
@@ -262,6 +342,58 @@ export default function UsersPage() {
           <CardTitle>Liste</CardTitle>
         </CardHeader>
         <CardContent>
+          {/* Filters */}
+          <div className="mb-4 flex gap-4 items-end">
+            <div className="flex-1 grid gap-2">
+              <Label htmlFor="filter-org">Filtrer par Organisation</Label>
+              <Select
+                value={filterOrganizationId || "all"}
+                onValueChange={(value) => setFilterOrganizationId(value === "all" ? null : value)}
+              >
+                <SelectTrigger id="filter-org" className="w-full">
+                  <SelectValue placeholder="Toutes les organisations" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Toutes les organisations</SelectItem>
+                  {organizations.map((org) => (
+                    <SelectItem key={org.id} value={org.id}>
+                      {org.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex-1 grid gap-2">
+              <Label htmlFor="filter-role">Filtrer par Rôle org</Label>
+              <Select
+                value={filterOrganizationRole || "all"}
+                onValueChange={(value) => setFilterOrganizationRole(value === "all" ? null : value)}
+              >
+                <SelectTrigger id="filter-role" className="w-full">
+                  <SelectValue placeholder="Tous les rôles" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Tous les rôles</SelectItem>
+                  <SelectItem value="owner">Owner</SelectItem>
+                  <SelectItem value="admin">Admin</SelectItem>
+                  <SelectItem value="manager">Manager</SelectItem>
+                  <SelectItem value="user">User</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {(filterOrganizationId || filterOrganizationRole) && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setFilterOrganizationId(null);
+                  setFilterOrganizationRole(null);
+                }}
+              >
+                Réinitialiser
+              </Button>
+            )}
+          </div>
+
           {error ? (
             <IAAlert variant="destructive" className="mb-3">
               <IAAlertTitle>Erreur</IAAlertTitle>

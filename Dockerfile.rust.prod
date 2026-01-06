@@ -21,7 +21,15 @@ RUN mkdir -p inventiv-api/src inventiv-common/src inventiv-orchestrator/src inve
 COPY . .
 
 ARG SERVICE_NAME
-RUN cargo build --release -p "${SERVICE_NAME}" && \
+#
+# Provider features are compile-time in Rust. For production images we must enable the right ones.
+# By default we ship orchestrator with Scaleway support (and optional mock for debug).
+ARG ORCHESTRATOR_FEATURES=provider-scaleway,provider-mock
+RUN FEAT=""; \
+    if [ "${SERVICE_NAME}" = "inventiv-orchestrator" ]; then \
+      FEAT="--features ${ORCHESTRATOR_FEATURES}"; \
+    fi; \
+    cargo build --release -p "${SERVICE_NAME}" ${FEAT} && \
     strip "target/release/${SERVICE_NAME}" || true
 
 FROM debian:bookworm-slim AS runtime

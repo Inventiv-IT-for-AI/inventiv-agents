@@ -2,6 +2,7 @@
 
 import { useState, type ChangeEvent } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { apiUrl } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -99,15 +100,20 @@ export default function LoginPage() {
                 disabled={loading}
               />
             </div>
-            {error ? <div className="text-sm text-red-600">{error}</div> : null}
-            <Button className="w-full" type="submit" disabled={loading}>
-              {loading ? "Connexion..." : "Se connecter"}
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
+                  {error ? <div className="text-sm text-red-600">{error}</div> : null}
+                  <Button className="w-full" type="submit" disabled={loading}>
+                    {loading ? "Connexion..." : "Se connecter"}
+                  </Button>
+                  <div className="text-center text-sm mt-4">
+                    <Link href="/forgot-password" className="text-primary hover:underline">
+                      J'ai oublié mon mot de passe
+                    </Link>
+                  </div>
+                </form>
+              </CardContent>
+            </Card>
+          </div>
+        );
+      }
 
 

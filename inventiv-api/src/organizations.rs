@@ -19,6 +19,7 @@ pub struct OrganizationRow {
     pub slug: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub role: Option<String>,
+    pub member_count: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -28,6 +29,7 @@ pub struct OrganizationResponse {
     pub slug: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub role: Option<String>,
+    pub member_count: i64,
 }
 
 impl From<OrganizationRow> for OrganizationResponse {
@@ -38,6 +40,7 @@ impl From<OrganizationRow> for OrganizationResponse {
             slug: r.slug,
             created_at: r.created_at,
             role: r.role,
+            member_count: r.member_count,
         }
     }
 }
@@ -216,7 +219,13 @@ pub async fn list_organizations(
 ) -> impl IntoResponse {
     let rows: Vec<OrganizationRow> = sqlx::query_as(
         r#"
-        SELECT o.id, o.name, o.slug, o.created_at, om.role
+        SELECT 
+            o.id, 
+            o.name, 
+            o.slug, 
+            o.created_at, 
+            om.role,
+            (SELECT COUNT(*) FROM organization_memberships om2 WHERE om2.organization_id = o.id)::bigint as member_count
         FROM organizations o
         JOIN organization_memberships om ON om.organization_id = o.id
         WHERE om.user_id = $1
@@ -334,6 +343,19 @@ pub async fn create_organization(
             .into_response();
     }
 
+    // Get member count for the new organization
+    let member_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)::bigint
+        FROM organization_memberships
+        WHERE organization_id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(1); // At least 1 (the creator)
+
     // If we set it as current, re-issue JWT cookie so the org context is available immediately.
     let mut resp = Json(OrganizationResponse {
         id,
@@ -341,19 +363,39 @@ pub async fn create_organization(
         slug,
         created_at,
         role: Some("owner".to_string()),
+        member_count,
     })
     .into_response();
 
     if set_as_current {
-        let auth_user = auth::AuthUser {
-            user_id: user.user_id,
-            email: user.email.clone(),
-            role: user.role.clone(),
-            current_organization_id: Some(id),
-        };
-        if let Ok(tok) = auth::sign_session_jwt(&auth_user) {
-            resp.headers_mut()
-                .insert(header::SET_COOKIE, auth::session_cookie_value(&tok));
+        // Get user's role in the new organization
+        let org_role = get_membership_role(&state.db, id, user.user_id)
+            .await
+            .map(|r| r.as_str().to_string());
+        
+        // Update session in DB
+        let session_id = uuid::Uuid::parse_str(&user.session_id)
+            .unwrap_or_else(|_| uuid::Uuid::new_v4());
+        if let Err(e) = auth::update_session_org(&state.db, session_id, Some(id), org_role.clone()).await {
+            tracing::error!("Failed to update session org: {}", e);
+        } else {
+            // Regenerate JWT with new org context
+            let auth_user = auth::AuthUser {
+                user_id: user.user_id,
+                email: user.email.clone(),
+                role: user.role.clone(),
+                session_id: user.session_id.clone(),
+                current_organization_id: Some(id),
+                current_organization_role: org_role,
+            };
+            if let Ok(tok) = auth::sign_session_jwt(&auth_user) {
+                let token_hash = auth::hash_session_token(&tok);
+                if let Err(e) = auth::update_session_token_hash(&state.db, session_id, &token_hash).await {
+                    tracing::error!("Failed to update session token hash: {}", e);
+                }
+                resp.headers_mut()
+                    .insert(header::SET_COOKIE, auth::session_cookie_value(&tok));
+            }
         }
     }
 
@@ -365,6 +407,17 @@ pub async fn set_current_organization(
     axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
     Json(req): Json<SetCurrentOrganizationRequest>,
 ) -> impl IntoResponse {
+    let session_id = match uuid::Uuid::parse_str(&user.session_id) {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"invalid_session"})),
+            )
+                .into_response();
+        }
+    };
+
     // 1) Set a concrete org (requires membership)
     if let Some(org_id) = req.organization_id {
         let ok = is_member(&state.db, org_id, user.user_id).await;
@@ -376,20 +429,13 @@ pub async fn set_current_organization(
                 .into_response();
         }
 
-        let res = sqlx::query(
-            r#"
-            UPDATE users
-            SET current_organization_id = $2,
-                updated_at = NOW()
-            WHERE id = $1
-            "#,
-        )
-        .bind(user.user_id)
-        .bind(org_id)
-        .execute(&state.db)
-        .await;
+        // Resolve organization role
+        let org_role = get_membership_role(&state.db, org_id, user.user_id)
+            .await
+            .map(|r| r.as_str().to_string());
 
-        if let Err(e) = res {
+        // Update session in DB
+        if let Err(e) = auth::update_session_org(&state.db, session_id, Some(org_id), org_role.clone()).await {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error":"db_error","message": e.to_string()})),
@@ -397,11 +443,14 @@ pub async fn set_current_organization(
                 .into_response();
         }
 
+        // Regenerate JWT with new org context
         let auth_user = auth::AuthUser {
             user_id: user.user_id,
             email: user.email.clone(),
             role: user.role.clone(),
+            session_id: user.session_id.clone(),
             current_organization_id: Some(org_id),
+            current_organization_role: org_role,
         };
         let token = match auth::sign_session_jwt(&auth_user) {
             Ok(t) => t,
@@ -414,6 +463,12 @@ pub async fn set_current_organization(
             }
         };
 
+        // Update token hash in DB
+        let token_hash = auth::hash_session_token(&token);
+        if let Err(e) = auth::update_session_token_hash(&state.db, session_id, &token_hash).await {
+            tracing::error!("Failed to update session token hash: {}", e);
+        }
+
         let cookie = auth::session_cookie_value(&token);
         let mut resp = Json(json!({"status":"ok","current_organization_id": org_id}))
             .into_response();
@@ -422,19 +477,8 @@ pub async fn set_current_organization(
     }
 
     // 2) Clear org selection -> personal mode
-    let res = sqlx::query(
-        r#"
-        UPDATE users
-        SET current_organization_id = NULL,
-            updated_at = NOW()
-        WHERE id = $1
-        "#,
-    )
-    .bind(user.user_id)
-    .execute(&state.db)
-    .await;
-
-    if let Err(e) = res {
+    // Update session in DB
+    if let Err(e) = auth::update_session_org(&state.db, session_id, None, None).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error":"db_error","message": e.to_string()})),
@@ -442,11 +486,14 @@ pub async fn set_current_organization(
             .into_response();
     }
 
+    // Regenerate JWT without org context
     let auth_user = auth::AuthUser {
         user_id: user.user_id,
         email: user.email.clone(),
         role: user.role.clone(),
+        session_id: user.session_id.clone(),
         current_organization_id: None,
+        current_organization_role: None,
     };
     let token = match auth::sign_session_jwt(&auth_user) {
         Ok(t) => t,
@@ -458,6 +505,12 @@ pub async fn set_current_organization(
                 .into_response();
         }
     };
+
+    // Update token hash in DB
+    let token_hash = auth::hash_session_token(&token);
+    if let Err(e) = auth::update_session_token_hash(&state.db, session_id, &token_hash).await {
+        tracing::error!("Failed to update session token hash: {}", e);
+    }
 
     let cookie = auth::session_cookie_value(&token);
     let mut resp = Json(json!({"status":"ok","current_organization_id": null}))
@@ -896,7 +949,9 @@ mod tests {
             user_id: admin_id,
             email: "admin@inventiv.local".to_string(),
             role: "admin".to_string(),
+            session_id: uuid::Uuid::new_v4().to_string(),
             current_organization_id: None,
+            current_organization_role: None,
         };
 
         let resp = list_organizations(AxumState(state), Extension(auth_user))
@@ -992,7 +1047,9 @@ mod tests {
             user_id: owner_id,
             email: "owner1@inventiv.local".to_string(),
             role: "user".to_string(),
+            session_id: uuid::Uuid::new_v4().to_string(),
             current_organization_id: Some(org_id),
+            current_organization_role: Some("owner".to_string()),
         };
 
         // Try to downgrade last owner -> conflict

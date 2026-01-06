@@ -172,6 +172,19 @@ services:
       - DEFAULT_ADMIN_USERNAME=${DEFAULT_ADMIN_USERNAME:-admin}
       - DEFAULT_ADMIN_EMAIL=${DEFAULT_ADMIN_EMAIL:-admin@inventiv.local}
       - DEFAULT_ADMIN_PASSWORD_FILE=${DEFAULT_ADMIN_PASSWORD_FILE:-/run/secrets/default_admin_password}
+      # Default organization bootstrap (inventiv-api)
+      - BOOTSTRAP_DEFAULT_ORGANIZATION=${BOOTSTRAP_DEFAULT_ORGANIZATION:-1}
+      - DEFAULT_ORGANIZATION_NAME=${DEFAULT_ORGANIZATION_NAME:-Inventiv IT}
+      - DEFAULT_ORGANIZATION_SLUG=${DEFAULT_ORGANIZATION_SLUG:-inventiv-it}
+      # SMTP Configuration (Scaleway Transactional Email)
+      - SMTP_SERVER=${SMTP_SERVER:-smtp.tem.scaleway.com}
+      - SMTP_PORT=${SMTP_PORT:-465}
+      - SMTP_USERNAME=${SMTP_USERNAME:-c4c36580-4e0d-4584-83c5-81917932768e}
+      - SMTP_PASSWORD_FILE=${SMTP_PASSWORD_FILE:-/run/secrets/scaleway_secret_key}
+      - SMTP_FROM_EMAIL=${SMTP_FROM_EMAIL:-noreply@inventiv-agents.fr}
+      - SMTP_FROM_NAME=${SMTP_FROM_NAME:-Inventiv Agents}
+      - SMTP_USE_TLS=${SMTP_USE_TLS:-1}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:13000}
       # Dev convenience: allow a global worker token for heartbeat auth.
       - WORKER_AUTH_TOKEN=${WORKER_AUTH_TOKEN:-dev-worker-token}
       - WORKER_AUTO_INSTALL=${WORKER_AUTO_INSTALL:-0}
