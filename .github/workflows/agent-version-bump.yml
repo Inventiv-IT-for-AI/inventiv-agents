@@ -41,15 +41,23 @@ jobs:
       - name: Get new checksum
         id: checksum
         run: |
-          CHECKSUM=$(make agent-checksum)
-          echo "checksum=$CHECKSUM" >> $GITHUB_OUTPUT
+          CHECKSUM=$(make agent-checksum 2>&1 | tail -1 | tr -d '\n\r' | xargs)
+          {
+            echo "checksum<<EOF"
+            echo "$CHECKSUM"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
           echo "📦 New SHA256 checksum: $CHECKSUM"
 
       - name: Get new version
         id: version
         run: |
-          VERSION=$(make agent-version-get)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          VERSION=$(make agent-version-get 2>&1 | tail -1 | tr -d '\n\r' | xargs)
+          {
+            echo "version<<EOF"
+            echo "$VERSION"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
           echo "📝 New version: $VERSION"
 
       - name: Check for changes

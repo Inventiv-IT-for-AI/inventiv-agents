@@ -1,6 +1,6 @@
 use axum::{
     extract::State,
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
 };
@@ -34,7 +34,6 @@ struct UserAuthRow {
     role: String,
     first_name: Option<String>,
     last_name: Option<String>,
-    current_organization_id: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -78,6 +77,7 @@ pub struct ChangePasswordRequest {
 
 pub async fn login(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> impl IntoResponse {
     let login = req.email.trim().to_ascii_lowercase();
@@ -94,7 +94,7 @@ pub async fn login(
     // password_hash = crypt($password, password_hash)
     let row: Option<UserAuthRow> = sqlx::query_as(
         r#"
-        SELECT id, email, role, first_name, last_name, current_organization_id
+        SELECT id, email, role, first_name, last_name
         FROM users
         WHERE (username = $1 OR email = $1)
           AND password_hash = crypt($2, password_hash)
@@ -109,18 +109,57 @@ pub async fn login(
     .flatten();
 
     let Some(u) = row else {
+        tracing::debug!("Login failed: no user found for login={}", login);
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error":"invalid_credentials"})),
         )
             .into_response();
     };
+    
+    tracing::debug!("Login successful for user_id={}, email={}", u.id, u.email);
 
+    // 1. Get user's last used organization (or None for Personal mode)
+    let default_org_id = auth::get_user_last_org(&state.db, u.id)
+        .await
+        .ok()
+        .flatten();
+
+    // 2. Resolve organization role if org_id exists
+    let org_role = if let Some(org_id) = default_org_id {
+        // Use a helper function from organizations module
+        // We'll need to make get_membership_role public or create a wrapper
+        let role_str: Option<String> = sqlx::query_scalar(
+            r#"
+            SELECT role
+            FROM organization_memberships
+            WHERE organization_id = $1 AND user_id = $2
+            "#,
+        )
+        .bind(org_id)
+        .bind(u.id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
+        role_str
+    } else {
+        None
+    };
+
+    // 3. Create session in DB
+    let session_id = uuid::Uuid::new_v4();
+    let ip_address = auth::extract_ip_address(&headers);
+    let user_agent = auth::extract_user_agent(&headers);
+
+    // 4. Generate JWT first (we need it to hash it)
     let auth_user = auth::AuthUser {
         user_id: u.id,
         email: u.email.clone(),
         role: u.role.clone(),
-        current_organization_id: u.current_organization_id,
+        session_id: session_id.to_string(),
+        current_organization_id: default_org_id,
+        current_organization_role: org_role.clone(),
     };
     let token = match auth::sign_session_jwt(&auth_user) {
         Ok(t) => t,
@@ -133,6 +172,34 @@ pub async fn login(
         }
     };
 
+    // 5. Store session in DB with token hash
+    let token_hash = auth::hash_session_token(&token);
+    match auth::create_session(
+        &state.db,
+        session_id,
+        u.id,
+        default_org_id,
+        org_role.clone(),
+        ip_address.clone(),
+        user_agent.clone(),
+        token_hash,
+    )
+    .await
+    {
+        Ok(_) => {
+            tracing::debug!("Session created successfully: session_id={}, user_id={}", session_id, u.id);
+        }
+        Err(e) => {
+            tracing::error!("Failed to create session: {}", e);
+            tracing::error!("Session creation failed for user_id={}, session_id={}, org_id={:?}", 
+                u.id, session_id, default_org_id);
+            // Continue login even if session creation fails
+            // The session will be created on next request if needed, or user can retry login
+            tracing::warn!("Continuing login despite session creation failure - user can still authenticate");
+        }
+    }
+
+    // 6. Return JWT in cookie
     let cookie = auth::session_cookie_value(&token);
     let mut resp = Json(LoginResponse {
         user_id: u.id,
@@ -146,7 +213,15 @@ pub async fn login(
     resp
 }
 
-pub async fn logout() -> impl IntoResponse {
+pub async fn logout(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
+) -> impl IntoResponse {
+    // Revoke session in DB
+    if let Ok(session_id) = uuid::Uuid::parse_str(&user.session_id) {
+        auth::revoke_session(&state.db, session_id).await.ok();
+    }
+    
     let cookie = auth::clear_session_cookie_value();
     let mut resp = Json(json!({"status":"ok"})).into_response();
     resp.headers_mut().insert(header::SET_COOKIE, cookie);
@@ -157,19 +232,16 @@ pub async fn me(
     State(state): State<Arc<AppState>>,
     axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
 ) -> impl IntoResponse {
-    let row: Option<MeRow> = sqlx::query_as(
+    // Get user data from database
+    let row: Option<(String, String, String, Option<String>, Option<String>)> = sqlx::query_as(
         r#"
         SELECT
           u.username,
           u.email,
           u.role,
           u.first_name,
-          u.last_name,
-          u.current_organization_id,
-          o.name as current_organization_name,
-          o.slug as current_organization_slug
+          u.last_name
         FROM users u
-        LEFT JOIN organizations o ON o.id = u.current_organization_id
         WHERE u.id = $1
         LIMIT 1
         "#,
@@ -180,7 +252,7 @@ pub async fn me(
     .ok()
     .flatten();
 
-    let Some(r) = row else {
+    let Some((username, email, role, first_name, last_name)) = row else {
         // Session token refers to a user that no longer exists (e.g. DB reset).
         // Treat as unauthorized and clear cookie so the UI can re-login cleanly.
         let mut resp = (
@@ -193,16 +265,38 @@ pub async fn me(
         return resp;
     };
 
+    // Get organization info if current_organization_id is set (from JWT/session)
+    let (org_name, org_slug) = if let Some(org_id) = user.current_organization_id {
+        let org_row: Option<(String, String)> = sqlx::query_as(
+            r#"
+            SELECT name, slug
+            FROM organizations
+            WHERE id = $1
+            LIMIT 1
+            "#,
+        )
+        .bind(org_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
+        
+        org_row.map(|(name, slug)| (Some(name), Some(slug)))
+            .unwrap_or((None, None))
+    } else {
+        (None, None)
+    };
+
     Json(MeResponse {
         user_id: user.user_id,
-        username: r.username,
-        email: r.email,
-        role: r.role,
-        first_name: r.first_name,
-        last_name: r.last_name,
-        current_organization_id: r.current_organization_id,
-        current_organization_name: r.current_organization_name,
-        current_organization_slug: r.current_organization_slug,
+        username,
+        email,
+        role,
+        first_name,
+        last_name,
+        current_organization_id: user.current_organization_id,
+        current_organization_name: org_name,
+        current_organization_slug: org_slug,
     })
     .into_response()
 }
@@ -282,19 +376,15 @@ pub async fn update_me(
     }
 
     // Return refreshed profile
-    let row: Option<MeRow> = sqlx::query_as(
+    let row: Option<(String, String, String, Option<String>, Option<String>)> = sqlx::query_as(
         r#"
         SELECT
           u.username,
           u.email,
           u.role,
           u.first_name,
-          u.last_name,
-          u.current_organization_id,
-          o.name as current_organization_name,
-          o.slug as current_organization_slug
+          u.last_name
         FROM users u
-        LEFT JOIN organizations o ON o.id = u.current_organization_id
         WHERE u.id = $1
         LIMIT 1
         "#,
@@ -306,18 +396,42 @@ pub async fn update_me(
     .flatten();
 
     match row {
-        Some(r) => Json(MeResponse {
-            user_id: user.user_id,
-            username: r.username,
-            email: r.email,
-            role: r.role,
-            first_name: r.first_name,
-            last_name: r.last_name,
-            current_organization_id: r.current_organization_id,
-            current_organization_name: r.current_organization_name,
-            current_organization_slug: r.current_organization_slug,
-        })
-        .into_response(),
+        Some((username, email, role, first_name, last_name)) => {
+            // Get organization info if current_organization_id is set (from JWT/session)
+            let (org_name, org_slug) = if let Some(org_id) = user.current_organization_id {
+                let org_row: Option<(String, String)> = sqlx::query_as(
+                    r#"
+                    SELECT name, slug
+                    FROM organizations
+                    WHERE id = $1
+                    LIMIT 1
+                    "#,
+                )
+                .bind(org_id)
+                .fetch_optional(&state.db)
+                .await
+                .ok()
+                .flatten();
+                
+                org_row.map(|(name, slug)| (Some(name), Some(slug)))
+                    .unwrap_or((None, None))
+            } else {
+                (None, None)
+            };
+
+            Json(MeResponse {
+                user_id: user.user_id,
+                username,
+                email,
+                role,
+                first_name,
+                last_name,
+                current_organization_id: user.current_organization_id,
+                current_organization_name: org_name,
+                current_organization_slug: org_slug,
+            })
+            .into_response()
+        }
         None => {
             let mut resp = (
                 StatusCode::UNAUTHORIZED,

@@ -9,6 +9,7 @@ use axum::{
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Sha256, Digest};
 use sqlx::{Pool, Postgres};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,7 +18,9 @@ pub struct AuthUser {
     pub user_id: uuid::Uuid,
     pub email: String,
     pub role: String,
+    pub session_id: String,  // UUID of the session in user_sessions table
     pub current_organization_id: Option<uuid::Uuid>,
+    pub current_organization_role: Option<String>,  // owner|admin|manager|user
 }
 
 #[derive(Clone, Debug)]
@@ -34,8 +37,11 @@ struct Claims {
     sub: String, // user_id
     email: String,
     role: String,
-    // Optional org context (multi-tenant MVP)
+    // Session context
+    session_id: String,  // UUID of the session in user_sessions table
     current_organization_id: Option<String>,
+    current_organization_role: Option<String>,  // owner|admin|manager|user
+    jti: String,  // JWT ID (for revocation/rotation)
     iat: usize,
     exp: usize,
 }
@@ -78,12 +84,17 @@ fn now_ts() -> u64 {
 pub fn sign_session_jwt(user: &AuthUser) -> anyhow::Result<String> {
     let now = now_ts() as usize;
     let exp = (now_ts() + jwt_ttl_seconds()) as usize;
+    // jti is a hash of session_id + secret for secure revocation
+    let jti = sha256_hash(&format!("{}:{}", user.session_id, jwt_secret()));
     let claims = Claims {
         iss: jwt_issuer(),
         sub: user.user_id.to_string(),
         email: user.email.clone(),
         role: user.role.clone(),
+        session_id: user.session_id.clone(),
         current_organization_id: user.current_organization_id.map(|id| id.to_string()),
+        current_organization_role: user.current_organization_role.clone(),
+        jti,
         iat: now,
         exp,
     };
@@ -93,6 +104,17 @@ pub fn sign_session_jwt(user: &AuthUser) -> anyhow::Result<String> {
         &EncodingKey::from_secret(jwt_secret().as_bytes()),
     )?;
     Ok(token)
+}
+
+fn sha256_hash(input: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Hash a JWT token for storage in DB (for revocation)
+pub fn hash_session_token(token: &str) -> String {
+    sha256_hash(token)
 }
 
 fn decode_session_jwt(token: &str) -> anyhow::Result<AuthUser> {
@@ -113,7 +135,9 @@ fn decode_session_jwt(token: &str) -> anyhow::Result<AuthUser> {
         user_id,
         email: data.claims.email,
         role: data.claims.role,
+        session_id: data.claims.session_id,
         current_organization_id,
+        current_organization_role: data.claims.current_organization_role,
     })
 }
 
@@ -210,17 +234,67 @@ pub fn current_user_from_headers(headers: &HeaderMap) -> anyhow::Result<AuthUser
     decode_session_jwt(&token)
 }
 
-pub async fn require_user(mut req: Request<Body>, next: Next) -> Response {
-    match current_user_from_headers(req.headers()) {
-        Ok(user) => {
+pub async fn require_user(
+    State(db): State<Pool<Postgres>>,
+    mut req: Request<Body>,
+    next: Next,
+) -> Response {
+    // Extract token from headers
+    let token = extract_cookie(req.headers(), &session_cookie_name())
+        .or_else(|| extract_bearer(req.headers()))
+        .ok_or_else(|| {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error":"unauthorized","message":"login_required"})),
+            )
+                .into_response();
+        });
+
+    let token = match token {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+
+    // Decode JWT
+    let user = match decode_session_jwt(&token) {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error":"unauthorized","message":"invalid_token"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Verify session in DB
+    let session_id = match uuid::Uuid::parse_str(&user.session_id) {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error":"unauthorized","message":"invalid_session_id"})),
+            )
+                .into_response();
+        }
+    };
+
+    let token_hash = hash_session_token(&token);
+    match verify_session_db(&db, session_id, &token_hash).await {
+        Ok(true) => {
+            // Session is valid, update last_used_at
+            update_session_last_used(&db, session_id).await.ok();
             req.extensions_mut().insert(user);
             next.run(req).await
         }
-        Err(_) => (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"error":"unauthorized","message":"login_required"})),
-        )
-            .into_response(),
+        Ok(false) | Err(_) => {
+            // Session invalid, expired, or revoked
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error":"unauthorized","message":"session_invalid_or_expired"})),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -267,8 +341,15 @@ pub async fn require_user_or_api_key(
     let cookie_token = extract_cookie(req.headers(), &session_cookie_name());
     if let Some(tok) = cookie_token {
         if let Ok(user) = decode_session_jwt(&tok) {
-            req.extensions_mut().insert(user);
-            return next.run(req).await;
+            // Verify session in DB
+            if let Ok(session_id) = uuid::Uuid::parse_str(&user.session_id) {
+                let token_hash = hash_session_token(&tok);
+                if verify_session_db(&db, session_id, &token_hash).await.unwrap_or(false) {
+                    update_session_last_used(&db, session_id).await.ok();
+                    req.extensions_mut().insert(user);
+                    return next.run(req).await;
+                }
+            }
         }
     }
 
@@ -283,8 +364,15 @@ pub async fn require_user_or_api_key(
     // 3) Authorization: Bearer ... (could be JWT or API key)
     if let Some(tok) = extract_bearer(req.headers()) {
         if let Ok(user) = decode_session_jwt(&tok) {
-            req.extensions_mut().insert(user);
-            return next.run(req).await;
+            // Verify session in DB
+            if let Ok(session_id) = uuid::Uuid::parse_str(&user.session_id) {
+                let token_hash = hash_session_token(&tok);
+                if verify_session_db(&db, session_id, &token_hash).await.unwrap_or(false) {
+                    update_session_last_used(&db, session_id).await.ok();
+                    req.extensions_mut().insert(user);
+                    return next.run(req).await;
+                }
+            }
         }
         if let Some(p) = verify_api_key_db(&db, &tok).await {
             req.extensions_mut().insert(p);
@@ -308,4 +396,215 @@ pub fn require_admin(user: &AuthUser) -> Result<(), (StatusCode, Json<serde_json
             Json(json!({"error":"forbidden","message":"admin_required"})),
         ))
     }
+}
+
+// ============================================================================
+// Session Management Helpers (DB operations)
+// ============================================================================
+
+#[derive(Debug, sqlx::FromRow)]
+struct SessionRow {
+    id: uuid::Uuid,
+    user_id: uuid::Uuid,
+    current_organization_id: Option<uuid::Uuid>,
+    organization_role: Option<String>,
+    session_token_hash: String,
+    ip_address: Option<String>,  // IP as string from DB
+    user_agent: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    last_used_at: chrono::DateTime<chrono::Utc>,
+    expires_at: chrono::DateTime<chrono::Utc>,
+    revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Create a new session in the database
+pub async fn create_session(
+    db: &Pool<Postgres>,
+    session_id: uuid::Uuid,
+    user_id: uuid::Uuid,
+    current_organization_id: Option<uuid::Uuid>,
+    organization_role: Option<String>,
+    ip_address: Option<String>,  // IP as string (e.g., "192.168.1.1")
+    user_agent: Option<String>,
+    token_hash: String,
+) -> anyhow::Result<()> {
+    let expires_at = chrono::Utc::now() + chrono::Duration::seconds(jwt_ttl_seconds() as i64);
+    
+    sqlx::query(
+        r#"
+        INSERT INTO user_sessions (
+            id, user_id, current_organization_id, organization_role,
+            session_token_hash, ip_address, user_agent,
+            created_at, last_used_at, expires_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6::inet, $7, NOW(), NOW(), $8)
+        "#,
+    )
+    .bind(session_id)
+    .bind(user_id)
+    .bind(current_organization_id)
+    .bind(organization_role)
+    .bind(token_hash)
+    .bind(ip_address)
+    .bind(user_agent)
+    .bind(expires_at)
+    .execute(db)
+    .await?;
+    
+    Ok(())
+}
+
+/// Verify a session exists and is valid (not revoked, not expired)
+pub async fn verify_session_db(
+    db: &Pool<Postgres>,
+    session_id: uuid::Uuid,
+    token_hash: &str,
+) -> anyhow::Result<bool> {
+    let row: Option<SessionRow> = sqlx::query_as(
+        r#"
+        SELECT id, user_id, current_organization_id, organization_role,
+               session_token_hash, ip_address, user_agent,
+               created_at, last_used_at, expires_at, revoked_at
+        FROM user_sessions
+        WHERE id = $1
+          AND revoked_at IS NULL
+          AND expires_at > NOW()
+          AND session_token_hash = $2
+        LIMIT 1
+        "#,
+    )
+    .bind(session_id)
+    .bind(token_hash)
+    .fetch_optional(db)
+    .await?;
+    
+    Ok(row.is_some())
+}
+
+/// Update session's last_used_at timestamp
+pub async fn update_session_last_used(
+    db: &Pool<Postgres>,
+    session_id: uuid::Uuid,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE user_sessions SET last_used_at = NOW() WHERE id = $1",
+    )
+    .bind(session_id)
+    .execute(db)
+    .await?;
+    
+    Ok(())
+}
+
+/// Update session's organization context
+pub async fn update_session_org(
+    db: &Pool<Postgres>,
+    session_id: uuid::Uuid,
+    current_organization_id: Option<uuid::Uuid>,
+    organization_role: Option<String>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE user_sessions
+        SET current_organization_id = $2,
+            organization_role = $3,
+            last_used_at = NOW()
+        WHERE id = $1
+        "#,
+    )
+    .bind(session_id)
+    .bind(current_organization_id)
+    .bind(organization_role)
+    .execute(db)
+    .await?;
+    
+    Ok(())
+}
+
+/// Update session's token hash (for token rotation)
+pub async fn update_session_token_hash(
+    db: &Pool<Postgres>,
+    session_id: uuid::Uuid,
+    token_hash: &str,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE user_sessions SET session_token_hash = $2, last_used_at = NOW() WHERE id = $1",
+    )
+    .bind(session_id)
+    .bind(token_hash)
+    .execute(db)
+    .await?;
+    
+    Ok(())
+}
+
+/// Revoke a session (soft delete)
+pub async fn revoke_session(
+    db: &Pool<Postgres>,
+    session_id: uuid::Uuid,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE user_sessions SET revoked_at = NOW() WHERE id = $1",
+    )
+    .bind(session_id)
+    .execute(db)
+    .await?;
+    
+    Ok(())
+}
+
+/// Get user's last used organization (for default org selection on login)
+pub async fn get_user_last_org(
+    db: &Pool<Postgres>,
+    user_id: uuid::Uuid,
+) -> anyhow::Result<Option<uuid::Uuid>> {
+    let row: Option<(Option<uuid::Uuid>,)> = sqlx::query_as(
+        r#"
+        SELECT current_organization_id
+        FROM user_sessions
+        WHERE user_id = $1
+          AND revoked_at IS NULL
+          AND current_organization_id IS NOT NULL
+        ORDER BY last_used_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?;
+    
+    Ok(row.and_then(|r| r.0))
+}
+
+/// Extract IP address from request headers
+pub fn extract_ip_address(headers: &HeaderMap) -> Option<String> {
+    // Try X-Forwarded-For first (for proxies/load balancers)
+    if let Some(forwarded) = headers.get("x-forwarded-for") {
+        if let Ok(forwarded_str) = forwarded.to_str() {
+            // X-Forwarded-For can contain multiple IPs, take the first one
+            if let Some(first_ip) = forwarded_str.split(',').next() {
+                return Some(first_ip.trim().to_string());
+            }
+        }
+    }
+    
+    // Try X-Real-IP
+    if let Some(real_ip) = headers.get("x-real-ip") {
+        if let Ok(real_ip_str) = real_ip.to_str() {
+            return Some(real_ip_str.trim().to_string());
+        }
+    }
+    
+    // Fallback: try to parse from Remote-Addr (if available)
+    // Note: In most cases, this won't be available in headers
+    None
+}
+
+/// Extract User-Agent from request headers
+pub fn extract_user_agent(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }

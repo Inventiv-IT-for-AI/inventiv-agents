@@ -636,9 +636,28 @@ CREATE TABLE public.users (
     updated_at timestamp with time zone DEFAULT now(),
     first_name text,
     last_name text,
-    username text NOT NULL,
-    current_organization_id uuid
+    username text NOT NULL
 );
+
+CREATE TABLE public.user_sessions (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL,
+    current_organization_id uuid,
+    organization_role text CHECK (organization_role IN ('owner', 'admin', 'manager', 'user')),
+    session_token_hash text NOT NULL,
+    ip_address inet,
+    user_agent text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    last_used_at timestamptz NOT NULL DEFAULT now(),
+    expires_at timestamptz NOT NULL,
+    revoked_at timestamptz,
+    CONSTRAINT user_sessions_org_role_check CHECK (organization_role IN ('owner', 'admin', 'manager', 'user') OR organization_role IS NULL)
+);
+
+CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id) WHERE revoked_at IS NULL;
+CREATE INDEX idx_user_sessions_token_hash ON user_sessions(session_token_hash) WHERE revoked_at IS NULL;
+CREATE INDEX idx_user_sessions_expires_at ON user_sessions(expires_at) WHERE revoked_at IS NULL;
+CREATE INDEX idx_user_sessions_org_id ON user_sessions(current_organization_id) WHERE revoked_at IS NULL;
 
 CREATE TABLE public.workbench_messages (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -783,6 +802,35 @@ ALTER TABLE ONLY public.worker_auth_tokens
 
 ALTER TABLE ONLY public.zones
     ADD CONSTRAINT zones_pkey PRIMARY KEY (id);
+
+-- Add PRIMARY KEY to organizations if not already present
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'organizations_pkey'
+    ) THEN
+        ALTER TABLE ONLY public.organizations
+            ADD CONSTRAINT organizations_pkey PRIMARY KEY (id);
+    END IF;
+END $$;
+
+-- Add FOREIGN KEY constraints for user_sessions (after all PRIMARY KEYs are defined)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'user_sessions_user_id_fkey'
+    ) THEN
+        ALTER TABLE ONLY public.user_sessions
+            ADD CONSTRAINT user_sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+    END IF;
+    
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'user_sessions_org_id_fkey'
+    ) THEN
+        ALTER TABLE ONLY public.user_sessions
+            ADD CONSTRAINT user_sessions_org_id_fkey FOREIGN KEY (current_organization_id) REFERENCES public.organizations(id) ON DELETE SET NULL;
+    END IF;
+END $$;
 
 --
 -- Unique Constraints

@@ -85,9 +85,30 @@ async function proxy(req: NextRequest, ctx: { params: Promise<{ path?: string[] 
 
       // Explicitly copy Set-Cookie headers from upstream to response
       // This ensures cookies are properly forwarded to the browser
+      // Try both getSetCookie() (Next.js 15+) and manual header reading
       const setCookieHeaders = upstream.headers.getSetCookie();
-      for (const cookie of setCookieHeaders) {
-        response.headers.append("Set-Cookie", cookie);
+      const setCookieHeaderRaw = upstream.headers.get("set-cookie");
+      
+      console.log("[Proxy] Set-Cookie headers from upstream (getSetCookie):", setCookieHeaders);
+      console.log("[Proxy] Set-Cookie header raw:", setCookieHeaderRaw);
+      
+      // Use getSetCookie() if available (Next.js 15+)
+      if (setCookieHeaders && setCookieHeaders.length > 0) {
+        for (const cookie of setCookieHeaders) {
+          response.headers.append("Set-Cookie", cookie);
+          console.log("[Proxy] Added Set-Cookie to response:", cookie.substring(0, 50) + "...");
+        }
+      } 
+      // Fallback: manually read set-cookie header if getSetCookie() doesn't work
+      else if (setCookieHeaderRaw) {
+        // Split multiple Set-Cookie headers (they can be comma-separated or multiple headers)
+        const cookies = setCookieHeaderRaw.split(/\s*,\s*(?=[^=]+=)/);
+        for (const cookie of cookies) {
+          response.headers.append("Set-Cookie", cookie.trim());
+          console.log("[Proxy] Added Set-Cookie to response (fallback):", cookie.substring(0, 50) + "...");
+        }
+      } else {
+        console.warn("[Proxy] No Set-Cookie header found in upstream response!");
       }
 
       return response;
