@@ -439,6 +439,7 @@ struct SessionRow {
 }
 
 /// Create a new session in the database
+#[allow(clippy::too_many_arguments)]
 pub async fn create_session(
     db: &Pool<Postgres>,
     session_id: uuid::Uuid,

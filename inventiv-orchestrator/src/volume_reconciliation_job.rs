@@ -75,7 +75,7 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
                     .bind(provider_id)
                     .fetch_optional(pool)
                     .await?
-                    .unwrap_or_else(|| ProviderManager::current_provider_name());
+                    .unwrap_or_else(ProviderManager::current_provider_name);
 
             if let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()).await
             {
@@ -246,7 +246,7 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
                     .bind(provider_id)
                     .fetch_optional(pool)
                     .await?
-                    .unwrap_or_else(|| ProviderManager::current_provider_name());
+                    .unwrap_or_else(ProviderManager::current_provider_name);
 
             if let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()).await
             {

@@ -188,7 +188,7 @@ pub async fn watchdog_ready_instances(
                         let (ok, ids, _ms, _err) =
                             health_check_flow::check_vllm_http_models(ip, vllm_port).await;
                         if ok {
-                            if let Some(mid) = ids.get(0).cloned() {
+                            if let Some(mid) = ids.first().cloned() {
                                 let _ = sqlx::query(
                                     r#"
                                     UPDATE instances

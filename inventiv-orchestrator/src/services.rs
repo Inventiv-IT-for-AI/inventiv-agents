@@ -3610,7 +3610,7 @@ pub async fn process_provisioning(
                          WHERE id = $1",
                     )
                     .bind(instance_uuid)
-                    .bind(&format!(
+                    .bind(format!(
                         "SSH not accessible after {} seconds on {}",
                         elapsed_seconds, ip_for_ssh
                     ))
@@ -3741,11 +3741,9 @@ pub async fn resolve_vllm_image(
         .fetch_optional(pool)
         .await
         {
-            if let Some(img) = vllm_image {
-                if !img.trim().is_empty() {
-                    eprintln!("✅ [resolve_vllm_image] Using instance-type specific image: {} (from allocation_params)", img);
-                    return img;
-                }
+            if let Some(img) = vllm_image.filter(|img| !img.trim().is_empty()) {
+                eprintln!("✅ [resolve_vllm_image] Using instance-type specific image: {} (from allocation_params)", img);
+                return img;
             }
         }
     }
@@ -3764,11 +3762,9 @@ pub async fn resolve_vllm_image(
         .fetch_optional(pool)
         .await
         {
-            if let Some(img) = img {
-                if !img.trim().is_empty() {
-                    eprintln!("✅ [resolve_vllm_image] Using provider setting for {}: {}", instance_type_code, img);
-                    return img;
-                }
+            if let Some(img) = img.filter(|img| !img.trim().is_empty()) {
+                eprintln!("✅ [resolve_vllm_image] Using provider setting for {}: {}", instance_type_code, img);
+                return img;
             }
         }
     }
@@ -3782,11 +3778,9 @@ pub async fn resolve_vllm_image(
         .fetch_optional(pool)
         .await
         {
-            if let Some(img) = img {
-                if !img.trim().is_empty() {
-                    eprintln!("✅ [resolve_vllm_image] Using provider default image: {}", img);
-                    return img;
-                }
+            if let Some(img) = img.filter(|img| !img.trim().is_empty()) {
+                eprintln!("✅ [resolve_vllm_image] Using provider default image: {}", img);
+                return img;
             }
         }
     }
@@ -3811,6 +3805,7 @@ pub async fn resolve_vllm_image(
     default_image
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_worker_cloud_init(
     ssh_pub: &str,
     instance_id: &str,
@@ -3859,7 +3854,7 @@ fn build_worker_cloud_init(
     ));
     cloud.push_str(&format!("      WORKER_HF_TOKEN=\"{}\"\n", worker_hf_token));
     cloud.push_str("      export DEBIAN_FRONTEND=noninteractive\n");
-    cloud.push_str("\n");
+    cloud.push('\n');
     cloud.push_str("      if ! command -v docker >/dev/null 2>&1; then\n");
     cloud.push_str("        echo '[inventiv-worker] installing docker'\n");
     cloud.push_str("        apt-get update -y\n");
@@ -3867,7 +3862,7 @@ fn build_worker_cloud_init(
     cloud.push_str("        curl -fsSL https://get.docker.com | sh\n");
     cloud.push_str("      fi\n");
     cloud.push_str("      systemctl enable --now docker || true\n");
-    cloud.push_str("\n");
+    cloud.push('\n');
     cloud.push_str("      # Enable NVIDIA runtime for docker (required for --gpus all)\n");
     cloud.push_str("      if command -v nvidia-smi >/dev/null 2>&1; then\n");
     cloud.push_str("        echo '[inventiv-worker] installing nvidia-container-toolkit'\n");
@@ -3887,17 +3882,17 @@ fn build_worker_cloud_init(
     cloud.push_str("      else\n");
     cloud.push_str("        echo '[inventiv-worker] nvidia-smi not found; skipping nvidia-container-toolkit'\n");
     cloud.push_str("      fi\n");
-    cloud.push_str("\n");
+    cloud.push('\n');
     cloud.push_str("      mkdir -p /opt/inventiv-worker\n");
     cloud.push_str("      curl -fsSL \"$AGENT_URL\" -o /opt/inventiv-worker/agent.py\n");
-    cloud.push_str("\n");
+    cloud.push('\n');
     cloud.push_str(
         "      for i in 1 2 3 4 5; do docker pull \"$VLLM_IMAGE\" && break || sleep 5; done\n",
     );
     cloud.push_str(
         "      for i in 1 2 3 4 5; do docker pull python:3.11-slim && break || sleep 5; done\n",
     );
-    cloud.push_str("\n");
+    cloud.push('\n');
     cloud.push_str("      docker rm -f vllm >/dev/null 2>&1 || true\n");
     cloud.push_str("      docker run -d --restart unless-stopped \\\n");
     cloud.push_str("        --name vllm \\\n");
@@ -3913,7 +3908,7 @@ fn build_worker_cloud_init(
     cloud.push_str(&format!("        --host 0.0.0.0 --port {} \\\n", vllm_port));
     cloud.push_str("        --model \"$MODEL_ID\" \\\n");
     cloud.push_str("        --dtype float16\n");
-    cloud.push_str("\n");
+    cloud.push('\n');
     cloud.push_str("      docker rm -f inventiv-agent >/dev/null 2>&1 || true\n");
     cloud.push_str("      docker run -d --restart unless-stopped \\\n");
     cloud.push_str("        --name inventiv-agent \\\n");
@@ -3932,9 +3927,9 @@ fn build_worker_cloud_init(
     cloud.push_str("        -v /opt/inventiv-worker/agent.py:/app/agent.py:ro \\\n");
     cloud.push_str("        python:3.11-slim \\\n");
     cloud.push_str("        bash -lc \"pip install --no-cache-dir requests >/dev/null && python /app/agent.py\"\n");
-    cloud.push_str("\n");
+    cloud.push('\n');
     cloud.push_str("      echo '[inventiv-worker] bootstrap done'\n");
-    cloud.push_str("\n");
+    cloud.push('\n');
     cloud.push_str("runcmd:\n");
     cloud.push_str("  - [ bash, -lc, /usr/local/bin/inventiv-worker-bootstrap.sh ]\n");
     cloud
@@ -4019,7 +4014,7 @@ pub async fn process_catalog_sync(pool: Pool<Postgres>) {
 
             // Ensure region+zone exist (so Settings UI doesn't stay empty).
             // Region code heuristic: drop the trailing "-<digit>" (e.g., fr-par-2 -> fr-par).
-            let region_code = zone.rsplitn(2, '-').nth(1).unwrap_or(zone).to_string();
+            let region_code = zone.rsplit_once('-').map(|(_, r)| r).unwrap_or(zone).to_string();
             let region_name = region_code.clone();
             let region_id: Option<Uuid> = sqlx::query_scalar(
                 r#"

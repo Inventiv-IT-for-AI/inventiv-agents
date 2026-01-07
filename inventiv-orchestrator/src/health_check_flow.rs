@@ -2053,7 +2053,7 @@ pub async fn check_and_transition_instance(
         let inferred_model_id: Option<String> = if !expected.is_empty() {
             Some(expected.to_string())
         } else {
-            ids.get(0).cloned()
+            ids.first().cloned()
         };
         if model_check_ok {
             let Some(mid) = inferred_model_id else {
