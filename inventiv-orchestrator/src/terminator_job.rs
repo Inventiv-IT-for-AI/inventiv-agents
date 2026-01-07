@@ -195,12 +195,13 @@ pub async fn terminator_terminating_instances(
     // 1. Redis event was lost (non-durable pub/sub)
     // 2. process_termination failed silently
     // 3. Instance is stuck waiting for provider deletion confirmation
-    let claimed: Vec<(Uuid, Uuid, Option<String>, Option<String>)> = sqlx::query_as(
+    let claimed: Vec<(Uuid, Uuid, Option<String>, Option<String>, Option<uuid::Uuid>)> = sqlx::query_as(
         "WITH cte AS (
             SELECT i.id,
                    i.provider_id,
                    i.provider_instance_id::text AS provider_instance_id,
-                   (SELECT COALESCE(z.code, z.name) FROM zones z WHERE z.id = i.zone_id) AS zone
+                   (SELECT COALESCE(z.code, z.name) FROM zones z WHERE z.id = i.zone_id) AS zone,
+                   i.organization_id
             FROM instances i
             WHERE i.status = 'terminating'
               AND (i.last_reconciliation IS NULL OR i.last_reconciliation < NOW() - INTERVAL '30 seconds')
@@ -212,7 +213,7 @@ pub async fn terminator_terminating_instances(
         SET last_reconciliation = NOW()
         FROM cte
         WHERE i.id = cte.id
-        RETURNING cte.id, cte.provider_id, cte.provider_instance_id, cte.zone",
+        RETURNING cte.id, cte.provider_id, cte.provider_instance_id, cte.zone, cte.organization_id",
     )
     .fetch_all(pool)
     .await?;
@@ -230,7 +231,7 @@ pub async fn terminator_terminating_instances(
 
     let mut progressed = 0usize;
 
-    for (instance_id, provider_id, provider_instance_id_opt, zone_opt) in claimed {
+    for (instance_id, provider_id, provider_instance_id_opt, zone_opt, organization_id_opt) in claimed {
         // If we don't even have a provider instance id, we can safely finalize termination in DB.
         // This happens for invalid/failed provisioning requests that never created a provider resource.
         if provider_instance_id_opt.as_deref().unwrap_or("").is_empty() {
@@ -256,17 +257,19 @@ pub async fn terminator_terminating_instances(
             .await;
 
             // Even if there was no provider instance, we may have created volumes during provisioning.
-            let provider_code: String =
-                sqlx::query_scalar("SELECT code FROM providers WHERE id = $1")
-                    .bind(provider_id)
-                    .fetch_optional(pool)
-                    .await
-                    .unwrap_or(None)
-                    .unwrap_or_else(ProviderManager::current_provider_name);
-            if let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()).await
-            {
-                let _ =
-                    delete_instance_volumes_best_effort(pool, provider.as_ref(), instance_id).await;
+            if let Some(org_id) = organization_id_opt {
+                let provider_code: String =
+                    sqlx::query_scalar("SELECT code FROM providers WHERE id = $1")
+                        .bind(provider_id)
+                        .fetch_optional(pool)
+                        .await
+                        .unwrap_or(None)
+                        .unwrap_or_else(ProviderManager::current_provider_name);
+                if let Ok(provider) = ProviderManager::get_provider(&provider_code, org_id, pool.clone()).await
+                {
+                    let _ =
+                        delete_instance_volumes_best_effort(pool, provider.as_ref(), instance_id).await;
+                }
             }
 
             let changed = state_machine::terminating_to_terminated(pool, instance_id).await?;
@@ -306,6 +309,15 @@ pub async fn terminator_terminating_instances(
         };
 
         let provider_instance_id = provider_instance_id_opt.unwrap_or_default();
+        let Some(org_id) = organization_id_opt else {
+            eprintln!("❌ [job-terminator] Instance {} missing organization_id", instance_id);
+            let _ = sqlx::query("UPDATE instances SET last_reconciliation = NULL, error_code = 'MISSING_ORGANIZATION_ID', error_message = 'Instance missing organization_id' WHERE id = $1")
+                .bind(instance_id)
+                .execute(pool)
+                .await;
+            continue;
+        };
+
         let provider_code: String = sqlx::query_scalar("SELECT code FROM providers WHERE id = $1")
             .bind(provider_id)
             .fetch_optional(pool)
@@ -313,7 +325,7 @@ pub async fn terminator_terminating_instances(
             .unwrap_or(None)
             .unwrap_or_else(ProviderManager::current_provider_name);
 
-        let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()).await else {
+        let Ok(provider) = ProviderManager::get_provider(&provider_code, org_id, pool.clone()).await else {
             let _ = sqlx::query("UPDATE instances SET last_reconciliation = NULL WHERE id = $1")
                 .bind(instance_id)
                 .execute(pool)

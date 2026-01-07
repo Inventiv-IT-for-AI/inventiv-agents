@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { WorkspaceBanner } from "@/components/shared/WorkspaceBanner";
+import { IAStatCell } from "ia-widgets";
 
 export default function MyDashboardPage() {
   const data = useMyDashboard();
@@ -61,109 +62,53 @@ export default function MyDashboardPage() {
 
       {/* Account & Subscription Overview */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card className="border-2">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <User className="h-4 w-4" />
-              Mon Compte
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-muted-foreground">Plan</span>
-                <Badge variant={data.accountPlan === "subscriber" ? "default" : "secondary"}>
-                  {data.accountPlan === "subscriber" ? "Abonné" : "Gratuit"}
-                </Badge>
-              </div>
-              {data.walletBalanceEur !== null && (
-                <div className="flex items-center justify-between pt-2">
-                  <span className="text-xs text-muted-foreground">Solde</span>
-                  <span className="text-lg font-semibold">
-                    {formatEur(data.walletBalanceEur, { minFrac: 2, maxFrac: 2 })}
-                  </span>
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+        <IAStatCell
+          title="Mon Compte"
+          value={data.accountPlan === "subscriber" ? "Abonné" : "Gratuit"}
+          subtitle={data.walletBalanceEur !== null ? `Solde: ${formatEur(data.walletBalanceEur, { minFrac: 2, maxFrac: 2 })}` : "Plan gratuit"}
+          icon={User}
+          accent="blue"
+        />
 
-        {data.organizationName && (
-          <Card className="border-2">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-                <Building2 className="h-4 w-4" />
-                Organisation
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-muted-foreground">Nom</span>
-                  <span className="text-sm font-medium truncate ml-2">{data.organizationName}</span>
-                </div>
-                {data.organizationPlan && (
-                  <div className="flex items-center justify-between pt-2">
-                    <span className="text-xs text-muted-foreground">Plan</span>
-                    <Badge variant={data.organizationPlan === "subscriber" ? "default" : "secondary"}>
-                      {data.organizationPlan === "subscriber" ? "Abonné" : "Gratuit"}
-                    </Badge>
-                  </div>
-                )}
-                {data.organizationWalletBalanceEur !== null && (
-                  <div className="flex items-center justify-between pt-2">
-                    <span className="text-xs text-muted-foreground">Solde</span>
-                    <span className="text-lg font-semibold">
-                      {formatEur(data.organizationWalletBalanceEur, { minFrac: 2, maxFrac: 2 })}
-                    </span>
-                  </div>
-                )}
-              </div>
-            </CardContent>
-          </Card>
+        {data.organizationName ? (
+          <IAStatCell
+            title="Organisation"
+            value={data.organizationName.length > 15 ? `${data.organizationName.substring(0, 15)}...` : data.organizationName}
+            subtitle={data.organizationPlan === "subscriber" 
+              ? (data.organizationWalletBalanceEur !== null 
+                  ? `Abonné • ${formatEur(data.organizationWalletBalanceEur, { minFrac: 2, maxFrac: 2 })}`
+                  : "Plan abonné")
+              : (data.organizationWalletBalanceEur !== null 
+                  ? `Gratuit • ${formatEur(data.organizationWalletBalanceEur, { minFrac: 2, maxFrac: 2 })}`
+                  : "Plan gratuit")}
+            icon={Building2}
+            accent="purple"
+          />
+        ) : (
+          <IAStatCell
+            title="Organisation"
+            value="—"
+            subtitle="Aucune organisation"
+            icon={Building2}
+            accent="purple"
+          />
         )}
 
-        <Card className="border-2">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <MessageSquare className="h-4 w-4" />
-              Sessions de Chat
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-muted-foreground">Total</span>
-                <span className="text-2xl font-bold">{data.totalChatSessions}</span>
-              </div>
-              <div className="text-xs text-muted-foreground pt-1">
-                {data.recentChatSessions.length > 0
-                  ? `${data.recentChatSessions.length} récentes`
-                  : "Aucune session"}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        <IAStatCell
+          title="Sessions de Chat"
+          value={String(data.totalChatSessions)}
+          subtitle={data.recentChatSessions.length > 0 ? `${data.recentChatSessions.length} récentes` : "Aucune session"}
+          icon={MessageSquare}
+          accent="green"
+        />
 
-        <Card className="border-2">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <Cpu className="h-4 w-4" />
-              Models Accessibles
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-muted-foreground">Disponibles</span>
-                <span className="text-2xl font-bold">{data.accessibleModels.length}</span>
-              </div>
-              <div className="text-xs text-muted-foreground pt-1">
-                {data.accessibleModels.length > 0 ? "Prêts à utiliser" : "Aucun modèle"}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        <IAStatCell
+          title="Models Accessibles"
+          value={String(data.accessibleModels.length)}
+          subtitle={data.accessibleModels.length > 0 ? "Prêts à utiliser" : "Aucun modèle"}
+          icon={Cpu}
+          accent="amber"
+        />
       </div>
 
       {/* Recent Chat Sessions */}

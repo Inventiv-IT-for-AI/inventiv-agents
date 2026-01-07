@@ -28,14 +28,15 @@ pub async fn watchdog_ready_instances(
     redis_client: &redis::Client,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     #[allow(clippy::type_complexity)]
-    let claimed: Vec<(Uuid, Uuid, String, String, Option<String>, Option<String>)> = sqlx::query_as(
+    let claimed: Vec<(Uuid, Uuid, String, String, Option<String>, Option<String>, Option<uuid::Uuid>)> = sqlx::query_as(
         "WITH cte AS (
             SELECT i.id,
                    i.provider_id,
                    i.provider_instance_id::text AS provider_instance_id,
                    COALESCE(z.code, z.name) AS zone,
                    i.ip_address::text as ip,
-                   NULLIF(btrim(COALESCE(i.worker_model_id, '')), '') as worker_model_id
+                   NULLIF(btrim(COALESCE(i.worker_model_id, '')), '') as worker_model_id,
+                   i.organization_id
             FROM instances i
             JOIN zones z ON i.zone_id = z.id
             WHERE i.status = 'ready'
@@ -49,7 +50,7 @@ pub async fn watchdog_ready_instances(
         SET last_reconciliation = NOW()
         FROM cte
         WHERE i.id = cte.id
-        RETURNING cte.id, cte.provider_id, cte.provider_instance_id, cte.zone, cte.ip, cte.worker_model_id",
+        RETURNING cte.id, cte.provider_id, cte.provider_instance_id, cte.zone, cte.ip, cte.worker_model_id, cte.organization_id",
     )
     .fetch_all(pool)
     .await?;
@@ -64,7 +65,12 @@ pub async fn watchdog_ready_instances(
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or(8000);
 
-    for (instance_id, provider_id, provider_instance_id, zone, ip, worker_model_id) in claimed {
+    for (instance_id, provider_id, provider_instance_id, zone, ip, worker_model_id, organization_id) in claimed {
+        let Some(org_id) = organization_id else {
+            eprintln!("❌ [Watchdog] Instance {} missing organization_id", instance_id);
+            continue;
+        };
+
         let provider_code: String = sqlx::query_scalar("SELECT code FROM providers WHERE id = $1")
             .bind(provider_id)
             .fetch_optional(pool)
@@ -72,7 +78,7 @@ pub async fn watchdog_ready_instances(
             .unwrap_or(None)
             .unwrap_or_else(|| ProviderManager::current_provider_name());
 
-        let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()).await else {
+        let Ok(provider) = ProviderManager::get_provider(&provider_code, org_id, pool.clone()).await else {
             let _ = sqlx::query("UPDATE instances SET last_reconciliation = NULL WHERE id = $1")
                 .bind(instance_id)
                 .execute(pool)

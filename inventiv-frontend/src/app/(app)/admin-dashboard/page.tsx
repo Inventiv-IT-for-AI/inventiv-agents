@@ -22,44 +22,7 @@ export default function AdminDashboardPage() {
   const finops = useFinopsCosts();
   const accessCheck = useAdminDashboardAccess();
 
-  // Redirect if access is lost
-  useEffect(() => {
-    if (!accessCheck.loading && !accessCheck.canAccess) {
-      router.push("/my-dashboard");
-    }
-  }, [accessCheck.loading, accessCheck.canAccess, router]);
-
-  // Show loading or access denied
-  if (accessCheck.loading) {
-    return (
-      <div className="p-8 space-y-8">
-        <div className="flex items-center justify-center min-h-[400px]">
-          <div className="flex flex-col items-center gap-3">
-            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-            <p className="text-sm text-muted-foreground">Vérification des permissions...</p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (!accessCheck.canAccess) {
-    return (
-      <div className="p-8 space-y-8">
-        <IAAlert variant="destructive">
-          <IAAlertTitle>Accès non autorisé</IAAlertTitle>
-          <IAAlertDescription>
-            <p className="mb-4">{accessCheck.reason}</p>
-            <Button variant="outline" asChild>
-              <Link href="/my-dashboard">Retour au My Dashboard</Link>
-            </Button>
-          </IAAlertDescription>
-        </IAAlert>
-      </div>
-    );
-  }
-
-  // Calculate statistics
+  // Calculate statistics (before conditional returns to maintain hook order)
   const stats = {
     total: instances.length,
     active: instances.filter((i) => i.status.toLowerCase() === "ready").length,
@@ -128,6 +91,43 @@ export default function AdminDashboardPage() {
         new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     )
     .slice(0, 5);
+
+  // Redirect if access is lost
+  useEffect(() => {
+    if (!accessCheck.loading && !accessCheck.canAccess) {
+      router.push("/my-dashboard");
+    }
+  }, [accessCheck.loading, accessCheck.canAccess, router]);
+
+  // Show loading or access denied (after all hooks)
+  if (accessCheck.loading) {
+    return (
+      <div className="p-8 space-y-8">
+        <div className="flex items-center justify-center min-h-[400px]">
+          <div className="flex flex-col items-center gap-3">
+            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">Vérification des permissions...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!accessCheck.canAccess) {
+    return (
+      <div className="p-8 space-y-8">
+        <IAAlert variant="destructive">
+          <IAAlertTitle>Accès non autorisé</IAAlertTitle>
+          <IAAlertDescription>
+            <p className="mb-4">{accessCheck.reason}</p>
+            <Button variant="outline" asChild>
+              <Link href="/my-dashboard">Retour au My Dashboard</Link>
+            </Button>
+          </IAAlertDescription>
+        </IAAlert>
+      </div>
+    );
+  }
 
   return (
     <div className="p-8 space-y-8">

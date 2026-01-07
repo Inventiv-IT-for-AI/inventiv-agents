@@ -165,6 +165,23 @@ pub async fn maybe_seed_provider_credentials(pool: &Pool<Postgres>) {
         return;
     };
 
+    // Resolve default organization (from env or default to 'inventiv-it')
+    let org_slug = std::env::var("DEFAULT_ORGANIZATION_SLUG")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "inventiv-it".to_string());
+    let organization_id: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT id FROM organizations WHERE slug = $1 LIMIT 1")
+            .bind(&org_slug)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    let Some(organization_id) = organization_id else {
+        eprintln!("⚠️  AUTO_SEED_PROVIDER_CREDENTIALS: organization '{}' not found in DB; bootstrap default organization first", org_slug);
+        return;
+    };
+
     // Encrypt using pgcrypto (installed by baseline migration).
     let enc_b64: Option<String> =
         sqlx::query_scalar("SELECT encode(pgp_sym_encrypt($1::text, $2::text), 'base64')")
@@ -179,16 +196,47 @@ pub async fn maybe_seed_provider_credentials(pool: &Pool<Postgres>) {
         return;
     };
 
+    // Read SCALEWAY_ACCESS_KEY and SCALEWAY_ORGANIZATION_ID from secrets/env
+    let access_key_path = std::env::var("SCALEWAY_ACCESS_KEY_FILE")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "/run/secrets/scaleway_access_key".to_string());
+    let access_key = match fs::read_to_string(&access_key_path) {
+        Ok(s) => s.trim().to_string(),
+        Err(e) => {
+            eprintln!(
+                "⚠️  AUTO_SEED_PROVIDER_CREDENTIALS: failed to read {}: {}",
+                access_key_path, e
+            );
+            String::new()
+        }
+    };
+    let access_key = if !access_key.is_empty() {
+        Some(access_key)
+    } else {
+        std::env::var("SCALEWAY_ACCESS_KEY")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+
+    let organization_id_scw = std::env::var("SCALEWAY_ORGANIZATION_ID")
+        .ok()
+        .or_else(|| std::env::var("SCW_DEFAULT_ORGANIZATION_ID").ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
     println!(
-        "🌱 AUTO_SEED_PROVIDER_CREDENTIALS: upserting scaleway credentials into provider_settings"
+        "🌱 AUTO_SEED_PROVIDER_CREDENTIALS: upserting scaleway credentials into provider_settings for organization {}",
+        organization_id
     );
 
-    // Upsert project id (non-secret).
+    // Upsert project id (non-secret) with organization_id.
     let _ = sqlx::query(
         r#"
-        INSERT INTO provider_settings (provider_id, key, value_text, value_int, value_bool, value_json)
-        VALUES ($1, 'SCALEWAY_PROJECT_ID', $2, NULL, NULL, NULL)
-        ON CONFLICT (provider_id, key) DO UPDATE SET
+        INSERT INTO provider_settings (provider_id, organization_id, key, value_text, value_int, value_bool, value_json)
+        VALUES ($1, $2, 'SCALEWAY_PROJECT_ID', $3, NULL, NULL, NULL)
+        ON CONFLICT (provider_id, key, organization_id) DO UPDATE SET
           value_text = EXCLUDED.value_text,
           value_int = NULL,
           value_bool = NULL,
@@ -196,16 +244,17 @@ pub async fn maybe_seed_provider_credentials(pool: &Pool<Postgres>) {
         "#,
     )
     .bind(provider_id)
+    .bind(organization_id)
     .bind(&project_id)
     .execute(pool)
     .await;
 
-    // Upsert encrypted secret key.
+    // Upsert encrypted secret key with organization_id.
     let _ = sqlx::query(
         r#"
-        INSERT INTO provider_settings (provider_id, key, value_text, value_int, value_bool, value_json)
-        VALUES ($1, 'SCALEWAY_SECRET_KEY_ENC', $2, NULL, NULL, NULL)
-        ON CONFLICT (provider_id, key) DO UPDATE SET
+        INSERT INTO provider_settings (provider_id, organization_id, key, value_text, value_int, value_bool, value_json)
+        VALUES ($1, $2, 'SCALEWAY_SECRET_KEY_ENC', $3, NULL, NULL, NULL)
+        ON CONFLICT (provider_id, key, organization_id) DO UPDATE SET
           value_text = EXCLUDED.value_text,
           value_int = NULL,
           value_bool = NULL,
@@ -213,9 +262,50 @@ pub async fn maybe_seed_provider_credentials(pool: &Pool<Postgres>) {
         "#,
     )
     .bind(provider_id)
+    .bind(organization_id)
     .bind(&enc_b64)
     .execute(pool)
     .await;
+
+    // Upsert SCALEWAY_ACCESS_KEY if available (for CLI operations like volume resize)
+    if let Some(ak) = access_key {
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO provider_settings (provider_id, organization_id, key, value_text, value_int, value_bool, value_json)
+            VALUES ($1, $2, 'SCALEWAY_ACCESS_KEY', $3, NULL, NULL, NULL)
+            ON CONFLICT (provider_id, key, organization_id) DO UPDATE SET
+              value_text = EXCLUDED.value_text,
+              value_int = NULL,
+              value_bool = NULL,
+              value_json = NULL
+            "#,
+        )
+        .bind(provider_id)
+        .bind(organization_id)
+        .bind(&ak)
+        .execute(pool)
+        .await;
+    }
+
+    // Upsert SCALEWAY_ORGANIZATION_ID if available (for CLI operations like volume resize)
+    if let Some(org_id_scw) = organization_id_scw {
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO provider_settings (provider_id, organization_id, key, value_text, value_int, value_bool, value_json)
+            VALUES ($1, $2, 'SCALEWAY_ORGANIZATION_ID', $3, NULL, NULL, NULL)
+            ON CONFLICT (provider_id, key, organization_id) DO UPDATE SET
+              value_text = EXCLUDED.value_text,
+              value_int = NULL,
+              value_bool = NULL,
+              value_json = NULL
+            "#,
+        )
+        .bind(provider_id)
+        .bind(organization_id)
+        .bind(&org_id_scw)
+        .execute(pool)
+        .await;
+    }
 
     println!("✅ AUTO_SEED_PROVIDER_CREDENTIALS done");
 }

@@ -24,7 +24,7 @@ UPDATE regions SET is_active = true, name = 'Local' WHERE provider_id = (SELECT 
 
 -- Mock Provider Zones
 INSERT INTO zones (id, region_id, provider_id, name, code, is_active) 
-SELECT gen_random_uuid(), (SELECT id FROM regions WHERE code='local' AND provider_id = (SELECT id FROM providers WHERE code='mock' LIMIT 1) LIMIT 1), 'Local', 'local', true
+SELECT gen_random_uuid(), (SELECT id FROM regions WHERE code='local' AND provider_id = (SELECT id FROM providers WHERE code='mock' LIMIT 1) LIMIT 1), (SELECT id FROM providers WHERE code='mock' LIMIT 1), 'Local', 'local', true
 WHERE NOT EXISTS (SELECT 1 FROM zones WHERE region_id = (SELECT id FROM regions WHERE code='local' AND provider_id = (SELECT id FROM providers WHERE code='mock' LIMIT 1) LIMIT 1) AND code = 'local');
 UPDATE zones SET is_active = true, name = 'Local' WHERE region_id = (SELECT id FROM regions WHERE code='local' AND provider_id = (SELECT id FROM providers WHERE code='mock' LIMIT 1) LIMIT 1) AND code = 'local';
 
@@ -100,7 +100,7 @@ SELECT gen_random_uuid(),
        'Paris 1', 'fr-par-1', true
 WHERE NOT EXISTS (
   SELECT 1 FROM zones z
-  WHERE z.region_id = (SELECT r.id FROM regions r WHERE r.code='fr-par' AND r.provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1) LIMIT 1)
+  WHERE z.provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1)
     AND z.code = 'fr-par-1'
 );
 UPDATE zones z
@@ -114,7 +114,7 @@ SELECT gen_random_uuid(),
        'Paris 2', 'fr-par-2', true
 WHERE NOT EXISTS (
   SELECT 1 FROM zones z
-  WHERE z.region_id = (SELECT r.id FROM regions r WHERE r.code='fr-par' AND r.provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1) LIMIT 1)
+  WHERE z.provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1)
     AND z.code = 'fr-par-2'
 );
 UPDATE zones z
@@ -128,7 +128,7 @@ SELECT gen_random_uuid(),
        'Amsterdam 1', 'nl-ams-1', true
 WHERE NOT EXISTS (
   SELECT 1 FROM zones z
-  WHERE z.region_id = (SELECT r.id FROM regions r WHERE r.code='nl-ams' AND r.provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1) LIMIT 1)
+  WHERE z.provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1)
     AND z.code = 'nl-ams-1'
 );
 UPDATE zones z

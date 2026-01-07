@@ -14,6 +14,8 @@ pub struct ScalewayProvider {
     secret_key: String,
     #[allow(dead_code)]
     ssh_public_key: Option<String>,
+    organization_id: Option<String>,
+    access_key: Option<String>,
 }
 
 impl ScalewayProvider {
@@ -31,12 +33,50 @@ impl ScalewayProvider {
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
+        
+        // Read organization_id and access_key from environment (for CLI operations like volume resize)
+        // Support both *_FILE (preferred) and direct env vars
+        let organization_id = std::env::var("SCALEWAY_ORGANIZATION_ID")
+            .ok()
+            .or_else(|| std::env::var("SCW_DEFAULT_ORGANIZATION_ID").ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        
+        let access_key_file = std::env::var("SCALEWAY_ACCESS_KEY_FILE")
+            .ok()
+            .or_else(|| std::env::var("SCW_ACCESS_KEY_FILE").ok());
+        let access_key = if let Some(file_path) = access_key_file {
+            std::fs::read_to_string(&file_path)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        } else {
+            None
+        }.or_else(|| {
+            std::env::var("SCALEWAY_ACCESS_KEY")
+                .ok()
+                .or_else(|| std::env::var("SCW_ACCESS_KEY").ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+        
         Self {
             client,
             project_id,
             secret_key,
             ssh_public_key,
+            organization_id,
+            access_key,
         }
+    }
+
+    // Setters for organization_id and access_key (set from DB after initialization)
+    pub fn set_organization_id(&mut self, org_id: String) {
+        self.organization_id = Some(org_id.trim().to_string());
+    }
+
+    pub fn set_access_key(&mut self, key: String) {
+        self.access_key = Some(key.trim().to_string());
     }
 
     // Scaleway-specific instance type helpers
@@ -1554,13 +1594,20 @@ impl CloudProvider for ScalewayProvider {
             volume_id, new_size_gb, zone
         );
 
-        // Get organization ID and access key from environment (required by scw CLI)
-        let org_id = std::env::var("SCALEWAY_ORGANIZATION_ID").unwrap_or_default();
-        let access_key = std::env::var("SCALEWAY_ACCESS_KEY").unwrap_or_default();
+        // Get organization ID and access key (required by scw CLI)
+        // Priority: 1) From provider struct (set at initialization), 2) Environment variables
+        let org_id = self.organization_id.clone()
+            .or_else(|| std::env::var("SCALEWAY_ORGANIZATION_ID").ok())
+            .or_else(|| std::env::var("SCW_DEFAULT_ORGANIZATION_ID").ok())
+            .unwrap_or_default();
+        let access_key = self.access_key.clone()
+            .or_else(|| std::env::var("SCALEWAY_ACCESS_KEY").ok())
+            .or_else(|| std::env::var("SCW_ACCESS_KEY").ok())
+            .unwrap_or_default();
 
         if org_id.is_empty() || access_key.is_empty() {
             return Err(anyhow::anyhow!(
-                "SCALEWAY_ORGANIZATION_ID and SCALEWAY_ACCESS_KEY are required for Block Storage resize via CLI"
+                "SCALEWAY_ORGANIZATION_ID and SCALEWAY_ACCESS_KEY are required for Block Storage resize via CLI. Set them in environment variables or provider_settings."
             ));
         }
 

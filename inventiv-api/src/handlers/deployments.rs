@@ -35,6 +35,7 @@ pub struct DeploymentResponse {
 )]
 pub async fn create_deployment(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<crate::auth::AuthUser>,
     Json(payload): Json<DeploymentRequest>,
 ) -> impl IntoResponse {
     let start = std::time::Instant::now();
@@ -86,16 +87,33 @@ pub async fn create_deployment(
         }
     };
 
+    // Get organization_id from user session (required - no fallback)
+    let organization_id = match user.current_organization_id {
+        Some(oid) => oid,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(DeploymentResponse {
+                    status: "failed".to_string(),
+                    instance_id,
+                    message: Some("User must be in an organization to create deployments".to_string()),
+                }),
+            )
+                .into_response();
+        }
+    };
+
     // We want a durable instance_id from the very first request, even when validation fails.
     // So we insert the instance row first (zone/type can be NULL), then all errors can be logged with instance_id.
     //
     // If this ever collides (extremely unlikely), we return 409 so devs notice immediately.
     let insert_initial = sqlx::query(
-        "INSERT INTO instances (id, provider_id, zone_id, instance_type_id, status, created_at, gpu_profile)
-         VALUES ($1, $2, NULL, NULL, 'provisioning', NOW(), '{}')"
+        "INSERT INTO instances (id, provider_id, zone_id, instance_type_id, organization_id, status, created_at, gpu_profile)
+         VALUES ($1, $2, NULL, NULL, $3, 'provisioning', NOW(), '{}')"
     )
     .bind(instance_id_uuid)
     .bind(provider_id)
+    .bind(organization_id)
     .execute(&state.db)
     .await;
 

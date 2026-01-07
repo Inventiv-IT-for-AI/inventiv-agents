@@ -71,6 +71,7 @@ This file reflects the **actual** state of the repo (code + migrations + UI) and
 - ⚠️ **Unreleased volumes**: Some instance terminations do not properly release associated block storage (see "Worker & Instance Reliability" section).
 - ⚠️ **Remaining clippy warnings**: 37 non-blocking clippy style errors (equality checks, redundant closures, etc.) - to fix progressively to improve code quality.
 - ⚠️ **Remaining frontend warnings**: 10 non-blocking ESLint warnings - to fix progressively to improve code quality.
+- ✅ **Production deployment fixes**: Fixed secrets synchronization (SECRETS_DIR preservation), permissions (644 for Docker), and VM disk sizing (40GB staging, 100GB prod).
 
 ---
 
@@ -125,8 +126,10 @@ This file reflects the **actual** state of the repo (code + migrations + UI) and
 ## 🚧 To do (backlog)
 
 ### Deployment & DNS
-- **Staging**: deployment on `studio-stg.inventiv-agents.fr` (API + edge routing + certs).
-- **Production**: deployment on `studio-prd.inventiv-agents.fr`.
+- ✅ **Staging**: deployment on `studio-stg.inventiv-agents.fr` (API + edge routing + certs) - operational.
+- ✅ **Production**: deployment on `studio-prd.inventiv-agents.fr` - operational.
+- ✅ **VM Disk Sizing**: Support for custom root volume sizes (40GB staging, 100GB prod) via `SCW_ROOT_VOLUME_SIZE_GB`.
+- ✅ **Secrets Management**: Fixed secrets synchronization to preserve environment-specific `SECRETS_DIR` and correct permissions (644) for Docker containers.
 
 ### UX / API
 - **Configurable System Prompt** (Inventiv-Agents): UI + API + persistence (per model / per tenant / per key).

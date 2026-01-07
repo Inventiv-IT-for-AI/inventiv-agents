@@ -81,6 +81,21 @@ pub async fn run(pool: Pool<Postgres>) {
                         // If IP is missing, try to fetch it from provider first (bounded by reqwest timeout).
                         if ip.is_none() {
                             if let Some(pid) = provider_instance_id.as_deref() {
+                                // Get organization_id from instance (required)
+                                let org_id: Option<uuid::Uuid> = sqlx::query_scalar(
+                                    "SELECT organization_id FROM instances WHERE id = $1"
+                                )
+                                .bind(id)
+                                .fetch_optional(&db_clone)
+                                .await
+                                .ok()
+                                .flatten();
+
+                                let Some(org_id) = org_id else {
+                                    eprintln!("❌ [Health Check] Instance {} missing organization_id", id);
+                                    return;
+                                };
+
                                 let provider_code: String =
                                     sqlx::query_scalar("SELECT code FROM providers WHERE id = $1")
                                         .bind(provider_id)
@@ -93,6 +108,7 @@ pub async fn run(pool: Pool<Postgres>) {
 
                                 let provider = match ProviderManager::get_provider(
                                     &provider_code,
+                                    org_id,
                                     db_clone.clone(),
                                 )
                                 .await

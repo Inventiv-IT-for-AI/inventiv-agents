@@ -203,9 +203,9 @@ pub async fn process_termination(
     .await
     .ok();
 
-    // 1. Get instance details from DB
-    let row_result = sqlx::query_as::<_, (Option<String>, Option<String>, String)>(
-        "SELECT i.provider_instance_id, z.code as zone, i.status::text
+    // 1. Get instance details from DB (including organization_id)
+    let row_result = sqlx::query_as::<_, (Option<String>, Option<String>, String, Option<uuid::Uuid>)>(
+        "SELECT i.provider_instance_id, z.code as zone, i.status::text, i.organization_id
          FROM instances i
          LEFT JOIN zones z ON i.zone_id = z.id
          WHERE i.id = $1",
@@ -215,7 +215,7 @@ pub async fn process_termination(
     .await;
 
     match row_result {
-        Ok(Some((provider_id_opt, zone_opt, current_status))) => {
+        Ok(Some((provider_id_opt, zone_opt, current_status, organization_id_opt))) => {
             let zone = zone_opt.unwrap_or_default();
             eprintln!(
                 "🔵 [process_termination] Found instance {}: provider_instance_id={:?}, zone={}, status={}",
@@ -224,6 +224,21 @@ pub async fn process_termination(
                 zone,
                 current_status
             );
+
+            // Get organization_id (required - no fallback)
+            let organization_id = match organization_id_opt {
+                Some(oid) => oid,
+                None => {
+                    eprintln!("❌ [process_termination] Instance {} missing organization_id", id_uuid);
+                    let _ = sqlx::query(
+                        "UPDATE instances SET status='failed', error_code='MISSING_ORGANIZATION_ID', error_message='Instance missing organization_id', failed_at=NOW() WHERE id=$1"
+                    )
+                    .bind(id_uuid)
+                    .execute(&pool)
+                    .await;
+                    return;
+                }
+            };
 
             // Ensure instance is in terminating status (idempotent transition)
             let _ = sqlx::query(
@@ -250,7 +265,7 @@ pub async fn process_termination(
                 .unwrap_or_else(ProviderManager::current_provider_name);
 
                 let provider_res =
-                    ProviderManager::get_provider(&provider_code, pool.clone()).await;
+                    ProviderManager::get_provider(&provider_code, organization_id, pool.clone()).await;
                 match provider_res {
                     Ok(provider) => {
                         eprintln!(
@@ -1062,15 +1077,46 @@ pub async fn process_provisioning(
     }
 
     // 0.5. Ensure row exists (idempotent; do NOT regress status on retries)
+    // Note: organization_id should already be set by API, but we ensure it's present
+    let organization_id_for_insert: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT organization_id FROM instances WHERE id = $1"
+    )
+    .bind(instance_uuid)
+    .fetch_optional(&pool)
+    .await
+    .ok()
+    .flatten();
+
+    // If organization_id is missing, try to get it from the existing row or fail
+    // (This should not happen if API correctly sets it, but we validate here)
+    if organization_id_for_insert.is_none() {
+        let msg = "Instance missing organization_id (required for multi-tenant provider credentials)";
+        eprintln!("❌ {}", msg);
+        let _ = sqlx::query(
+            "UPDATE instances
+             SET status='failed',
+                 error_code='MISSING_ORGANIZATION_ID',
+                 error_message=$2,
+                 failed_at=NOW()
+             WHERE id=$1",
+        )
+        .bind(instance_uuid)
+        .bind(msg)
+        .execute(&pool)
+        .await;
+        return;
+    }
+
     let insert_result = sqlx::query(
-         "INSERT INTO instances (id, provider_id, zone_id, instance_type_id, status, created_at, gpu_profile)
-          VALUES ($1, $2, $3, $4, 'provisioning', NOW(), '{}')
+         "INSERT INTO instances (id, provider_id, zone_id, instance_type_id, organization_id, status, created_at, gpu_profile)
+          VALUES ($1, $2, $3, $4, $5, 'provisioning', NOW(), '{}')
           ON CONFLICT (id) DO NOTHING"
     )
     .bind(instance_uuid)
     .bind(provider_id)
     .bind(zone_id)
     .bind(type_id)
+    .bind(organization_id_for_insert)
     .execute(&pool)
     .await;
 
@@ -1123,8 +1169,45 @@ pub async fn process_provisioning(
         return;
     }
 
-    // 1. Init Provider
-    let provider = match ProviderManager::get_provider(&provider_name, pool.clone()).await {
+    // 0. Get organization_id from instance (required - no fallback)
+    let organization_id: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT organization_id FROM instances WHERE id = $1"
+    )
+    .bind(instance_uuid)
+    .fetch_optional(&pool)
+    .await
+    .ok()
+    .flatten();
+
+    let organization_id = match organization_id {
+        Some(oid) => oid,
+        None => {
+            let msg = "Instance missing organization_id (required for multi-tenant provider credentials)";
+            eprintln!("❌ {}", msg);
+            if let Some(log_id) = log_id_execute {
+                let duration = start.elapsed().as_millis() as i32;
+                logger::log_event_complete(&pool, log_id, "failed", duration, Some(msg))
+                    .await
+                    .ok();
+            }
+            let _ = sqlx::query(
+                "UPDATE instances
+                 SET status = 'failed',
+                     error_code = COALESCE(error_code, 'MISSING_ORGANIZATION_ID'),
+                     error_message = COALESCE($2, error_message),
+                     failed_at = COALESCE(failed_at, NOW())
+                 WHERE id = $1",
+            )
+            .bind(instance_uuid)
+            .bind(msg)
+            .execute(&pool)
+            .await;
+            return;
+        }
+    };
+
+    // 1. Init Provider (with organization_id)
+    let provider = match ProviderManager::get_provider(&provider_name, organization_id, pool.clone()).await {
         Ok(p) => p,
         Err(e) => {
             let msg = format!("Missing Provider Credentials: {}", e);
@@ -3948,9 +4031,23 @@ fn build_ssh_key_cloud_init(ssh_pub: &str) -> String {
 pub async fn process_catalog_sync(pool: Pool<Postgres>) {
     println!("🔄 [Catalog Sync] Starting catalog synchronization...");
 
+    // Get default organization (for global catalog sync operations)
+    let default_org_id: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT id FROM organizations WHERE slug = 'inventiv-it' LIMIT 1"
+    )
+    .fetch_optional(&pool)
+    .await
+    .ok()
+    .flatten();
+
+    let Some(default_org_id) = default_org_id else {
+        eprintln!("❌ [Catalog Sync] Default organization 'inventiv-it' not found");
+        return;
+    };
+
     // 1. Get Provider (Scaleway)
     let provider_name = ProviderManager::current_provider_name();
-    if let Ok(provider) = ProviderManager::get_provider(&provider_name, pool.clone()).await {
+    if let Ok(provider) = ProviderManager::get_provider(&provider_name, default_org_id, pool.clone()).await {
         // Ensure the provider exists in DB (required for Settings UI and FK integrity).
         let provider_uuid: Option<Uuid> = sqlx::query_scalar(
             r#"
@@ -4137,8 +4234,23 @@ pub async fn process_catalog_sync(pool: Pool<Postgres>) {
 
 pub async fn process_full_reconciliation(pool: Pool<Postgres>) {
     println!("🔄 [Full Reconciliation] Starting...");
+    
+    // Get default organization (for global reconciliation operations)
+    let default_org_id: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT id FROM organizations WHERE slug = 'inventiv-it' LIMIT 1"
+    )
+    .fetch_optional(&pool)
+    .await
+    .ok()
+    .flatten();
+
+    let Some(default_org_id) = default_org_id else {
+        eprintln!("❌ [Full Reconciliation] Default organization 'inventiv-it' not found");
+        return;
+    };
+
     let provider_name = ProviderManager::current_provider_name();
-    if let Ok(provider) = ProviderManager::get_provider(&provider_name, pool.clone()).await {
+    if let Ok(provider) = ProviderManager::get_provider(&provider_name, default_org_id, pool.clone()).await {
         // Zones for this provider
         let zones: Vec<String> = sqlx::query_scalar(
             r#"

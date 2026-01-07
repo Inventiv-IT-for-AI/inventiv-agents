@@ -42,14 +42,15 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
     // 1. Find volumes marked as deleted in DB but not yet reconciled
     // These are volumes where deletion was reported but we need to verify at provider
     // Only process volumes that haven't been reconciled yet (reconciled_at IS NULL)
-    let deleted_but_existing: Vec<(Uuid, String, String, String, Option<Uuid>)> = sqlx::query_as(
+    let deleted_but_existing: Vec<(Uuid, String, String, String, Option<Uuid>, Option<uuid::Uuid>)> = sqlx::query_as(
         r#"
         SELECT 
             iv.id,
             iv.provider_volume_id,
             iv.zone_code,
             iv.instance_id::text,
-            i.provider_id
+            i.provider_id,
+            i.organization_id
         FROM instance_volumes iv
         JOIN instances i ON i.id = iv.instance_id
         WHERE iv.deleted_at IS NOT NULL
@@ -66,10 +67,15 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
     .fetch_all(pool)
     .await?;
 
-    for (row_id, provider_volume_id, zone_code, instance_id_str, provider_id_opt) in
+    for (row_id, provider_volume_id, zone_code, instance_id_str, provider_id_opt, organization_id_opt) in
         deleted_but_existing
     {
         if let Some(provider_id) = provider_id_opt {
+            let Some(org_id) = organization_id_opt else {
+                eprintln!("❌ [Volume Reconciliation] Instance {} missing organization_id", instance_id_str);
+                continue;
+            };
+
             let provider_code: String =
                 sqlx::query_scalar("SELECT code FROM providers WHERE id = $1")
                     .bind(provider_id)
@@ -77,7 +83,7 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
                     .await?
                     .unwrap_or_else(ProviderManager::current_provider_name);
 
-            if let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()).await
+            if let Ok(provider) = ProviderManager::get_provider(&provider_code, org_id, pool.clone()).await
             {
                 // Check if volume still exists at provider
                 match provider
@@ -213,14 +219,15 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
 
     // 2. Retry failed volume deletions (volumes with delete_on_terminate=true but deletion failed)
     // Only process volumes that haven't been reconciled yet
-    let failed_deletions: Vec<(Uuid, String, String, String, Option<Uuid>)> = sqlx::query_as(
+    let failed_deletions: Vec<(Uuid, String, String, String, Option<Uuid>, Option<uuid::Uuid>)> = sqlx::query_as(
         r#"
         SELECT 
             iv.id,
             iv.provider_volume_id,
             iv.zone_code,
             iv.instance_id::text,
-            i.provider_id
+            i.provider_id,
+            i.organization_id
         FROM instance_volumes iv
         JOIN instances i ON i.id = iv.instance_id
         WHERE iv.delete_on_terminate = true
@@ -237,10 +244,15 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
     .fetch_all(pool)
     .await?;
 
-    for (row_id, provider_volume_id, zone_code, instance_id_str, provider_id_opt) in
+    for (row_id, provider_volume_id, zone_code, instance_id_str, provider_id_opt, organization_id_opt) in
         failed_deletions
     {
         if let Some(provider_id) = provider_id_opt {
+            let Some(org_id) = organization_id_opt else {
+                eprintln!("❌ [Volume Reconciliation] Instance {} missing organization_id", instance_id_str);
+                continue;
+            };
+
             let provider_code: String =
                 sqlx::query_scalar("SELECT code FROM providers WHERE id = $1")
                     .bind(provider_id)
@@ -248,7 +260,7 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
                     .await?
                     .unwrap_or_else(ProviderManager::current_provider_name);
 
-            if let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()).await
+            if let Ok(provider) = ProviderManager::get_provider(&provider_code, org_id, pool.clone()).await
             {
                 // Check if volume still exists
                 match provider

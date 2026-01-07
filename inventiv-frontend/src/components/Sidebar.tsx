@@ -106,41 +106,63 @@ export function Sidebar() {
                     <div className="space-y-1">
                         <SidebarLink href="/my-dashboard" icon={LayoutDashboard} label="My Dashboard" />
                         <SidebarLink href="/chat" icon={MessageSquare} label="Chat" />
-                        {!instanceAccess.loading && instanceAccess.canAccess && (
-                            <SidebarLink href="/instances" icon={Server} label="Instances" />
-                        )}
                         <SidebarLink href="/models" icon={Activity} label="Models" />
-                        <SidebarLink href="/observability" icon={Cpu} label="Observability" />
                         <SidebarLink href="/workbench" icon={Terminal} label="Workbench" />
-                        <SidebarLink href="/monitoring" icon={BarChart3} label="Monitoring" />
                         <SidebarLink href="/api-keys" icon={KeyRound} label="API Keys" />
-                        <SidebarLink href="/organizations" icon={Building2} label="Organizations" />
-                        {!adminDashboardAccess.loading && adminDashboardAccess.canAccess && (
-                            <SidebarLink href="/admin-dashboard" icon={LayoutDashboard} label="Admin Dashboard" />
-                        )}
-                        {isAdmin ? <SidebarLink href="/users" icon={Users} label="Users" /> : null}
-                        {isAdmin ? <SidebarLink href="/settings" icon={Settings} label="Settings" /> : null}
                     </div>
                 </div>
-                <div className="px-3 py-2">
-                    <h2 className="mb-2 px-4 text-xs font-semibold tracking-tight text-muted-foreground uppercase">
-                        History
-                    </h2>
-                    <div className="space-y-1">
-                        <SidebarLink href="/traces" icon={Archive} label="Traces" />
+                {/* Admin group - only visible if user is Owner/Admin/Manager in an organization */}
+                {!adminDashboardAccess.loading && adminDashboardAccess.canAccess && (
+                    <div className="px-3 py-2">
+                        <h2 className="mb-2 px-4 text-xs font-semibold tracking-tight text-muted-foreground uppercase">
+                            Admin
+                        </h2>
+                        <div className="space-y-1">
+                            {/* Admin Dashboard - double check: requires Owner/Admin/Manager role */}
+                            {adminDashboardAccess.canAccess && (
+                                <SidebarLink href="/admin-dashboard" icon={LayoutDashboard} label="Admin Dashboard" />
+                            )}
+                            {/* Instances - visible to Owner/Admin/Manager, but page will check Owner/Admin for actual access */}
+                            {adminDashboardAccess.canAccess && (
+                                <SidebarLink href="/instances" icon={Server} label="Instances" />
+                            )}
+                            {/* Observability - available to Owner/Admin/Manager */}
+                            {adminDashboardAccess.canAccess && (
+                                <SidebarLink href="/observability" icon={Cpu} label="Observability" />
+                            )}
+                            {/* Monitoring - available to Owner/Admin/Manager */}
+                            {adminDashboardAccess.canAccess && (
+                                <SidebarLink href="/monitoring" icon={BarChart3} label="Monitoring" />
+                            )}
+                            {/* Organizations - available to Owner/Admin/Manager */}
+                            {adminDashboardAccess.canAccess && (
+                                <SidebarLink href="/organizations" icon={Building2} label="Organizations" />
+                            )}
+                            {/* Users - requires system admin role AND organization access */}
+                            {isAdmin && adminDashboardAccess.canAccess && (
+                                <SidebarLink href="/users" icon={Users} label="Users" />
+                            )}
+                            {/* Settings - requires system admin role AND organization access */}
+                            {isAdmin && adminDashboardAccess.canAccess && (
+                                <SidebarLink href="/settings" icon={Settings} label="Settings" />
+                            )}
+                        </div>
                     </div>
-                </div>
-                <div className="px-3 py-2">
-                    <h2 className="mb-2 px-4 text-xs font-semibold tracking-tight text-muted-foreground uppercase">
-                        System
-                    </h2>
-                    <div className="space-y-1">
-                        <Button variant="ghost" className="w-full justify-start" disabled>
-                            <Activity className="mr-2 h-4 w-4" />
-                            System Status
-                        </Button>
+                )}
+                {/* History group - only visible if user is Owner/Admin/Manager in an organization */}
+                {!adminDashboardAccess.loading && adminDashboardAccess.canAccess && (
+                    <div className="px-3 py-2">
+                        <h2 className="mb-2 px-4 text-xs font-semibold tracking-tight text-muted-foreground uppercase">
+                            History
+                        </h2>
+                        <div className="space-y-1">
+                            {/* Traces - double check: requires Owner/Admin/Manager role */}
+                            {adminDashboardAccess.canAccess && (
+                                <SidebarLink href="/traces" icon={Archive} label="Traces" />
+                            )}
+                        </div>
                     </div>
-                </div>
+                )}
             </div>
 
             <AccountSection onMeChange={(m: Me | null) => setMeRole(m?.role ?? null)} />

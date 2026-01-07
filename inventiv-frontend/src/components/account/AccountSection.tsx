@@ -257,6 +257,8 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
       }
       await fetchMe();
       await fetchOrgs();
+      // Dispatch event to notify other components of workspace change
+      window.dispatchEvent(new CustomEvent("workspace-changed"));
       snackbar.success("Workspace: Personal", { title: "Workspace" });
     } catch (e) {
       console.error(e);

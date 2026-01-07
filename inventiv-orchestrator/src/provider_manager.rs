@@ -46,7 +46,8 @@ impl ProviderManager {
 
     async fn scaleway_init_from_db(
         db: &Pool<Postgres>,
-    ) -> Result<Option<(String, String, Option<String>)>, String> {
+        organization_id: uuid::Uuid,
+    ) -> Result<Option<(String, String, Option<String>, Option<String>, Option<String>)>, String> {
         // Resolve provider_id by code.
         let provider_id: Option<uuid::Uuid> =
             sqlx::query_scalar("SELECT id FROM providers WHERE code = 'scaleway' LIMIT 1")
@@ -60,9 +61,10 @@ impl ProviderManager {
         };
 
         let project_id: Option<String> = sqlx::query_scalar(
-            "SELECT NULLIF(btrim(value_text), '') FROM provider_settings WHERE provider_id=$1 AND key='SCALEWAY_PROJECT_ID'",
+            "SELECT NULLIF(btrim(value_text), '') FROM provider_settings WHERE provider_id=$1 AND key='SCALEWAY_PROJECT_ID' AND organization_id=$2",
         )
         .bind(provider_id)
+        .bind(organization_id)
         .fetch_optional(db)
         .await
         .map_err(|e| format!("DB error reading SCALEWAY_PROJECT_ID: {}", e))?
@@ -70,21 +72,44 @@ impl ProviderManager {
 
         // Prefer encrypted key if present.
         let enc_b64: Option<String> = sqlx::query_scalar(
-            "SELECT NULLIF(btrim(value_text), '') FROM provider_settings WHERE provider_id=$1 AND key='SCALEWAY_SECRET_KEY_ENC'",
+            "SELECT NULLIF(btrim(value_text), '') FROM provider_settings WHERE provider_id=$1 AND key='SCALEWAY_SECRET_KEY_ENC' AND organization_id=$2",
         )
         .bind(provider_id)
+        .bind(organization_id)
         .fetch_optional(db)
         .await
         .map_err(|e| format!("DB error reading SCALEWAY_SECRET_KEY_ENC: {}", e))?
         .flatten();
 
         let plain: Option<String> = sqlx::query_scalar(
-            "SELECT NULLIF(btrim(value_text), '') FROM provider_settings WHERE provider_id=$1 AND key='SCALEWAY_SECRET_KEY'",
+            "SELECT NULLIF(btrim(value_text), '') FROM provider_settings WHERE provider_id=$1 AND key='SCALEWAY_SECRET_KEY' AND organization_id=$2",
         )
         .bind(provider_id)
+        .bind(organization_id)
         .fetch_optional(db)
         .await
         .map_err(|e| format!("DB error reading SCALEWAY_SECRET_KEY: {}", e))?
+        .flatten();
+
+        // Read SCALEWAY_ACCESS_KEY and SCALEWAY_ORGANIZATION_ID from provider_settings
+        let access_key: Option<String> = sqlx::query_scalar(
+            "SELECT NULLIF(btrim(value_text), '') FROM provider_settings WHERE provider_id=$1 AND key='SCALEWAY_ACCESS_KEY' AND organization_id=$2",
+        )
+        .bind(provider_id)
+        .bind(organization_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| format!("DB error reading SCALEWAY_ACCESS_KEY: {}", e))?
+        .flatten();
+
+        let organization_id_scw: Option<String> = sqlx::query_scalar(
+            "SELECT NULLIF(btrim(value_text), '') FROM provider_settings WHERE provider_id=$1 AND key='SCALEWAY_ORGANIZATION_ID' AND organization_id=$2",
+        )
+        .bind(provider_id)
+        .bind(organization_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| format!("DB error reading SCALEWAY_ORGANIZATION_ID: {}", e))?
         .flatten();
 
         let secret_key = if let Some(enc) = enc_b64 {
@@ -122,7 +147,7 @@ impl ProviderManager {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
-        Ok(Some((project_id, secret_key, ssh_public_key)))
+        Ok(Some((project_id, secret_key, ssh_public_key, access_key, organization_id_scw)))
     }
 
     fn scaleway_init_from_env() -> Result<(String, String, Option<String>), String> {
@@ -195,28 +220,35 @@ impl ProviderManager {
 
     pub async fn get_provider(
         provider_name: &str,
+        organization_id: uuid::Uuid,
         db: Pool<Postgres>,
     ) -> Result<Box<dyn CloudProvider>, String> {
         match provider_name.to_lowercase().as_str() {
             #[cfg(feature = "provider-scaleway")]
             "scaleway" => {
-                if let Some((project_id, secret_key, ssh_public_key)) =
-                    Self::scaleway_init_from_db(&db).await?
+                if let Some((project_id, secret_key, ssh_public_key, access_key, org_id_scw)) =
+                    Self::scaleway_init_from_db(&db, organization_id).await?
                 {
-                    return Ok(Box::new(ScalewayProvider::new(
+                    let mut provider = ScalewayProvider::new(
                         project_id,
                         secret_key,
                         ssh_public_key,
-                    )));
+                    );
+                    // Set organization_id and access_key from DB if available
+                    if let Some(ak) = access_key {
+                        provider.set_access_key(ak);
+                    }
+                    if let Some(oid) = org_id_scw {
+                        provider.set_organization_id(oid);
+                    }
+                    return Ok(Box::new(provider));
                 }
 
-                // Fallback: env/secrets mode (backwards compat)
-                let (project_id, secret_key, ssh_public_key) = Self::scaleway_init_from_env()?;
-                Ok(Box::new(ScalewayProvider::new(
-                    project_id,
-                    secret_key,
-                    ssh_public_key,
-                )))
+                // No credentials in DB for this organization - return error (no fallback)
+                return Err(format!(
+                    "Missing Scaleway credentials for organization {} (provider_settings not found)",
+                    organization_id
+                ));
             }
             #[cfg(not(feature = "provider-scaleway"))]
             "scaleway" => Err(

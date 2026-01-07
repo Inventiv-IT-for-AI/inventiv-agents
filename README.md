@@ -2,7 +2,7 @@
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![GHCR (build + promote)](https://github.com/Inventiv-IT-for-AI/inventiv-agents/actions/workflows/ghcr.yml/badge.svg)](https://github.com/Inventiv-IT-for-AI/inventiv-agents/actions/workflows/ghcr.yml)
-[![Version](https://img.shields.io/badge/version-0.5.2-blue.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-0.5.4-blue.svg)](VERSION)
 
 **Control-plane + data-plane to run AI agents/instances** — Scalable, modular, and performant LLM inference infrastructure, written in **Rust**.
 
@@ -245,7 +245,9 @@ Runtime secrets are mounted in containers via `SECRETS_DIR` → `/run/secrets`:
 
 **In local dev**: create `deploy/secrets/` and place secret files there.
 
-**In staging/prod**: use `make stg-secrets-sync` / `make prod-secrets-sync` to sync from the VM.
+**In staging/prod**: use `make stg-secrets-sync` / `make prod-secrets-sync` to sync secrets to the VM.
+
+**Important**: Secrets are uploaded to `SECRETS_DIR` (e.g., `/opt/inventiv/secrets-prod` for prod) with permissions `644` to allow Docker containers to read them via `/run/secrets` mount.
 
 ### Modes (dev / staging / prod)
 
@@ -273,6 +275,12 @@ SCALEWAY_ACCESS_KEY=<your-access-key>
 ```
 
 In staging/prod, secrets are synchronized on the VM via `SECRETS_DIR` (see `make stg-secrets-sync` / `make prod-secrets-sync`).
+
+**VM Disk Sizing**: Control-plane VMs can be configured with custom root volume sizes:
+- **Staging**: `SCW_ROOT_VOLUME_SIZE_GB=40` (default: ~10GB)
+- **Production**: `SCW_ROOT_VOLUME_SIZE_GB=100` (default: ~10GB)
+
+See [docs/PROVISIONING_VOLUME_SIZE.md](docs/PROVISIONING_VOLUME_SIZE.md) for details.
 
 ## Data Model (DB)
 
@@ -560,29 +568,38 @@ make edge-cert      # Generate/renew SSL certificates
 
 **Staging**:
 
-Target DNS (planned): `https://studio-stg.inventiv-agents.fr`
+Target DNS: `https://studio-stg.inventiv-agents.fr`
 
 ```bash
-make stg-provision      # Provision VM
-make stg-bootstrap      # Initial bootstrap
-make stg-secrets-sync   # Sync secrets
-make stg-create         # Create stack
-make stg-start          # Start
-make stg-cert           # Generate/renew certificates
+make stg-provision      # Provision VM (with 40GB disk by default)
+make stg-bootstrap      # Initial bootstrap (Docker, directories)
+make stg-secrets-sync   # Sync secrets to /opt/inventiv/secrets-staging
+make stg-create         # Create stack + generate SSL certificates
+make stg-start          # Start services
+make stg-cert           # Generate/renew certificates manually
 ```
 
 **Production**:
 
-Target DNS (planned): `https://studio-prd.inventiv-agents.fr`
+Target DNS: `https://studio-prd.inventiv-agents.fr`
 
 ```bash
-make prod-provision
-make prod-bootstrap
-make prod-secrets-sync
-make prod-create
-make prod-start
-make prod-cert
+make prod-provision     # Provision VM (with 100GB disk by default)
+make prod-bootstrap     # Initial bootstrap (Docker, directories)
+make prod-secrets-sync # Sync secrets to /opt/inventiv/secrets-prod
+make prod-create        # Create stack + generate SSL certificates
+make prod-start         # Start services
+make prod-cert          # Generate/renew certificates manually
 ```
+
+**Complete rebuild** (destroy + recreate):
+
+```bash
+make stg-rebuild   # Destroy VM, then provision + bootstrap + secrets + create
+make prod-rebuild  # Destroy VM, then provision + bootstrap + secrets + create
+```
+
+**Note**: The `rebuild` commands automatically handle VM provisioning with the configured disk size (`SCW_ROOT_VOLUME_SIZE_GB`), secrets synchronization, and SSL certificate generation.
 
 ### Certificates
 

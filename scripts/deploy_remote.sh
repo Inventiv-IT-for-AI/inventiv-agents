@@ -153,10 +153,11 @@ ensure_secrets_dir() {
     AUTO_SEED_PROVIDER_CREDENTIALS=\$(. ./.env >/dev/null 2>&1; echo \"\${AUTO_SEED_PROVIDER_CREDENTIALS:-0}\"); \
     if [[ -z \"\$SECRETS_DIR\" ]]; then echo 'SECRETS_DIR is not set in env file'; exit 2; fi; \
     if [[ ! -d \"\$SECRETS_DIR\" ]]; then echo \"Secrets dir not found: \$SECRETS_DIR\"; exit 2; fi; \
-    if [[ ! -f \"\$SECRETS_DIR/scaleway_access_key\" ]]; then echo \"Missing \$SECRETS_DIR/scaleway_access_key\"; exit 2; fi; \
-    if [[ ! -f \"\$SECRETS_DIR/scaleway_secret_key\" ]]; then echo \"Missing \$SECRETS_DIR/scaleway_secret_key\"; exit 2; fi; \
-    if [[ \"\$AUTO_SEED_PROVIDER_CREDENTIALS\" == \"1\" ]] && [[ ! -f \"\$SECRETS_DIR/provider_settings_key\" ]]; then echo \"Missing \$SECRETS_DIR/provider_settings_key (required when AUTO_SEED_PROVIDER_CREDENTIALS=1)\"; exit 2; fi; \
-    if [[ ! -f \"\$SECRETS_DIR/llm-studio-key.pub\" ]]; then echo \"Missing \$SECRETS_DIR/llm-studio-key.pub\"; exit 2; fi"
+    # Check files with sudo since they may be owned by root (created via remote_sync_secrets.sh) \
+    if ! sudo test -f \"\$SECRETS_DIR/scaleway_access_key\"; then echo \"Missing \$SECRETS_DIR/scaleway_access_key\"; exit 2; fi; \
+    if ! sudo test -f \"\$SECRETS_DIR/scaleway_secret_key\"; then echo \"Missing \$SECRETS_DIR/scaleway_secret_key\"; exit 2; fi; \
+    if [[ \"\$AUTO_SEED_PROVIDER_CREDENTIALS\" == \"1\" ]] && ! sudo test -f \"\$SECRETS_DIR/provider_settings_key\"; then echo \"Missing \$SECRETS_DIR/provider_settings_key (required when AUTO_SEED_PROVIDER_CREDENTIALS=1)\"; exit 2; fi; \
+    if ! sudo test -f \"\$SECRETS_DIR/llm-studio-key.pub\"; then echo \"Missing \$SECRETS_DIR/llm-studio-key.pub\"; exit 2; fi"
 }
 
 case "${ACTION}" in
