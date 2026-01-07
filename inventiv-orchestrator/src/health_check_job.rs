@@ -14,6 +14,7 @@ pub async fn run(pool: Pool<Postgres>) {
         interval.tick().await;
 
         // Claim BOOTING/INSTALLING/STARTING instances even if IP is missing. If IP is missing, we try to fetch it from provider.
+        #[allow(clippy::type_complexity)]
         let booting_instances: Result<
             Vec<(
                 uuid::Uuid,
@@ -74,8 +75,7 @@ pub async fn run(pool: Pool<Postgres>) {
                 {
                     let db_clone = pool.clone();
                     tokio::spawn(async move {
-                        let created_at =
-                            created_at.unwrap_or_else(|| sqlx::types::chrono::Utc::now());
+                        let created_at = created_at.unwrap_or_else(sqlx::types::chrono::Utc::now);
                         let boot_started_at = boot_started_at.unwrap_or(created_at);
 
                         // If IP is missing, try to fetch it from provider first (bounded by reqwest timeout).

@@ -111,6 +111,7 @@ pub async fn log_event_complete_with_metadata(
 }
 
 /// Quick log for one-off events (like state transitions)
+#[allow(dead_code)]
 pub async fn log_quick(
     db: &Pool<Postgres>,
     action_type: &str,

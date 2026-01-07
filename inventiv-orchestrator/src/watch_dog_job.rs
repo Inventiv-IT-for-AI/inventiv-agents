@@ -27,6 +27,7 @@ pub async fn watchdog_ready_instances(
     pool: &Pool<Postgres>,
     redis_client: &redis::Client,
 ) -> Result<usize, Box<dyn std::error::Error>> {
+    #[allow(clippy::type_complexity)]
     let claimed: Vec<(Uuid, Uuid, String, String, Option<String>, Option<String>)> = sqlx::query_as(
         "WITH cte AS (
             SELECT i.id,

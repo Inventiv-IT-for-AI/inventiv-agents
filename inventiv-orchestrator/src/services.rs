@@ -247,7 +247,7 @@ pub async fn process_termination(
                 .fetch_optional(&pool)
                 .await
                 .unwrap_or(None)
-                .unwrap_or_else(|| ProviderManager::current_provider_name());
+                .unwrap_or_else(ProviderManager::current_provider_name);
 
                 let provider_res =
                     ProviderManager::get_provider(&provider_code, pool.clone()).await;
@@ -579,7 +579,7 @@ pub async fn process_termination(
                                         break;
                                     }
                                     Ok(true) => {
-                                        if verify_start.elapsed().as_secs() % 10 == 0 {
+                                        if verify_start.elapsed().as_secs().is_multiple_of(10) {
                                             eprintln!("⏳ [process_termination] Instance {} still exists, waiting... ({:.0}s elapsed)", provider_instance_id, verify_start.elapsed().as_secs());
                                         }
                                         sleep(Duration::from_secs(5)).await;
@@ -911,7 +911,7 @@ pub async fn process_provisioning(
         .fetch_optional(&pool)
         .await
         .unwrap_or(None)
-        .unwrap_or_else(|| ProviderManager::current_provider_name());
+        .unwrap_or_else(ProviderManager::current_provider_name);
 
     eprintln!(
         "🔵 [process_provisioning] Resolved provider '{}' (provider_id={}) for instance {}",
@@ -996,7 +996,7 @@ pub async fn process_provisioning(
             )
         })
         .unwrap_or(false);
-    if auto_install_guard && provider_name.to_ascii_lowercase() == "scaleway" {
+    if auto_install_guard && provider_name.eq_ignore_ascii_case("scaleway") {
         let is_available: bool = sqlx::query_scalar(
             r#"
             SELECT COALESCE(itz.is_available, false)
@@ -1884,17 +1884,11 @@ pub async fn process_provisioning(
                                 // - Block Storage volumes (sbs_volume) auto-created by Scaleway for diskless instances should be deleted
                                 //   (Scaleway creates these automatically, they're not user-created data volumes)
                                 // - Data volumes we create will have delete_on_terminate set later based on config
-                                let delete_on_terminate = if av.boot {
-                                    true // Boot volumes should be deleted
-                                } else if av.volume_type == "l_ssd" {
-                                    true // Local Storage volumes (e.g., RENDER-S) should be deleted since they're auto-created
-                                } else if requires_diskless && av.volume_type == "sbs_volume" {
-                                    // For diskless instances, Scaleway auto-creates Block Storage as boot volume
-                                    // Even if boot=false in API, this is the auto-created boot volume and should be deleted
-                                    true
-                                } else {
-                                    false // Other volumes (e.g., Block Storage we create) will be handled by config
-                                };
+                                // Determine if volume should be deleted on instance termination
+                                // Boot volumes, local storage, and auto-created diskless volumes should be deleted
+                                let delete_on_terminate = av.boot
+                                    || av.volume_type == "l_ssd"
+                                    || (requires_diskless && av.volume_type == "sbs_volume");
 
                                 let insert_result = sqlx::query(
                                     r#"
@@ -3166,17 +3160,15 @@ pub async fn process_provisioning(
                         );
                         server_running = true;
                         break;
-                    } else {
-                        if wait_attempt % 10 == 0 {
-                            // Log every 10th attempt to avoid spam
-                            println!(
-                                "⏳ Server {} state: {} (attempt {}/150, ~{}s elapsed)",
-                                server_id,
-                                state,
-                                wait_attempt,
-                                wait_attempt * 2
-                            );
-                        }
+                    } else if wait_attempt % 10 == 0 {
+                        // Log every 10th attempt to avoid spam
+                        println!(
+                            "⏳ Server {} state: {} (attempt {}/150, ~{}s elapsed)",
+                            server_id,
+                            state,
+                            wait_attempt,
+                            wait_attempt * 2
+                        );
                     }
                 } else {
                     // Provider doesn't support get_server_state, or API call failed
@@ -3461,8 +3453,10 @@ pub async fn process_provisioning(
 
             // Check SSH accessibility (AFTER Security Groups configuration)
             // For Scaleway: SSH should be accessible after ~20 seconds
-            if ip_address.is_some() && auto_install && is_worker_target {
-                let ip_for_ssh = ip_address.as_ref().unwrap();
+            if let Some(ip_for_ssh) = ip_address
+                .as_ref()
+                .filter(|_| auto_install && is_worker_target)
+            {
                 eprintln!("⏳ [process_create] Waiting for SSH to become accessible on {} (max 3 minutes)...", ip_for_ssh);
 
                 let ssh_check_log = logger::log_event_with_metadata(

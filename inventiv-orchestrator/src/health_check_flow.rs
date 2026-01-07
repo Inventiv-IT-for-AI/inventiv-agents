@@ -477,6 +477,7 @@ async fn provider_setting_i64(
     .flatten()
 }
 
+#[allow(dead_code)]
 async fn provider_setting_bool(
     db: &Pool<Postgres>,
     provider_id: uuid::Uuid,
@@ -698,6 +699,7 @@ async fn maybe_trigger_worker_install_over_ssh(
         id: uuid::Uuid,
         status: String,
         created_at: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>,
+        #[allow(dead_code)]
         completed_at: Option<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>>,
         last_phase: Option<String>,
     }

@@ -129,10 +129,10 @@ export default function OrganizationsPage() {
     setCreateOpen(true);
   };
 
-  const openMembers = (org: Organization) => {
+  const openMembers = useCallback((org: Organization) => {
     setSelectedOrg(org);
     setMembersOpen(true);
-  };
+  }, []);
 
   const createOrganization = async () => {
     if (!form.name.trim()) {
@@ -200,7 +200,7 @@ export default function OrganizationsPage() {
       const msg = e instanceof Error ? e.message : String(e);
       snackbar.error("Erreur réseau", { title: "Organisations", details: msg });
     }
-  }, [snackbar, setCurrentOrgId, setRefreshTick, setError]);
+  }, [snackbar, setCurrentOrgId, setRefreshTick]);
 
   const columns = useMemo<IADataTableColumn<OrganizationWithActions>[]>(() => {
     return [

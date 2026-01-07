@@ -651,3 +651,402 @@ pub fn extract_user_agent(headers: &HeaderMap) -> Option<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    fn test_database_url() -> Option<String> {
+        std::env::var("TEST_DATABASE_URL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                std::env::var("DATABASE_URL")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            })
+    }
+
+    async fn setup_pool() -> Option<Pool<Postgres>> {
+        let Some(url) = test_database_url() else {
+            eprintln!("skipping auth unit tests: DATABASE_URL or TEST_DATABASE_URL not set");
+            return None;
+        };
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&url)
+            .await
+            .ok()?;
+
+        // Ensure schema/migrations exist
+        let _ = sqlx::migrate!("../sqlx-migrations").run(&pool).await;
+        Some(pool)
+    }
+
+    #[tokio::test]
+    async fn test_create_session() {
+        let Some(pool) = setup_pool().await else {
+            return;
+        };
+
+        // Clean up
+        let test_user_id = uuid::Uuid::new_v4();
+        let _ = sqlx::query("DELETE FROM user_sessions WHERE user_id = $1")
+            .bind(test_user_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(test_user_id)
+            .execute(&pool)
+            .await;
+
+        // Create test user
+        let _ = sqlx::query(
+            "INSERT INTO users (id, email, password_hash, username) VALUES ($1, 'test@test.com', crypt('password', gen_salt('bf')), 'test')",
+        )
+        .bind(test_user_id)
+        .execute(&pool)
+        .await;
+
+        let session_id = uuid::Uuid::new_v4();
+        let token_hash = "test_hash_123".to_string();
+
+        // Test create_session
+        let result = create_session(
+            &pool,
+            session_id,
+            test_user_id,
+            None,
+            None,
+            Some("127.0.0.1".to_string()),
+            Some("test-agent".to_string()),
+            token_hash.clone(),
+        )
+        .await;
+
+        assert!(result.is_ok(), "create_session should succeed");
+
+        // Verify session was created
+        let session_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM user_sessions WHERE id = $1)")
+                .bind(session_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        assert!(session_exists, "Session should exist in DB");
+    }
+
+    #[tokio::test]
+    async fn test_verify_session_db() {
+        let Some(pool) = setup_pool().await else {
+            return;
+        };
+
+        // Clean up
+        let test_user_id = uuid::Uuid::new_v4();
+        let _ = sqlx::query("DELETE FROM user_sessions WHERE user_id = $1")
+            .bind(test_user_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(test_user_id)
+            .execute(&pool)
+            .await;
+
+        // Create test user
+        let _ = sqlx::query(
+            "INSERT INTO users (id, email, password_hash, username) VALUES ($1, 'test@test.com', crypt('password', gen_salt('bf')), 'test')",
+        )
+        .bind(test_user_id)
+        .execute(&pool)
+        .await;
+
+        let session_id = uuid::Uuid::new_v4();
+        let token_hash = "test_hash_456".to_string();
+
+        // Create session
+        create_session(
+            &pool,
+            session_id,
+            test_user_id,
+            None,
+            None,
+            Some("127.0.0.1".to_string()),
+            Some("test-agent".to_string()),
+            token_hash.clone(),
+        )
+        .await
+        .unwrap();
+
+        // Test verify_session_db with correct hash
+        let result = verify_session_db(&pool, session_id, &token_hash).await;
+        assert!(result.is_ok(), "verify_session_db should succeed");
+        assert!(result.unwrap(), "Session should be valid");
+
+        // Test verify_session_db with wrong hash
+        let result = verify_session_db(&pool, session_id, "wrong_hash").await;
+        assert!(result.is_ok(), "verify_session_db should succeed");
+        assert!(
+            !result.unwrap(),
+            "Session should be invalid with wrong hash"
+        );
+
+        // Test verify_session_db with non-existent session
+        let non_existent_id = uuid::Uuid::new_v4();
+        let result = verify_session_db(&pool, non_existent_id, &token_hash).await;
+        assert!(result.is_ok(), "verify_session_db should succeed");
+        assert!(!result.unwrap(), "Non-existent session should be invalid");
+    }
+
+    #[tokio::test]
+    async fn test_revoke_session() {
+        let Some(pool) = setup_pool().await else {
+            return;
+        };
+
+        // Clean up
+        let test_user_id = uuid::Uuid::new_v4();
+        let _ = sqlx::query("DELETE FROM user_sessions WHERE user_id = $1")
+            .bind(test_user_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(test_user_id)
+            .execute(&pool)
+            .await;
+
+        // Create test user
+        let _ = sqlx::query(
+            "INSERT INTO users (id, email, password_hash, username) VALUES ($1, 'test@test.com', crypt('password', gen_salt('bf')), 'test')",
+        )
+        .bind(test_user_id)
+        .execute(&pool)
+        .await;
+
+        let session_id = uuid::Uuid::new_v4();
+        let token_hash = "test_hash_789".to_string();
+
+        // Create session
+        create_session(
+            &pool,
+            session_id,
+            test_user_id,
+            None,
+            None,
+            Some("127.0.0.1".to_string()),
+            Some("test-agent".to_string()),
+            token_hash.clone(),
+        )
+        .await
+        .unwrap();
+
+        // Verify session is not revoked
+        let revoked_before: Option<bool> =
+            sqlx::query_scalar("SELECT revoked_at IS NOT NULL FROM user_sessions WHERE id = $1")
+                .bind(session_id)
+                .fetch_optional(&pool)
+                .await
+                .unwrap()
+                .map(|r: bool| r);
+
+        assert_eq!(revoked_before, Some(false), "Session should not be revoked");
+
+        // Revoke session
+        let result = revoke_session(&pool, session_id).await;
+        assert!(result.is_ok(), "revoke_session should succeed");
+
+        // Verify session is revoked
+        let revoked_after: Option<bool> =
+            sqlx::query_scalar("SELECT revoked_at IS NOT NULL FROM user_sessions WHERE id = $1")
+                .bind(session_id)
+                .fetch_optional(&pool)
+                .await
+                .unwrap()
+                .map(|r: bool| r);
+
+        assert_eq!(revoked_after, Some(true), "Session should be revoked");
+    }
+
+    #[tokio::test]
+    async fn test_update_session_org() {
+        let Some(pool) = setup_pool().await else {
+            return;
+        };
+
+        // Clean up
+        let test_user_id = uuid::Uuid::new_v4();
+        let test_org_id = uuid::Uuid::new_v4();
+        let _ = sqlx::query("DELETE FROM user_sessions WHERE user_id = $1")
+            .bind(test_user_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM organization_memberships WHERE organization_id = $1")
+            .bind(test_org_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM organizations WHERE id = $1")
+            .bind(test_org_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(test_user_id)
+            .execute(&pool)
+            .await;
+
+        // Create test user and org
+        let _ = sqlx::query(
+            "INSERT INTO users (id, email, password_hash, username) VALUES ($1, 'test@test.com', crypt('password', gen_salt('bf')), 'test')",
+        )
+        .bind(test_user_id)
+        .execute(&pool)
+        .await;
+        let _ = sqlx::query(
+            "INSERT INTO organizations (id, name, slug, created_by_user_id) VALUES ($1, 'Test Org', 'test-org', $2)",
+        )
+        .bind(test_org_id)
+        .bind(test_user_id)
+        .execute(&pool)
+        .await;
+
+        let session_id = uuid::Uuid::new_v4();
+        let token_hash = "test_hash_org".to_string();
+
+        // Create session without org
+        create_session(
+            &pool,
+            session_id,
+            test_user_id,
+            None,
+            None,
+            Some("127.0.0.1".to_string()),
+            Some("test-agent".to_string()),
+            token_hash.clone(),
+        )
+        .await
+        .unwrap();
+
+        // Verify session has no org
+        let org_before: Option<uuid::Uuid> =
+            sqlx::query_scalar("SELECT current_organization_id FROM user_sessions WHERE id = $1")
+                .bind(session_id)
+                .fetch_optional(&pool)
+                .await
+                .unwrap()
+                .flatten();
+
+        assert_eq!(org_before, None, "Session should have no org initially");
+
+        // Update session with org
+        let result = update_session_org(
+            &pool,
+            session_id,
+            Some(test_org_id),
+            Some("owner".to_string()),
+        )
+        .await;
+        assert!(result.is_ok(), "update_session_org should succeed");
+
+        // Verify session has org
+        let org_after: Option<uuid::Uuid> =
+            sqlx::query_scalar("SELECT current_organization_id FROM user_sessions WHERE id = $1")
+                .bind(session_id)
+                .fetch_optional(&pool)
+                .await
+                .unwrap()
+                .flatten();
+
+        assert_eq!(
+            org_after,
+            Some(test_org_id),
+            "Session should have org after update"
+        );
+
+        // Verify role
+        let role_after: Option<String> =
+            sqlx::query_scalar("SELECT organization_role FROM user_sessions WHERE id = $1")
+                .bind(session_id)
+                .fetch_optional(&pool)
+                .await
+                .unwrap()
+                .flatten();
+
+        assert_eq!(
+            role_after,
+            Some("owner".to_string()),
+            "Session should have role 'owner'"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_session_last_used() {
+        let Some(pool) = setup_pool().await else {
+            return;
+        };
+
+        // Clean up
+        let test_user_id = uuid::Uuid::new_v4();
+        let _ = sqlx::query("DELETE FROM user_sessions WHERE user_id = $1")
+            .bind(test_user_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(test_user_id)
+            .execute(&pool)
+            .await;
+
+        // Create test user
+        let _ = sqlx::query(
+            "INSERT INTO users (id, email, password_hash, username) VALUES ($1, 'test@test.com', crypt('password', gen_salt('bf')), 'test')",
+        )
+        .bind(test_user_id)
+        .execute(&pool)
+        .await;
+
+        let session_id = uuid::Uuid::new_v4();
+        let token_hash = "test_hash_last_used".to_string();
+
+        // Create session
+        create_session(
+            &pool,
+            session_id,
+            test_user_id,
+            None,
+            None,
+            Some("127.0.0.1".to_string()),
+            Some("test-agent".to_string()),
+            token_hash.clone(),
+        )
+        .await
+        .unwrap();
+
+        // Get initial last_used_at
+        let last_used_before: chrono::DateTime<chrono::Utc> =
+            sqlx::query_scalar("SELECT last_used_at FROM user_sessions WHERE id = $1")
+                .bind(session_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        // Wait a bit
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Update last_used_at
+        let result = update_session_last_used(&pool, session_id).await;
+        assert!(result.is_ok(), "update_session_last_used should succeed");
+
+        // Get updated last_used_at
+        let last_used_after: chrono::DateTime<chrono::Utc> =
+            sqlx::query_scalar("SELECT last_used_at FROM user_sessions WHERE id = $1")
+                .bind(session_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        assert!(
+            last_used_after > last_used_before,
+            "last_used_at should be updated"
+        );
+    }
+}

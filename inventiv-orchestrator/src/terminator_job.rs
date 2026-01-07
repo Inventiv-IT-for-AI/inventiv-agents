@@ -262,7 +262,7 @@ pub async fn terminator_terminating_instances(
                     .fetch_optional(pool)
                     .await
                     .unwrap_or(None)
-                    .unwrap_or_else(|| ProviderManager::current_provider_name());
+                    .unwrap_or_else(ProviderManager::current_provider_name);
             if let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()).await
             {
                 let _ =

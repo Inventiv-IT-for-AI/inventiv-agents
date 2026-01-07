@@ -1,5 +1,6 @@
 use sqlx::{Pool, Postgres};
 
+#[allow(dead_code)]
 pub async fn run_inline_migrations(pool: &Pool<Postgres>) {
     println!("📦 Running Migrations (Inline Schema)...");
 
