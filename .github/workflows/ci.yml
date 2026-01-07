@@ -99,12 +99,23 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           # Vérifie que lightningcss est installé correctement
-          if [ ! -f "inventiv-frontend/node_modules/@tailwindcss/node/node_modules/lightningcss/lightningcss.linux-x64-gnu.node" ]; then
-            echo "⚠️  lightningcss binary not found, attempting to rebuild..."
+          # Le binaire doit être dans node_modules/lightningcss/lightningcss.linux-x64-gnu.node
+          LIGHTNING_PATH="inventiv-frontend/node_modules/lightningcss/lightningcss.linux-x64-gnu.node"
+          if [ ! -f "$LIGHTNING_PATH" ]; then
+            echo "⚠️  lightningcss binary not found at $LIGHTNING_PATH, attempting to install..."
             cd inventiv-frontend
-            npm rebuild lightningcss --no-save || true
+            # Installe explicitement lightningcss pour forcer le téléchargement du binaire natif
+            npm install lightningcss@latest --no-save --force || npm rebuild lightningcss --no-save || true
             cd ..
+            # Vérifie à nouveau
+            if [ ! -f "$LIGHTNING_PATH" ]; then
+              echo "❌ Failed to install lightningcss binary"
+              echo "Listing lightningcss directories:"
+              find inventiv-frontend/node_modules -type d -name "lightningcss" 2>/dev/null | head -5
+              exit 1
+            fi
           fi
+          echo "✅ lightningcss binary found at $LIGHTNING_PATH"
         env:
           # S'assure que les binaires natifs sont installés pour lightningcss
           npm_config_build_from_source: false
