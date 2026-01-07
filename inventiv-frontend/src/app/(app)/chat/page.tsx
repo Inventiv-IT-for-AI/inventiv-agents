@@ -60,7 +60,7 @@ export default function ChatPage() {
     return m ? `${m.label} (${m.model})` : selectedModel;
   }, [models, selectedModel]);
 
-  const loadModels = async () => {
+  const loadModels = useCallback(async () => {
     setModelsError(null);
     try {
       const res = await fetch(apiUrl("/chat/models"), { cache: "no-store", credentials: "include" });
@@ -80,9 +80,9 @@ export default function ChatPage() {
       setModels([]);
       setModelsError(e instanceof Error ? e.message : String(e));
     }
-  };
+  }, [selectedModel]);
 
-  const loadRuns = async () => {
+  const loadRuns = useCallback(async () => {
     setRunsError(null);
     try {
       const res = await fetch(apiUrl("workbench/runs?limit=30"), { cache: "no-store", credentials: "include" });
@@ -96,9 +96,9 @@ export default function ChatPage() {
       setRuns([]);
       setRunsError(e instanceof Error ? e.message : String(e));
     }
-  };
+  }, []);
 
-  const loadProjects = async () => {
+  const loadProjects = useCallback(async () => {
     setProjectsError(null);
     try {
       const res = await fetch(apiUrl("workbench/projects"), { cache: "no-store", credentials: "include" });
@@ -112,7 +112,7 @@ export default function ChatPage() {
       setProjects([]);
       setProjectsError(e instanceof Error ? e.message : String(e));
     }
-  };
+  }, []);
 
   const loadRun = async (id: string) => {
     setChatError(null);
