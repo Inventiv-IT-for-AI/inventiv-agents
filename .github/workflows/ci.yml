@@ -96,7 +96,15 @@ jobs:
       # Installation des dépendances npm (clean install, sans audit/fund)
       # Note: npm ci installe les dépendances natives (lightningcss) correctement
       - name: Install
-        run: npm ci --no-audit --no-fund
+        run: |
+          npm ci --no-audit --no-fund
+          # Vérifie que lightningcss est installé correctement
+          if [ ! -f "inventiv-frontend/node_modules/@tailwindcss/node/node_modules/lightningcss/lightningcss.linux-x64-gnu.node" ]; then
+            echo "⚠️  lightningcss binary not found, attempting to rebuild..."
+            cd inventiv-frontend
+            npm rebuild lightningcss --no-save || true
+            cd ..
+          fi
         env:
           # S'assure que les binaires natifs sont installés pour lightningcss
           npm_config_build_from_source: false
