@@ -26,6 +26,7 @@
 - ✅ **Storage Management**: Automatic volume discovery, tracking, and cleanup on termination
 - ✅ **FinOps (costs/forecast)**: Tracking of real and forecasted costs by instance/type/region/provider, time windows (minute/hour/day/30d/365d)
 - ✅ **Frontend (web console)**: Next.js dashboard with FinOps monitoring, instance management, settings (providers/zones/types), action logs
+- ✅ **Version Display**: Frontend and backend version information displayed in UI (discrete badge with hover details)
 - ✅ **Auth (JWT session + users)**: Cookie-based session authentication, user management, automatic admin bootstrap
 - ✅ **Worker Auth (token per instance)**: Secure worker authentication with hashed tokens in DB, automatic bootstrap
 
@@ -350,6 +351,12 @@ psql "postgresql://postgres:password@localhost:5432/llminfra" -f seeds/catalog_s
 - `GET /auth/me`: User profile
 - `PUT /auth/me`: Update profile
 - `PUT /auth/me/password`: Change password
+- `GET /auth/sessions`: List active sessions
+- `POST /auth/sessions/:id/revoke`: Revoke a session
+
+**Version Info** (public):
+- `GET /version`: Backend version information (JSON: `backend_version`, `build_time`)
+- `GET /api/version`: Backend version information (alias)
 
 **User management** (admin only):
 - `GET /users`: List users
