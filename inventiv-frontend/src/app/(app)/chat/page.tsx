@@ -194,6 +194,13 @@ export default function ChatPage() {
     void loadProjects().catch(() => null);
   }, [loadModels, loadRuns, loadProjects]);
 
+  // Set default selected model when models are loaded
+  useEffect(() => {
+    if (!selectedModel && models.length > 0) {
+      setSelectedModel(models[0].model);
+    }
+  }, [models, selectedModel]);
+
   useEffect(() => {
     scrollToBottom();
   }, [messages.length]);
