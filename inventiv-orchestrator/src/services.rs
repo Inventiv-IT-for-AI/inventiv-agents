@@ -4235,40 +4235,70 @@ pub async fn process_catalog_sync(pool: Pool<Postgres>) {
 pub async fn process_full_reconciliation(pool: Pool<Postgres>) {
     println!("🔄 [Full Reconciliation] Starting...");
     
-    // Get default organization (for global reconciliation operations)
-    let default_org_id: Option<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT id FROM organizations WHERE slug = 'inventiv-it' LIMIT 1"
+    let provider_name = ProviderManager::current_provider_name();
+    
+    // Get provider_id
+    let provider_id: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT id FROM providers WHERE code = $1 LIMIT 1"
     )
+    .bind(&provider_name)
     .fetch_optional(&pool)
     .await
     .ok()
     .flatten();
 
-    let Some(default_org_id) = default_org_id else {
-        eprintln!("❌ [Full Reconciliation] Default organization 'inventiv-it' not found");
+    let Some(provider_id) = provider_id else {
+        eprintln!("❌ [Full Reconciliation] Provider '{}' not found", provider_name);
         return;
     };
 
-    let provider_name = ProviderManager::current_provider_name();
-    if let Ok(provider) = ProviderManager::get_provider(&provider_name, default_org_id, pool.clone()).await {
-        // Zones for this provider
-        let zones: Vec<String> = sqlx::query_scalar(
-            r#"
-            SELECT z.code
-            FROM zones z
-            JOIN regions r ON r.id = z.region_id
-            JOIN providers p ON p.id = r.provider_id
-            WHERE z.is_active = true
-              AND p.code = $1
-            ORDER BY z.code
-            "#,
-        )
-        .bind(&provider_name)
-        .fetch_all(&pool)
-        .await
-        .unwrap_or_default();
+    // Get all organizations that have Scaleway credentials configured
+    let orgs_with_credentials: Vec<uuid::Uuid> = sqlx::query_scalar(
+        r#"
+        SELECT DISTINCT organization_id
+        FROM provider_settings
+        WHERE provider_id = $1
+          AND key = 'SCALEWAY_PROJECT_ID'
+          AND value_text IS NOT NULL
+          AND NULLIF(btrim(value_text), '') != ''
+        ORDER BY organization_id
+        "#,
+    )
+    .bind(provider_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap_or_default();
 
-        for zone in zones {
+    if orgs_with_credentials.is_empty() {
+        eprintln!("❌ [Full Reconciliation] No organizations with Scaleway credentials found");
+        return;
+    }
+
+    println!("🔍 [Full Reconciliation] Found {} organization(s) with Scaleway credentials", orgs_with_credentials.len());
+
+    // Zones for this provider (shared across all organizations)
+    let zones: Vec<String> = sqlx::query_scalar(
+        r#"
+        SELECT z.code
+        FROM zones z
+        JOIN regions r ON r.id = z.region_id
+        JOIN providers p ON p.id = r.provider_id
+        WHERE z.is_active = true
+          AND p.code = $1
+        ORDER BY z.code
+        "#,
+    )
+    .bind(&provider_name)
+    .fetch_all(&pool)
+    .await
+    .unwrap_or_default();
+
+    // Process each organization separately
+    for org_id in orgs_with_credentials {
+        println!("🔄 [Full Reconciliation] Processing organization {}", org_id);
+        
+        if let Ok(provider) = ProviderManager::get_provider(&provider_name, org_id, pool.clone()).await {
+            for zone in &zones {
             match provider.list_instances(&zone).await {
                 Ok(instances) => {
                     println!(
@@ -4278,11 +4308,12 @@ pub async fn process_full_reconciliation(pool: Pool<Postgres>) {
                     );
                     let mut import_count = 0;
                     for inst in instances {
-                        // Check if exists
+                        // Check if exists AND belongs to this organization
                         let exists_res = sqlx::query_scalar(
-                             "SELECT EXISTS(SELECT 1 FROM instances WHERE provider_instance_id = $1)"
+                             "SELECT EXISTS(SELECT 1 FROM instances WHERE provider_instance_id = $1 AND organization_id = $2)"
                          )
                          .bind(&inst.provider_id)
+                         .bind(org_id)
                          .fetch_one(&pool)
                          .await;
 
@@ -4353,15 +4384,17 @@ pub async fn process_full_reconciliation(pool: Pool<Postgres>) {
                                     _ => "provisioning",
                                 };
 
+                                // Import orphan with organization_id
                                 let insert_res = sqlx::query(
                                      "INSERT INTO instances 
-                                     (id, provider_id, zone_id, instance_type_id, status, provider_instance_id, ip_address, created_at, gpu_profile)
-                                     VALUES ($1, $2, $3, $4, $5::instance_status, $6, $7::inet, NOW(), '{}')"
+                                     (id, provider_id, zone_id, instance_type_id, organization_id, status, provider_instance_id, ip_address, created_at, gpu_profile)
+                                     VALUES ($1, $2, $3, $4, $5, $6::instance_status, $7, $8::inet, NOW(), '{}')"
                                  )
                                  .bind(new_id)
-                                .bind(pid)
+                                 .bind(pid)
                                  .bind(zid)
                                  .bind(type_id)
+                                 .bind(org_id)  // Assign to the organization whose credentials found it
                                  .bind(status)
                                  .bind(&inst.provider_id)
                                  .bind(inst.ip_address)
@@ -4387,49 +4420,53 @@ pub async fn process_full_reconciliation(pool: Pool<Postgres>) {
                                 );
                             }
                         } else if exists {
-                            // Check for Zombie State (DB=terminated vs Cloud=running)
-                            let current_status: Option<String> = sqlx::query_scalar(
-                                "SELECT status::text FROM instances WHERE provider_instance_id = $1"
-                            )
-                            .bind(&inst.provider_id)
-                            .fetch_optional(&pool)
-                            .await.unwrap_or(None);
+                                // Check for Zombie State (DB=terminated vs Cloud=running)
+                                // Only check instances that belong to this organization
+                                let current_status: Option<String> = sqlx::query_scalar(
+                                    "SELECT status::text FROM instances WHERE provider_instance_id = $1 AND organization_id = $2"
+                                )
+                                .bind(&inst.provider_id)
+                                .bind(org_id)
+                                .fetch_optional(&pool)
+                                .await.unwrap_or(None);
 
-                            if let Some(db_status) = current_status {
-                                if (db_status == "terminated" || db_status == "archived")
-                                    && (inst.status == "running" || inst.status == "starting")
-                                {
-                                    println!("⚠️ [Full Reconciliation] ZOMBIE DETECTED: {} is {} on Cloud but {} in DB. Reactivating...", inst.provider_id, inst.status, db_status);
+                                if let Some(db_status) = current_status {
+                                    if (db_status == "terminated" || db_status == "archived")
+                                        && (inst.status == "running" || inst.status == "starting")
+                                    {
+                                        println!("⚠️ [Full Reconciliation] ZOMBIE DETECTED (org {}): {} is {} on Cloud but {} in DB. Reactivating...", org_id, inst.provider_id, inst.status, db_status);
 
-                                    let _ = sqlx::query(
-                                         "UPDATE instances SET status = 'ready', terminated_at = NULL, is_archived = false WHERE provider_instance_id = $1"
-                                     )
-                                     .bind(&inst.provider_id)
-                                     .execute(&pool)
-                                     .await;
-                                    println!(
-                                        "✅ [Full Reconciliation] Zombie {} reactivated in DB.",
-                                        inst.provider_id
-                                    );
+                                        let _ = sqlx::query(
+                                             "UPDATE instances SET status = 'ready', terminated_at = NULL, is_archived = false WHERE provider_instance_id = $1 AND organization_id = $2"
+                                         )
+                                         .bind(&inst.provider_id)
+                                         .bind(org_id)
+                                         .execute(&pool)
+                                         .await;
+                                        println!(
+                                            "✅ [Full Reconciliation] Zombie {} reactivated in DB (org {}).",
+                                            inst.provider_id, org_id
+                                        );
+                                    }
                                 }
                             }
                         }
+                        if import_count > 0 {
+                            println!(
+                                "✅ [Full Reconciliation] Organization {}: Imported {} orphaned instances in {}",
+                                org_id, import_count, zone
+                            );
+                        }
                     }
-                    if import_count > 0 {
-                        println!(
-                            "✅ [Full Reconciliation] Imported {} orphaned instances in {}",
-                            import_count, zone
-                        );
+                    Err(e) => {
+                        eprintln!("❌ [Full Reconciliation] Organization {}: Error listing instances in zone {}: {:?}", org_id, zone, e);
                     }
                 }
-                Err(e) => println!(
-                    "❌ [Full Reconciliation] Failed to list instances in {}: {:?}",
-                    zone, e
-                ),
             }
+        } else {
+            eprintln!("⚠️ [Full Reconciliation] Organization {}: Failed to get provider (missing credentials?)", org_id);
         }
-        println!("✅ [Full Reconciliation] Completed.");
-    } else {
-        println!("❌ [Full Reconciliation] Provider not configured (missing credentials).");
     }
+    
+    println!("✅ [Full Reconciliation] Completed for all organizations");
 }

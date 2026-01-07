@@ -52,7 +52,17 @@ This file reflects the **actual** state of the repo (code + migrations + UI) and
 - **DB/Redis stateful**: `make down` keeps volumes, `make nuke` wipes.
 
 ### Multi-tenant (MVP)
-- **Organizations**: creation + membership + "current organization" selection (switcher UX).
+- ✅ **Organizations**: creation + membership + "current organization" selection (switcher UX).
+- ✅ **RBAC Foundation**: Complete RBAC module with Owner/Admin/Manager/User roles, delegation rules, double activation (tech/eco).
+- ✅ **Member Management**: Endpoints to list/change role/remove members with "last owner" invariant.
+- ✅ **Organization Invitations**: Complete invitation system with email-based invites, public acceptance page, role-based permissions.
+- ✅ **Instance Scoping**: Instances isolated by `organization_id` with RBAC access control (Owner/Admin only).
+- ✅ **Double Activation**: Technical activation (Admin/Owner) + economic activation (Manager/Owner) per instance.
+- ✅ **Provider Settings Scoping**: Provider credentials scoped by `organization_id`.
+- ✅ **Personal Dashboard**: "My Dashboard" for all users showing account, subscription, chat sessions, accessible models, credits.
+- ✅ **Admin Dashboard**: Organization-scoped administrative dashboard restricted to Owner/Admin/Manager roles.
+- ✅ **Sidebar RBAC**: Granular access control for all modules (ADMIN group, HISTORY group, individual modules).
+- ✅ **Workspace Management**: Visual workspace indicators, workspace switching with `workspace-changed` event for dynamic UI updates.
 - **DB pre-wiring "model sharing + token chargeback"** (non-breaking): tables `organization_models` + `organization_model_shares` + `finops.inference_usage` extension.
 
 ---
@@ -268,24 +278,25 @@ This file reflects the **actual** state of the repo (code + migrations + UI) and
 
 ## 🎯 Next steps Multi-Tenant (priorities)
 
-**Immediate Phase (Sprint 1)**:
-1) **Multi-Org Session Architecture**: `user_sessions` table, `current_organization_id` migration, enrich JWT with `session_id` + `organization_role`  
-2) **PK/FK Migration**: Apply migration `20260106000000_add_multi_tenant_primary_keys_and_foreign_keys.sql`
+**✅ Completed (Sprint 1-2)**:
+1) ✅ **Multi-Org Session Architecture**: `user_sessions` table, `current_organization_id` migration, enrich JWT with `session_id` + `organization_role`  
+2) ✅ **PK/FK Migration**: Applied migration `20260106000000_add_multi_tenant_primary_keys_and_foreign_keys.sql`
+3) ✅ **Scoping Instances**: SQL migration + API + UI + Tests to isolate instances by `organization_id`  
+4) ✅ **Invitations**: SQL migration + API + UI + Tests to invite users by email
+5) ✅ **Double Activation**: Technical activation (Admin/Owner) + economic activation (Manager/Owner) per instance
+6) ✅ **Frontend Module Migration**: Hide/show modules by workspace + role (ADMIN group, HISTORY group)
+7) ✅ **Personal Dashboard**: "My Dashboard" for all users
+8) ✅ **Admin Dashboard**: Organization-scoped administrative dashboard with RBAC
 
-**Short Term (Sprint 2-3)**:
-3) **Scoping Instances**: SQL migration + API + UI + Tests to isolate instances by `organization_id`  
-4) **Scoping Models**: SQL migration + API + UI + Tests to isolate models by `organization_id`  
-5) **Invitations**: SQL migration + API + UI + Tests to invite users by email
+**Short Term (Sprint 3-4)**:
+- **Scoping Models**: SQL migration + API + UI + Tests to isolate models by `organization_id` + public/private visibility
+- **Scoping API Keys**: API + UI + Tests to isolate API keys by `organization_id`
+- **Scoping FinOps**: API + UI + Tests to filter financial dashboards by workspace
 
-**Medium Term (Sprint 4-6)**:
-6) **Scoping API Keys**: API + UI + Tests  
-7) **Scoping Users**: API + UI + Tests  
-8) **Scoping FinOps**: API + UI + Tests  
-9) **Frontend Module Migration**: Hide/show by workspace + role
-
-**Long Term (Sprint 7+)**:
-10) **Double Activation**: Tech (Admin) + Eco (Manager) per resource  
-11) **Model Sharing & Billing**: Share models between orgs with token-based billing
+**Medium Term (Sprint 5-6)**:
+- **Model Sharing**: CRUD `organization_models` + `organization_model_shares` + OpenAI proxy resolution  
+- **Token Chargeback**: Ingestion/persistence of `finops.inference_usage` events with pricing v1 (€/1k tokens)
+- **Audit Logs**: Immutable logs for significant actions (Owner/Admin/Manager visible)
 
 **Other priorities**:
 - **Deploy Staging + DNS** (`studio-stg.inventiv-agents.fr`) with proper UI/API routing + certs  

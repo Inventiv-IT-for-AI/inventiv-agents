@@ -1,120 +1,210 @@
-# Récapitulatif de Session - 2025-01-08
+# Récapitulatif de Session - Multi-Tenancy & RBAC
 
 ## 0) Contexte
 
-- **Session**: Correction du déploiement prod et amélioration du provisioning Scaleway
+- **Session**: Implémentation complète du système multi-tenant avec RBAC, dashboards personnels et administratifs, invitations d'organisation, et contrôle d'accès granulaire
 - **Objectifs initiaux**: 
-  - Corriger les erreurs `make prod-rebuild` (secrets Scaleway non accessibles)
-  - Augmenter la taille des disques pour staging (40GB) et prod (100GB)
-  - Valider le cycle complet de destruction/reconstruction
-- **Chantiers touchés**: `scripts/`, `env/`, `docs/`, `deploy/`
+  - Créer un système multi-tenant avec organisations
+  - Implémenter RBAC (Owner, Admin, Manager, User)
+  - Créer deux dashboards distincts (My Dashboard et Admin Dashboard)
+  - Système d'invitations pour les organisations
+  - Contrôle d'accès granulaire pour les modules (Instances, Admin Dashboard, etc.)
+  - Réorganisation de la Sidebar avec groupes ADMIN et HISTORY
+- **Chantiers touchés**: `api`, `frontend`, `db` (migrations), `docs`
 
 ## 1) Audit rapide (factuel)
 
 ### Fichiers modifiés
 
-#### Scripts (fix/feature)
-- **`scripts/remote_sync_secrets.sh`** (fix):
-  - Correction de `SECRETS_DIR` écrasé par `.env` local
-  - Préservation de `SECRETS_DIR` du fichier env spécifique (staging/prod)
-  - Correction des permissions des secrets (644 au lieu de 600 pour permettre la lecture par Docker)
-  - Amélioration de la fonction `write_remote_file_from_stdin` pour utiliser correctement `SECRETS_DIR`
+#### Backend (Rust)
+- **`inventiv-api/src/organizations.rs`** (feature): Gestion complète des organisations, membres, invitations
+- **`inventiv-api/src/rbac.rs`** (feature): Module RBAC centralisé avec règles de permissions
+- **`inventiv-api/src/auth.rs`** (feature): Extension JWT avec contexte organisation
+- **`inventiv-api/src/auth_endpoints.rs`** (feature): Endpoints enrichis avec données organisation
+- **`inventiv-api/src/provider_settings.rs`** (feature): Nouveau endpoint `/providers/config-status`
+- **`inventiv-api/src/routes/protected.rs`** (feature): Nouveaux endpoints organisations et invitations
+- **`inventiv-api/src/main.rs`** (refactor): Intégration modules organisations et RBAC
 
-- **`scripts/deploy_remote.sh`** (fix):
-  - Correction de `ensure_secrets_dir` pour utiliser `sudo` lors de la vérification des fichiers secrets
-  - Les fichiers secrets sont créés avec `sudo` et nécessitent `sudo` pour être vérifiés
+#### Frontend (Next.js/React)
+- **`inventiv-frontend/src/app/(app)/my-dashboard/page.tsx`** (feature): Nouveau dashboard personnel
+- **`inventiv-frontend/src/app/(app)/admin-dashboard/page.tsx`** (refactor): Ancien dashboard renommé et restreint
+- **`inventiv-frontend/src/app/(app)/instances/page.tsx`** (fix): Contrôle d'accès RBAC
+- **`inventiv-frontend/src/app/(app)/organizations/page.tsx`** (feature): Intégration invitations
+- **`inventiv-frontend/src/app/(app)/page.tsx`** (refactor): Redirection vers `/my-dashboard`
+- **`inventiv-frontend/src/app/(public)/invitations/[token]/page.tsx`** (feature): Page publique d'acceptation d'invitation
+- **`inventiv-frontend/src/components/Sidebar.tsx`** (refactor): Réorganisation avec groupes ADMIN/HISTORY, RBAC
+- **`inventiv-frontend/src/components/organizations/OrganizationInvitationsDialog.tsx`** (feature): UI gestion invitations
+- **`inventiv-frontend/src/components/organizations/OrganizationMembersDialog.tsx`** (feature): UI gestion membres
+- **`inventiv-frontend/src/components/shared/WorkspaceBanner.tsx`** (feature): Bannière workspace
+- **`inventiv-frontend/src/lib/rbac.ts`** (feature): Module RBAC frontend
+- **`inventiv-frontend/src/hooks/useOrganizationInvitations.ts`** (feature): Hook invitations
+- **`inventiv-frontend/src/hooks/useInstanceAccess.ts`** (feature): Hook contrôle accès instances
+- **`inventiv-frontend/src/hooks/useAdminDashboardAccess.ts`** (feature): Hook contrôle accès admin dashboard
+- **`inventiv-frontend/src/hooks/useMyDashboard.ts`** (feature): Hook données dashboard personnel
+- **`inventiv-frontend/src/components/account/AccountSection.tsx`** (feature): Gestion workspace avec événement `workspace-changed`
 
-- **`scripts/scw_instance_provision.sh`** (feature):
-  - Ajout du support de `SCW_ROOT_VOLUME_SIZE_GB` pour configurer la taille du root volume
-  - Support du redimensionnement automatique des volumes Block Storage via CLI `scw`
-  - Support du redimensionnement des volumes locaux via API Instance
-  - Gestion automatique de l'arrêt/redémarrage de l'instance si nécessaire
-  - Détection automatique du type de volume (Block Storage vs Local)
+#### Base de données (Migrations)
+- **`sqlx-migrations/20260108000002_add_org_subscription_plan_and_wallet.sql`** (feature): Plans et wallet organisations
+- **`sqlx-migrations/20260108000003_add_instances_organization_id.sql`** (feature): Scoping instances par organisation
+- **`sqlx-migrations/20260108000004_add_instances_double_activation.sql`** (feature): Double activation tech/eco
+- **`sqlx-migrations/20260108000005_create_organization_invitations.sql`** (feature): Table invitations
+- **`sqlx-migrations/20260108000006_add_provider_settings_organization_id.sql`** (feature): Scoping provider settings
 
-#### Configuration (config)
-- **`env/staging.env.example`** (config):
-  - Ajout de `SCW_ROOT_VOLUME_SIZE_GB=40`
+#### Orchestrator
+- **`inventiv-orchestrator/src/services.rs`** (refactor): Réconciliation multi-org (modification non commitée)
 
-- **`env/prod.env.example`** (config):
-  - Ajout de `SCW_ROOT_VOLUME_SIZE_GB=100`
+### Migrations DB ajoutées
 
-#### Documentation (docs)
-- **`docs/PROVISIONING_VOLUME_SIZE.md`** (new):
-  - Documentation complète du support de la taille du root volume
-  - Instructions de configuration et d'utilisation
-  - Notes techniques sur le redimensionnement
+1. **`20260108000002_add_org_subscription_plan_and_wallet.sql`**
+   - Ajoute `subscription_plan` (free/subscriber), `subscription_plan_updated_at`, `wallet_balance_eur`, `sidebar_color` à `organizations`
+   - CHECK constraint pour `subscription_plan`
 
-### Migrations DB
-Aucune migration DB ajoutée dans cette session.
+2. **`20260108000003_add_instances_organization_id.sql`**
+   - Ajoute `organization_id` (UUID, nullable, FK) à `instances`
+   - Index `idx_instances_org` et `idx_instances_org_status`
+
+3. **`20260108000004_add_instances_double_activation.sql`**
+   - Ajoute `tech_activated_by`, `tech_activated_at`, `eco_activated_by`, `eco_activated_at` à `instances`
+   - Colonne générée `is_operational` (true si les deux activations sont présentes)
+   - Index pour colonnes d'activation
+
+4. **`20260108000005_create_organization_invitations.sql`**
+   - Crée table `organization_invitations` avec `id`, `organization_id`, `email`, `role`, `token`, `expires_at`, `invited_by_user_id`, `created_at`, `accepted_at`
+   - Contraintes uniques et index
+
+5. **`20260108000006_add_provider_settings_organization_id.sql`**
+   - Ajoute `organization_id` (UUID, nullable) à `provider_settings`
+   - Index et contraintes FK
 
 ### Changements d'API
-Aucun changement d'API dans cette session.
+
+#### Nouveaux endpoints
+
+**Organisations**:
+- `GET /organizations` - Liste des organisations de l'utilisateur
+- `POST /organizations` - Créer une organisation
+- `PUT /organizations/current` - Changer l'organisation courante (accepte `null` pour Personal)
+
+**Gestion des membres**:
+- `GET /organizations/current/members` - Liste des membres de l'organisation courante
+- `PUT /organizations/current/members/{user_id}` - Modifier le rôle d'un membre
+- `DELETE /organizations/current/members/{user_id}` - Retirer un membre
+- `POST /organizations/current/leave` - Quitter l'organisation courante
+
+**Invitations**:
+- `GET /organizations/current/invitations` - Liste des invitations de l'organisation courante
+- `POST /organizations/current/invitations` - Créer une invitation
+- `POST /organizations/invitations/{token}/accept` - Accepter une invitation (public)
+
+**Provider Settings**:
+- `GET /providers/config-status` - Statut de configuration des providers actifs pour l'organisation courante
+
+#### Breaking changes
+- Aucun breaking change majeur. Les endpoints existants restent compatibles.
 
 ### Changements d'UI
-Aucun changement d'UI dans cette session.
+
+#### Nouvelles pages
+- **`/my-dashboard`**: Dashboard personnel pour tous les utilisateurs
+  - Compte utilisateur (plan, wallet)
+  - Organisation (si applicable)
+  - Sessions de chat récentes
+  - Models accessibles
+  - Actions rapides
+
+- **`/admin-dashboard`**: Dashboard administratif (renommé depuis `/dashboard`)
+  - Restreint aux Owner/Admin/Manager dans une organisation
+  - Contrôle d'accès RBAC
+
+- **`/invitations/[token]`**: Page publique d'acceptation d'invitation
+  - Affichage des détails de l'invitation
+  - Acceptation avec gestion des erreurs (expirée, déjà acceptée)
+
+#### Pages modifiées
+- **`/instances`**: 
+  - Contrôle d'accès RBAC (Owner/Admin uniquement)
+  - Vérification configuration providers
+  - Redirection automatique si accès refusé
+
+- **`/organizations`**: 
+  - Intégration dialog invitations
+  - Bouton "Invitations" à côté de "Membres"
+
+#### Composants
+- **Sidebar**: 
+  - Réorganisation avec groupe "ADMIN" (Admin Dashboard, Instances, Observability, Monitoring, Organizations, Users, Settings)
+  - Groupe "HISTORY" conditionné par RBAC
+  - Suppression groupe "SYSTEM" (non utilisé)
+  - Contrôle d'accès granulaire par module
+
+- **WorkspaceBanner**: Nouveau composant réutilisable pour afficher le workspace courant
+
+- **OrganizationInvitationsDialog**: Dialog complet pour gérer les invitations (liste, création, filtres)
+
+- **IAStatCell**: Composant réutilisable pour statistiques (utilisé dans My Dashboard et Admin Dashboard)
 
 ### Changements d'outillage
 
-#### Makefile
-- Aucun changement significatif dans cette session
+- Aucun changement dans Makefile, scripts, docker-compose, env files, CI
 
-#### Scripts de déploiement
-- **`scripts/remote_sync_secrets.sh`**: Correction majeure de la gestion de `SECRETS_DIR`
-- **`scripts/deploy_remote.sh`**: Correction de la vérification des secrets
-- **`scripts/scw_instance_provision.sh`**: Ajout du support du redimensionnement de volumes
+## 2) Mise à jour de la documentation
 
-#### Docker Compose
-- Aucun changement dans cette session
+### README.md
+- ✅ À mettre à jour avec les nouvelles fonctionnalités multi-tenant
+- ✅ Ajouter section sur les organisations et RBAC
+- ✅ Documenter les nouveaux endpoints API
+- ✅ Mettre à jour la version dans les badges
 
-#### Fichiers env
-- Ajout de `SCW_ROOT_VOLUME_SIZE_GB` dans les exemples staging et prod
+### TODO.md
+- ✅ Marquer les fonctionnalités multi-tenant comme réalisées
+- ✅ Mettre à jour la section "Multi-tenant (MVP)"
+- ✅ Ajouter les nouvelles fonctionnalités dans "Completed"
 
-#### CI/CD
-- Aucun changement dans cette session (les corrections précédentes restent valides)
+## 3) Version proposée
 
-## 2) Problèmes résolus
+**Version actuelle**: `0.5.5`
+**Version proposée**: `0.6.0` (Minor)
 
-### Problème 1: Secrets Scaleway non accessibles sur prod
-**Symptôme**: `make prod-rebuild` échouait avec "scaleway: some credentials information are missing: SCALEWAY_API_TOKEN"
+**Justification**:
+- Nouvelles fonctionnalités majeures (multi-tenant, RBAC, dashboards)
+- Nouveaux endpoints API (non-breaking mais nouvelles features)
+- Nouvelles migrations DB
+- Changements UI significatifs
 
-**Cause**: 
-- Le fichier `.env` local définissait `SECRETS_DIR=./deploy/secrets`
-- Ce fichier était chargé après `env/prod.env`, écrasant `SECRETS_DIR=/opt/inventiv/secrets-prod`
-- Les secrets étaient uploadés dans le mauvais répertoire
+**SemVer**: Minor car ajout de fonctionnalités sans breaking changes majeurs.
 
-**Solution**:
-- Préservation de `SECRETS_DIR` du fichier env spécifique avant de charger `.env` local
-- Restauration de `SECRETS_DIR` après le chargement de `.env`
+## 4) Changements résumés
 
-### Problème 2: Permissions des secrets insuffisantes
-**Symptôme**: Les conteneurs Docker ne pouvaient pas lire les secrets même s'ils étaient au bon endroit
+### Backend
+- ✅ Module RBAC complet avec règles Owner/Admin/Manager/User
+- ✅ Gestion complète des organisations (CRUD, membres, invitations)
+- ✅ Extension JWT avec contexte organisation
+- ✅ Endpoint vérification configuration providers
+- ✅ Scoping instances par organisation
+- ✅ Double activation (tech/eco) pour instances
 
-**Cause**: Les secrets étaient créés avec `chmod 600` (lecture pour root uniquement)
+### Frontend
+- ✅ Dashboard personnel ("My Dashboard")
+- ✅ Dashboard administratif ("Admin Dashboard") avec RBAC
+- ✅ Système d'invitations complet (UI + page publique)
+- ✅ Contrôle d'accès granulaire pour tous les modules
+- ✅ Réorganisation Sidebar avec groupes ADMIN/HISTORY
+- ✅ WorkspaceBanner pour indication visuelle du workspace
+- ✅ Hooks RBAC réutilisables (useInstanceAccess, useAdminDashboardAccess, etc.)
+- ✅ Événement `workspace-changed` pour mise à jour dynamique UI
 
-**Solution**: Changement à `chmod 644` pour permettre la lecture par les conteneurs Docker
+### Base de données
+- ✅ 5 nouvelles migrations pour multi-tenancy
+- ✅ Tables: `organization_invitations`, colonnes organisation sur `instances` et `provider_settings`
+- ✅ Double activation sur instances
+- ✅ Plans et wallet organisations
 
-### Problème 3: Disques trop petits pour staging/prod
-**Symptôme**: Les VMs control-plane avaient seulement 10GB de disque (taille par défaut Scaleway)
+## 5) Prochaines étapes recommandées
 
-**Solution**: 
-- Ajout du support de `SCW_ROOT_VOLUME_SIZE_GB` dans le script de provisioning
-- Configuration recommandée: 40GB pour staging, 100GB pour prod
-- Redimensionnement automatique si nécessaire
-
-## 3) Tests effectués
-
-- ✅ `make prod-destroy`: Destruction complète de la VM prod et des volumes
-- ✅ `make prod-rebuild`: Reconstruction complète avec succès
-  - Provisionnement VM avec 100GB de disque
-  - Bootstrap Docker
-  - Synchronisation des secrets (dans le bon répertoire)
-  - Génération du certificat SSL
-  - Démarrage de tous les conteneurs
-
-## 4) Impact
-
-- **Production**: Déploiement prod maintenant fonctionnel
-- **Staging**: Même corrections applicables (même code)
-- **Documentation**: Ajout de la documentation sur le redimensionnement de volumes
-- **Maintenabilité**: Code plus robuste avec meilleure gestion des secrets
-
+1. **Scoping Models**: Isoler les models par `organization_id`
+2. **Scoping API Keys**: Isoler les clés API par `organization_id`
+3. **Scoping FinOps**: Filtrer les dashboards financiers par workspace
+4. **Model Sharing**: Implémenter le partage de models entre organisations
+5. **Token Chargeback**: Implémenter la facturation au token pour le partage de models
+6. **Audit Logs**: Logs immuables pour actions significatives
+7. **PostgreSQL RLS**: Row Level Security une fois le modèle stabilisé

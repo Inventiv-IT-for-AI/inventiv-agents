@@ -2,7 +2,7 @@
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![GHCR (build + promote)](https://github.com/Inventiv-IT-for-AI/inventiv-agents/actions/workflows/ghcr.yml/badge.svg)](https://github.com/Inventiv-IT-for-AI/inventiv-agents/actions/workflows/ghcr.yml)
-[![Version](https://img.shields.io/badge/version-0.5.4-blue.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-0.6.0-blue.svg)](VERSION)
 
 **Control-plane + data-plane to run AI agents/instances** — Scalable, modular, and performant LLM inference infrastructure, written in **Rust**.
 
@@ -30,6 +30,11 @@
 - ✅ **Auth (JWT session + users)**: Cookie-based session authentication, user management, automatic admin bootstrap, multi-session support with organization context
 - ✅ **Session Management**: List and revoke active sessions, session verification in DB, proper error handling with redirect to login
 - ✅ **Worker Auth (token per instance)**: Secure worker authentication with hashed tokens in DB, automatic bootstrap
+- ✅ **Multi-Tenancy & Organizations**: Create and manage organizations, switch between Personal and Organization workspaces, member management with RBAC roles (Owner, Admin, Manager, User)
+- ✅ **Organization Invitations**: Invite users by email to join organizations, public invitation acceptance page, role-based invitation permissions
+- ✅ **RBAC (Role-Based Access Control)**: Granular permissions per role, double activation (technical/economic) for resources, workspace-scoped access control
+- ✅ **Personal Dashboard**: "My Dashboard" for all users showing account, subscription, chat sessions, accessible models, credits, and tokens
+- ✅ **Admin Dashboard**: Organization-scoped administrative dashboard restricted to Owner/Admin/Manager roles
 
 ## Architecture (Overview)
 
@@ -79,9 +84,9 @@
 
 **References**:
 - [Detailed Architecture](docs/architecture.md)
-- [Domain Design & CQRS](docs/domain_design.md)
+- [Domain Design & CQRS](docs/domain_design_and_data_model.md)
 - [Worker & Router Phase 0.2](docs/worker_and_router_phase_0_2.md)
-- [Multi-tenant: Organizations + model sharing + billing tokens](docs/MULTI_TENANT_MODEL_SHARING_BILLING.md)
+- [Multi-tenant: Organizations + model sharing + billing tokens](docs/domain_design_and_data_model.md#multi-tenancy)
 
 ## Prerequisites
 
@@ -286,13 +291,18 @@ See [docs/PROVISIONING_VOLUME_SIZE.md](docs/PROVISIONING_VOLUME_SIZE.md) for det
 
 ### Main tables
 
-- **`instances`**: State of GPU instances (status, IP, provider, zone, type)
+- **`instances`**: State of GPU instances (status, IP, provider, zone, type, `organization_id`, double activation)
+- **`organizations`**: Organizations (name, slug, subscription_plan, wallet_balance_eur, sidebar_color)
+- **`organization_memberships`**: User ↔ Organization associations with roles (owner/admin/manager/user)
+- **`organization_invitations`**: Invitation tokens for joining organizations
 - **`providers`** / **`regions`** / **`zones`** / **`instance_types`**: Catalog of available resources
 - **`instance_type_zones`**: Zone ↔ instance type associations
-- **`users`**: Users (username, email, password_hash, role)
+- **`users`**: Users (username, email, password_hash, role, account_plan, wallet_balance_eur)
+- **`user_sessions`**: Active user sessions with organization context
 - **`worker_auth_tokens`**: Worker authentication tokens (hashed, per instance)
 - **`action_logs`**: Action logs (provisioning, termination, sync, etc.)
 - **`finops.cost_*_minute`**: TimescaleDB tables for costs (actual, forecast, cumulative)
+- **`provider_settings`**: Provider-specific credentials scoped by organization
 
 ### Migrations
 
@@ -312,6 +322,11 @@ See [docs/PROVISIONING_VOLUME_SIZE.md](docs/PROVISIONING_VOLUME_SIZE.md) for det
 - `20251215021000_users_add_username.sql`: Unique username for login
 - `20260105180000_update_vllm_image_to_v013.sql`: Update vLLM image to v0.13.0 (L4/L40S instances)
 - `20260105200000_add_installing_starting_status.sql`: Add intermediate states for granular progress tracking
+- `20260108000002_add_org_subscription_plan_and_wallet.sql`: Organization subscription plans and wallet
+- `20260108000003_add_instances_organization_id.sql`: Scoping instances by organization
+- `20260108000004_add_instances_double_activation.sql`: Double activation (technical/economic) for instances
+- `20260108000005_create_organization_invitations.sql`: Organization invitation system
+- `20260108000006_add_provider_settings_organization_id.sql`: Scoping provider settings by organization
 
 ### Seeds
 
@@ -357,17 +372,27 @@ psql "postgresql://postgres:password@localhost:5432/llminfra" -f seeds/catalog_s
 **JWT Session** (cookie):
 - `POST /auth/login`: Login (username or email)
 - `POST /auth/logout`: Logout
-- `GET /auth/me`: User profile (includes `current_organization_role`)
+- `GET /auth/me`: User profile (includes `current_organization_id`, `current_organization_role`, `current_organization_name`, `current_organization_slug`)
 - `PUT /auth/me`: Update profile
 - `PUT /auth/me/password`: Change password
 - `GET /auth/sessions`: List all active sessions for current user
 - `POST /auth/sessions/{session_id}/revoke`: Revoke a specific session
-- `GET /auth/sessions`: List active sessions
-- `POST /auth/sessions/:id/revoke`: Revoke a session
 
 **Version Info** (public):
 - `GET /version`: Backend version information (JSON: `backend_version`, `build_time`)
 - `GET /api/version`: Backend version information (alias)
+
+**Organizations** (multi-tenant):
+- `GET /organizations`: List user's organizations
+- `POST /organizations`: Create an organization
+- `PUT /organizations/current`: Set current organization (or `null` for Personal workspace)
+- `GET /organizations/current/members`: List members of current organization
+- `PUT /organizations/current/members/{user_id}`: Update member role
+- `DELETE /organizations/current/members/{user_id}`: Remove member
+- `POST /organizations/current/leave`: Leave current organization
+- `GET /organizations/current/invitations`: List organization invitations
+- `POST /organizations/current/invitations`: Create invitation
+- `POST /organizations/invitations/{token}/accept`: Accept invitation (public)
 
 **User management** (admin only):
 - `GET /users`: List users
@@ -386,21 +411,23 @@ psql "postgresql://postgres:password@localhost:5432/llminfra" -f seeds/catalog_s
 
 ### Business endpoints (session-protected)
 
-**Instances**:
-- `GET /instances`: List (filter `archived`)
+**Instances** (organization-scoped, RBAC-protected):
+- `GET /instances`: List (filter `archived`, scoped by current organization)
 - `GET /instances/:id`: Details
 - `GET /instances/:id/metrics`: Request and token metrics for an instance
 - `DELETE /instances/:id`: Terminate (status `terminating` + event)
 - `PUT /instances/:id/archive`: Archive
+- **Access**: Requires Owner or Admin role in organization workspace
 
 **Deployments**:
 - `POST /deployments`: Create an instance (publishes `CMD:PROVISION`)
   - `model_id` is **required** (request is rejected otherwise)
 
-**Settings**:
+**Settings** (organization-scoped):
 - `GET/PUT /providers`, `/regions`, `/zones`, `/instance_types`
 - `GET/PUT /instance_types/:id/zones`: Zone ↔ type associations
 - `GET /zones/:zone_id/instance_types`: Available types for a zone
+- `GET /providers/config-status`: Check provider configuration status for current organization
 
 **Action logs**:
 - `GET /action_logs`: List (filtering, limit)
@@ -843,6 +870,11 @@ See [docs/CI_CD.md](docs/CI_CD.md) for detailed CI/CD documentation.
 - ✅ Modular provider architecture (`inventiv-providers` package)
 - ✅ Progress tracking (0-100%) with granular steps (SSH install, vLLM ready, model loaded, etc.) and intermediate states (installing, starting)
 - ✅ State machine with intermediate states (installing, starting) for better progress visibility
+- ✅ Multi-tenancy: Organizations, memberships, invitations, workspace switching
+- ✅ RBAC: Role-based access control (Owner/Admin/Manager/User) with granular permissions
+- ✅ Personal Dashboard: User-specific dashboard with account, subscription, chat sessions, models
+- ✅ Admin Dashboard: Organization-scoped administrative dashboard with RBAC protection
+- ✅ Instance scoping: Instances isolated by organization with double activation (technical/economic)
 
 ### Experimental
 
@@ -853,9 +885,11 @@ See [docs/CI_CD.md](docs/CI_CD.md) for detailed CI/CD documentation.
 
 - 🚧 **Router** (OpenAI-compatible): Reintroduction planned, not currently present
 - 🚧 **Autoscaling**: Based on router/worker signals (queue depth, latency, GPU util)
-- 🚧 **Token tracking**: Token consumption and forecast (priorities 4-5 FinOps)
-- 🚧 **Fine RBAC**: Beyond `admin`, access policies per endpoint
-- 🚧 **API Keys**: Backend management + router/gateway
+- 🚧 **Model Scoping**: Isolate models by organization_id with public/private visibility
+- 🚧 **API Key Scoping**: Isolate API keys by organization_id
+- 🚧 **Model Sharing**: Share models between organizations with token-based billing
+- 🚧 **Token Chargeback**: Usage-based billing for shared models (€/1k tokens)
+- 🚧 **Audit Logs**: Immutable logs for significant actions (Owner/Admin/Manager visible)
 
 See [TODO.md](TODO.md) for detailed backlog.
 
