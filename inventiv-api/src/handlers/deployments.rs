@@ -1,13 +1,6 @@
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
-use sqlx::Postgres;
 use std::sync::Arc;
-use utoipa::ToSchema;
 
 use crate::app::state::AppState;
 use crate::simple_logger;
@@ -293,8 +286,8 @@ pub async fn create_deployment(
     .await
     .unwrap_or(None);
 
-    let (zone_id, zone_active, region_active) = match zone_row {
-        Some((zid, zact, ract)) if zact && ract => (zid, true, true),
+    let zone_id = match zone_row {
+        Some((zid, zact, ract)) if zact && ract => zid,
         _ => {
             let msg = "Invalid zone (not found, inactive, or does not belong to provider)";
             let _ = sqlx::query(
@@ -347,8 +340,8 @@ pub async fn create_deployment(
     .await
     .unwrap_or(None);
 
-    let (instance_type_id, instance_type_active) = match instance_type_row {
-        Some((itid, itact)) if itact => (itid, true),
+    let instance_type_id = match instance_type_row {
+        Some((itid, itact)) if itact => itid,
         _ => {
             let msg = "Invalid instance_type (not found, inactive, or not available in zone)";
             let _ = sqlx::query(

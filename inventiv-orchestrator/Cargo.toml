@@ -12,7 +12,7 @@ provider-scaleway = ["inventiv-providers/scaleway"]
 [dependencies]
 inventiv-common = { path = "../inventiv-common" }
 inventiv-providers = { path = "../inventiv-providers", default-features = false }
-axum = "0.7"
+axum = "0.8"
 tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

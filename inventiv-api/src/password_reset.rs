@@ -3,7 +3,6 @@ use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -32,10 +31,12 @@ pub struct ResetPasswordResponse {
 
 /// Generate a secure random token
 fn generate_token() -> String {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
     use rand::Rng;
     let mut rng = rand::thread_rng();
     let bytes: Vec<u8> = (0..32).map(|_| rng.gen()).collect();
-    base64::encode(bytes)
+    STANDARD.encode(bytes)
 }
 
 /// Hash a token using SHA256

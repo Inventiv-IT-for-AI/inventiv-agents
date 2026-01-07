@@ -103,14 +103,42 @@ async fn test_me_endpoint() {
 
 #[tokio::test]
 async fn test_logout() {
+    // Ensure JWT_SECRET is set for tests
+    std::env::set_var("JWT_SECRET", "test-secret-key-for-testing-only");
+    std::env::set_var("JWT_ISSUER", "inventiv-api");
+
     let app = create_test_app_service().await;
     let server = TestServer::new(app).unwrap();
 
     let pool = get_test_db_pool().await;
 
-    // Create a test user and session
-    let user_id = create_test_user(&pool, "test_user@test.com", "password123").await;
-    let session_token = create_test_session(&pool, user_id, None, None).await;
+    // Create a test user
+    let user_id = create_test_user(&pool, "test_logout_user@test.com", "password123").await;
+
+    // Create session with real JWT
+    let session_id = uuid::Uuid::new_v4();
+    use inventiv_api::auth::{create_session, hash_session_token, sign_session_jwt, AuthUser};
+    let auth_user = AuthUser {
+        user_id,
+        email: "test_logout_user@test.com".to_string(),
+        role: "user".to_string(),
+        session_id: session_id.to_string(),
+        current_organization_id: None,
+        current_organization_role: None,
+    };
+    let session_token = sign_session_jwt(&auth_user).unwrap();
+    let token_hash = hash_session_token(&session_token);
+    let _ = create_session(
+        &pool,
+        session_id,
+        user_id,
+        None,
+        None,
+        Some("127.0.0.1".to_string()),
+        Some("test".to_string()),
+        token_hash,
+    )
+    .await;
 
     // Test logout
     use axum::http::HeaderValue;
@@ -185,7 +213,7 @@ async fn test_list_sessions() {
     use inventiv_api::auth::{create_session, hash_session_token, sign_session_jwt, AuthUser};
     let auth_user_1 = AuthUser {
         user_id,
-        email: "test_user@test.com".to_string(),
+        email: "test_list_sessions_user@test.com".to_string(),
         role: "user".to_string(),
         session_id: session_id_1.to_string(),
         current_organization_id: Some(org_id),
@@ -464,13 +492,31 @@ async fn test_revoke_other_user_session_forbidden() {
 
 #[tokio::test]
 async fn test_me_endpoint_includes_organization_role() {
+    // Ensure JWT_SECRET is set for tests
+    std::env::set_var("JWT_SECRET", "test-secret-key-for-testing-only");
+    std::env::set_var("JWT_ISSUER", "inventiv-api");
+
     let app = create_test_app_service().await;
     let server = TestServer::new(app).unwrap();
 
     let pool = get_test_db_pool().await;
 
+    // Clean up any existing test data
+    let _ = sqlx::query("DELETE FROM user_sessions WHERE user_id IN (SELECT id FROM users WHERE email LIKE 'test_%@test.com')")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM organization_memberships WHERE user_id IN (SELECT id FROM users WHERE email LIKE 'test_%@test.com')")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM organizations WHERE slug LIKE 'test-%'")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM users WHERE email LIKE 'test_%@test.com'")
+        .execute(&pool)
+        .await;
+
     // Create a test user
-    let user_id = create_test_user(&pool, "test_user@test.com", "password123").await;
+    let user_id = create_test_user(&pool, "test_me_role_user@test.com", "password123").await;
 
     // Create an organization
     let org_id = uuid::Uuid::new_v4();

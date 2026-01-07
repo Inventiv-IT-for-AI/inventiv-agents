@@ -489,15 +489,6 @@ pub async fn verify_session_db(
     .fetch_optional(db)
     .await?;
 
-    // First check if session exists at all (for early return)
-    let session_exists: Option<(String, bool, bool)> = sqlx::query_as(
-        "SELECT session_token_hash, expires_at > NOW() as not_expired, revoked_at IS NULL as not_revoked 
-         FROM user_sessions WHERE id = $1"
-    )
-    .bind(session_id)
-    .fetch_optional(db)
-    .await?;
-
     if session_exists.is_none() {
         return Ok(false);
     }

@@ -12,6 +12,7 @@ pub struct ScalewayProvider {
     client: Client,
     project_id: String,
     secret_key: String,
+    #[allow(dead_code)]
     ssh_public_key: Option<String>,
 }
 
@@ -74,7 +75,7 @@ impl CloudProvider for ScalewayProvider {
         zone: &str,
         instance_type: &str,
         image_id: &str,
-        cloud_init: Option<&str>,
+        _cloud_init: Option<&str>,
         volumes: Option<&[String]>, // Optional list of Block Storage volume IDs to attach at creation
     ) -> Result<String> {
         let url = format!(

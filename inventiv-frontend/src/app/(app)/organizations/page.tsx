@@ -214,7 +214,7 @@ export default function OrganizationsPage() {
             <Building2 className="h-4 w-4 text-muted-foreground" />
             <span className="font-medium">{row.name}</span>
             {currentOrgId === row.id && (
-              <CheckCircle2 className="h-4 w-4 text-green-600" title="Organisation courante" />
+              <CheckCircle2 className="h-4 w-4 text-green-600" aria-label="Organisation courante" />
             )}
           </div>
         ),

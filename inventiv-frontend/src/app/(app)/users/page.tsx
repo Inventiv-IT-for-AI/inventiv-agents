@@ -59,7 +59,7 @@ export default function UsersPage() {
     try {
       setLoading(true);
       setError(null);
-      const res = await fetch(apiUrl("/users"));
+      const res = await apiRequest("/users");
       if (!res.ok) {
         setError("Accès refusé (admin requis) ou erreur API");
         return;

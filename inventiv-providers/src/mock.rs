@@ -303,7 +303,7 @@ impl MockProvider {
             cmd.env("CONTROLPLANE_NETWORK_NAME", &network_name);
 
             // Execute with timeout (10 seconds max for docker compose down)
-            let mut child = match cmd.stdout(Stdio::null()).stderr(Stdio::piped()).spawn() {
+            let child = match cmd.stdout(Stdio::null()).stderr(Stdio::piped()).spawn() {
                 Ok(c) => c,
                 Err(_) => {
                     // Skip if spawn fails (file might not exist)
