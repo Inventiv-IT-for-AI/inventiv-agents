@@ -39,6 +39,7 @@ function SidebarLink({ href, icon: Icon, label, disabled }: SidebarLinkProps) {
 export function Sidebar() {
     const [meRole, setMeRole] = useState<string | null>(null);
     const [backendVersion, setBackendVersion] = useState<BackendVersionInfo | null>(null);
+    const [showVersionDetails, setShowVersionDetails] = useState(false);
     const isAdmin = meRole === "admin";
 
     useEffect(() => {
@@ -50,19 +51,52 @@ export function Sidebar() {
         <div className="w-64 border-r min-h-screen bg-background text-foreground hidden md:flex flex-col">
             <div className="space-y-4 py-4 flex-1">
                 <div className="px-3 py-2">
-                    <div className="mb-2 px-4 flex items-center gap-2">
+                    <div className="mb-2 px-4">
                         <h2 className="text-lg font-semibold tracking-tight text-primary">
                             Inventiv Agents
                         </h2>
-                        <div className="flex items-center gap-1">
-                            <Badge variant="secondary" className="text-xs font-mono">
-                                FE: {FRONTEND_VERSION}
-                            </Badge>
-                            {backendVersion && (
-                                <Badge variant="outline" className="text-xs font-mono">
-                                    BE: {backendVersion.backend_version}
+                        <div className="relative mt-0.5">
+                            <button
+                                type="button"
+                                className="group relative cursor-pointer"
+                                onMouseEnter={() => setShowVersionDetails(true)}
+                                onMouseLeave={() => setShowVersionDetails(false)}
+                                onClick={() => setShowVersionDetails(!showVersionDetails)}
+                                aria-label="Version information"
+                            >
+                                <Badge variant="secondary" className="text-[10px] font-mono px-1.5 py-0.5 h-4 leading-none opacity-70 hover:opacity-100 transition-opacity">
+                                    v{FRONTEND_VERSION}
                                 </Badge>
-                            )}
+                                {showVersionDetails && (
+                                    <div className="absolute left-0 top-5 z-50 w-56 rounded-md border bg-popover p-3 text-popover-foreground shadow-md animate-in fade-in-0 zoom-in-95">
+                                        <div className="space-y-1.5 text-xs">
+                                            <div className="font-semibold text-[10px] uppercase tracking-wide text-muted-foreground mb-2">
+                                                Version Info
+                                            </div>
+                                            <div className="flex justify-between items-center">
+                                                <span className="text-muted-foreground">Frontend:</span>
+                                                <span className="font-mono font-medium">{FRONTEND_VERSION}</span>
+                                            </div>
+                                            {backendVersion ? (
+                                                <>
+                                                    <div className="flex justify-between items-center">
+                                                        <span className="text-muted-foreground">Backend:</span>
+                                                        <span className="font-mono font-medium">{backendVersion.backend_version}</span>
+                                                    </div>
+                                                    <div className="flex justify-between items-center pt-1 border-t">
+                                                        <span className="text-muted-foreground">Build:</span>
+                                                        <span className="font-mono text-[10px]">{backendVersion.build_time}</span>
+                                                    </div>
+                                                </>
+                                            ) : (
+                                                <div className="text-muted-foreground text-[10px] italic">
+                                                    Loading backend version...
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+                            </button>
                         </div>
                     </div>
                     <div className="space-y-1">

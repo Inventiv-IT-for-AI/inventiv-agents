@@ -43,6 +43,7 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 - **Tailwind v4 (CSS-first)**: ajout des `@source` vers les packages workspaces (`ia-widgets`, `ia-designsys`) pour éviter toute purge de classes.
 - **IADataTable**: table virtualisée réutilisable (dans `ia-widgets`) + **resize via séparateurs dédiés** (5px) entre colonnes.
 - **Ergonomie dev**: `make ui-down` et `make ui-local-down` (stop UI Docker / kill UI host).
+- ✅ **Affichage Version**: Badge discret sous le titre de l'application avec popover au hover/click affichant version FE, BE et timestamp du build.
 
 ### Dev ergonomics
 - **PORT_OFFSET** (worktrees) + UI-only exposée.
