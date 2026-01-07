@@ -62,7 +62,7 @@ pub struct Zone {
     pub is_active: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow, utoipa::ToSchema)]
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow, utoipa::ToSchema, Default)]
 pub struct InstanceType {
     pub id: Uuid,
     pub provider_id: Uuid,
@@ -93,6 +93,7 @@ pub struct LlmModel {
     #[sqlx(default)]
     pub data_volume_gb: Option<i64>,
     #[sqlx(default)]
+    #[serde(skip)]
     pub metadata: sqlx::types::Json<serde_json::Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -113,6 +114,7 @@ pub struct Instance {
     pub status: InstanceStatus,
     pub created_at: DateTime<Utc>,
     pub terminated_at: Option<DateTime<Utc>>,
+    #[serde(skip)]
     pub gpu_profile: sqlx::types::Json<InstanceType>, // Snapshot using InstanceType struct
 
     // Deletion tracking fields for orphaned instance detection

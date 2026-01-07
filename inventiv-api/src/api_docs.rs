@@ -6,15 +6,15 @@ use utoipa::OpenApi;
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        crate::list_instances,
-        crate::create_deployment,
-        crate::terminate_instance,
+        crate::handlers::instances::list_instances,
+        crate::handlers::deployments::create_deployment,
+        crate::handlers::instances::terminate_instance,
         // Models
-        crate::list_models,
-        crate::get_model,
-        crate::create_model,
-        crate::update_model,
-        crate::delete_model,
+        crate::handlers::models::list_models,
+        crate::handlers::models::get_model,
+        crate::handlers::models::create_model,
+        crate::handlers::models::update_model,
+        crate::handlers::models::delete_model,
         // Settings
         settings::list_regions,
         settings::update_region,
@@ -32,11 +32,11 @@ use utoipa::OpenApi;
     ),
     components(
         schemas(
-            crate::DeploymentRequest,
-            crate::DeploymentResponse,
-            crate::CreateModelRequest,
-            crate::UpdateModelRequest,
-            crate::ListModelsParams,
+            crate::handlers::deployments::DeploymentRequest,
+            crate::handlers::deployments::DeploymentResponse,
+            crate::handlers::models::CreateModelRequest,
+            crate::handlers::models::UpdateModelRequest,
+            crate::handlers::models::ListModelsParams,
             Instance,
             InstanceStatus,
             LlmModel,

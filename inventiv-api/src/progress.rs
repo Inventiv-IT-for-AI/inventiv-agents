@@ -1,6 +1,6 @@
 use sqlx::{Pool, Postgres};
 use uuid::Uuid;
-use crate::InstanceResponse;
+use crate::handlers::instances::InstanceResponse;
 
 /// Calculate and attach progress percentage to instances
 pub async fn enrich_instances_with_progress(

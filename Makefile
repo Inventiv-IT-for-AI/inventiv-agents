@@ -1039,3 +1039,70 @@ agent-version-check:
 	echo "✅ Version updated: $$PREV_VERSION -> $$CURRENT_VERSION"; \
 	CURRENT_DATE=$$(grep -m1 '^AGENT_BUILD_DATE' "$(AGENT_PY)" | sed -E 's/^[^"]*"([^"]+)".*/\1/' || echo ""); \
 	echo "   Build date: $$CURRENT_DATE"
+
+# ============================================================================
+# Tests
+# ============================================================================
+
+.PHONY: test-unit test-integration test-e2e test-all test-e2e-full
+test-unit: ## Run unit tests (in-memory, no Docker required)
+	@echo "🧪 Running unit tests..."
+	cd inventiv-api && cargo test --tests --lib
+
+test-integration: ## Run integration tests (requires DB/Redis on localhost)
+	@echo "🧪 Running integration tests..."
+	@echo "⚠️  Make sure DB and Redis are running: make up db redis"
+	cd inventiv-api && \
+		TEST_DATABASE_URL="postgresql://postgres:password@localhost:5432/llminfra" \
+		TEST_REDIS_URL="redis://localhost:6379/0" \
+		cargo test --test auth_test --test instances_test --test deployments_test
+
+test-e2e: ## Run E2E tests against real Docker containers (requires: make up)
+	@echo "🧪 Running E2E tests against Docker containers..."
+	@echo "⚠️  Make sure containers are running: make up"
+	@echo "⏳ Waiting 5 seconds for API to be ready..."
+	@sleep 5
+	@API_HOST_PORT=$$(echo $$((8003 + $(PORT_OFFSET)))); \
+	echo "🔍 Testing API on http://localhost:$$API_HOST_PORT (PORT_OFFSET=$(PORT_OFFSET))"; \
+	cd inventiv-api && \
+		TEST_API_URL="http://localhost:$$API_HOST_PORT" \
+		TEST_ADMIN_EMAIL="admin@inventiv.local" \
+		TEST_ADMIN_PASSWORD="$$(cat deploy/secrets-dev/default_admin_password 2>/dev/null || echo 'admin')" \
+		cargo test --test integration_e2e
+
+test-all: test-unit test-integration ## Run all tests (unit + integration, requires DB/Redis)
+	@echo "✅ All tests completed"
+
+test-e2e-full: ## Run full E2E test suite (starts containers, runs tests, stops containers)
+	@echo "🚀 Starting Docker containers..."
+	@$(MAKE) check-dev-env
+	@ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" PORT_OFFSET="$(PORT_OFFSET)" \
+		$(COMPOSE) -f $(LOCAL_COMPOSE_FILE) --env-file $(DEV_ENV_FILE) up -d --build db redis api orchestrator
+	@echo "⏳ Waiting 30 seconds for services to be ready..."
+	@sleep 30
+	@API_HOST_PORT=$$(echo $$((8003 + $(PORT_OFFSET)))); \
+	echo "🔌 Exposing API on localhost:$$API_HOST_PORT (PORT_OFFSET=$(PORT_OFFSET))..."; \
+	$(MAKE) api-expose; \
+	echo "🔍 Checking if API is ready..."; \
+	for i in 1 2 3 4 5 6; do \
+		if curl -s http://localhost:$$API_HOST_PORT/ > /dev/null 2>&1; then \
+			echo "✅ API is ready on port $$API_HOST_PORT!"; \
+			break; \
+		fi; \
+		echo "⏳ Waiting for API on port $$API_HOST_PORT... (attempt $$i/6)"; \
+		sleep 5; \
+		if [ $$i -eq 6 ]; then \
+			echo "❌ API is not ready after 30 seconds on port $$API_HOST_PORT. Check logs: make logs"; \
+			PORT_OFFSET=$(PORT_OFFSET) $(MAKE) api-unexpose || true; \
+			ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" PORT_OFFSET="$(PORT_OFFSET)" \
+				$(COMPOSE) -f $(LOCAL_COMPOSE_FILE) down; \
+			exit 1; \
+		fi; \
+	done
+	@echo "🧪 Running E2E tests..."
+	@$(MAKE) test-e2e || EXIT_CODE=$$?; \
+		echo "🛑 Stopping Docker containers..."; \
+		PORT_OFFSET=$(PORT_OFFSET) $(MAKE) api-unexpose || true; \
+		ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" PORT_OFFSET="$(PORT_OFFSET)" \
+			$(COMPOSE) -f $(LOCAL_COMPOSE_FILE) down; \
+		exit $$EXIT_CODE

@@ -43,7 +43,6 @@ impl Actor {
 
 // This extractor is used on routes protected by `require_user_or_api_key`.
 // That middleware injects either `AuthUser` or `ApiKeyPrincipal` into extensions.
-#[axum::async_trait]
 impl<S> axum::extract::FromRequestParts<S> for Actor
 where
     S: Send + Sync,
@@ -93,6 +92,7 @@ pub struct WorkbenchRunRow {
     pub ttft_ms: Option<i32>,
     pub duration_ms: Option<i32>,
     pub error_message: Option<String>,
+    #[serde(skip)]
     pub metadata: sqlx::types::Json<serde_json::Value>,
 }
 

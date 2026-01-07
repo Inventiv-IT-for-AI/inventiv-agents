@@ -908,8 +908,31 @@ mod tests {
         .await;
 
         // Execute the migration SQL manually (idempotent)
-        let mig_sql =
-            include_str!("../../sqlx-migrations/20251218032000_admin_owner_all_organizations.sql");
+        // Migration: Ensure the default/admin user is owner of all organizations
+        let mig_sql = r#"
+        WITH admin_user AS (
+          SELECT id
+          FROM public.users
+          WHERE username = 'admin'
+             OR email = 'admin@inventiv.local'
+          ORDER BY (username = 'admin') DESC, created_at ASC
+          LIMIT 1
+        ),
+        orgs AS (
+          SELECT id AS organization_id
+          FROM public.organizations
+        )
+        INSERT INTO public.organization_memberships (organization_id, user_id, role, created_at)
+        SELECT
+          orgs.organization_id,
+          admin_user.id,
+          'owner',
+          NOW()
+        FROM orgs
+        CROSS JOIN admin_user
+        ON CONFLICT (organization_id, user_id)
+        DO UPDATE SET role = 'owner';
+        "#;
         sqlx::query(mig_sql)
             .execute(&pool)
             .await

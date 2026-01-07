@@ -4,7 +4,7 @@
 
 | Phase | Nom | Statut | Priorité | Dépendances | Impact |
 |-------|-----|--------|----------|-------------|--------|
-| 0 | Préparation DB (PK/FK) | ⏳ À faire | 🔴 Critique | - | Bloque tout |
+| 0 | Préparation DB (PK/FK) | ✅ Fait | - | - | Fondation |
 | 1 | CRUD Organisation | ✅ Fait | - | - | Fondation |
 | 2 | CRUD Memberships + RBAC | ✅ Fait | - | Phase 1 | Fondation |
 | 3 | Invitations | ⏳ À faire | 🟡 Haute | Phase 2 | Onboarding |
@@ -34,12 +34,12 @@
 **Fichiers** : `sqlx-migrations/20260106000000_add_multi_tenant_primary_keys_and_foreign_keys.sql`
 
 **Checklist** :
-- [ ] Migration créée
-- [ ] Test local (DB de test)
-- [ ] Vérifier contraintes PRIMARY KEY
-- [ ] Vérifier contraintes FOREIGN KEY
-- [ ] Vérifier index
-- [ ] Commit + push
+- [x] Migration créée
+- [x] Test local (DB de test)
+- [x] Vérifier contraintes PRIMARY KEY
+- [x] Vérifier contraintes FOREIGN KEY
+- [x] Vérifier index
+- [x] Commit + push
 - [ ] Déploiement staging
 - [ ] Déploiement prod
 

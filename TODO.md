@@ -191,12 +191,17 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 - **AUTO_SEED_PROVIDER_CREDENTIALS**: documenter clairement le modèle “secrets in /run/secrets → provider_settings chiffré pgcrypto” + rotation/rollback + conventions de clés (`SCALEWAY_PROJECT_ID`, `SCALEWAY_SECRET_KEY_ENC`) + menace (logs/backup).
 
 ### Multi-tenant & sécurité
-- ✅ **Organisations (MVP)**: création + membership + sélection “organisation courante” (switcher UX).
-- ✅ **Pré-câblage DB “model sharing + chargeback”** (non-breaking):
+- ✅ **Organisations (MVP)**: création + membership + sélection "organisation courante" (switcher UX).
+- ✅ **Pré-câblage DB "model sharing + chargeback"** (non-breaking):
   - `organizations` + `organization_memberships` + `users.current_organization_id`
   - `organization_models` (offering publié par org)
   - `organization_model_shares` (contrats provider→consumer, `pricing` JSONB)
   - extension `finops.inference_usage` pour attribuer `provider_organization_id` / `consumer_organization_id` + `unit_price_eur_per_1k_tokens` + `charged_amount_eur`
+- ✅ **Session Management**: Architecture multi-sessions avec `user_sessions` table, `session_token_hash` pour sécurité, support de plusieurs sessions actives par user avec organisations différentes.
+- ✅ **Password Reset Flow**: Intégration SMTP Scaleway TEM, génération de tokens sécurisés, emails de réinitialisation, endpoints API complets.
+- ✅ **Code Reorganization**: Refactoring majeur de `main.rs` (~3500 lignes → ~86 lignes), extraction en modules `config/`, `setup/`, `routes/`, `handlers/` pour meilleure maintenabilité.
+- ✅ **Integration Tests**: Infrastructure de tests d'intégration avec `axum-test`, tests pour auth, deployments, instances (Mock provider uniquement pour éviter coûts cloud).
+- ✅ **Axum 0.8 Upgrade**: Migration vers `axum 0.8` et `axum-test 18.0`, corrections pour `async_trait`, `SwaggerUi`, `FromRequestParts`, compatibilité OpenAPI avec `utoipa 5.4`.
 
 📄 Doc: `docs/MULTI_TENANT_MODEL_SHARING_BILLING.md` (pricing v1 = **€/1k tokens**)
 - **Tenants v1 (Org isolation)**:

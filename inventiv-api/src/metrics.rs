@@ -149,6 +149,7 @@ pub fn parse_tokens_from_sse_stream(stream_text: &str) -> (Option<i32>, Option<i
 }
 
 #[derive(Serialize, Deserialize, sqlx::FromRow)]
+#[derive(utoipa::ToSchema)]
 pub struct InstanceRequestMetrics {
     pub instance_id: Uuid,
     pub total_requests: i64,
