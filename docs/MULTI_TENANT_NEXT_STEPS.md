@@ -41,59 +41,48 @@
 - ✅ `WorkspaceBanner.tsx` : Affichage workspace courant
 - ✅ `Sidebar.tsx` : Navigation avec badge workspace
 
-#### 3. Architecture Sessions Multi-Org ⏳
+#### 3. Architecture Sessions Multi-Org ✅
 
-**État** : Partiellement implémenté (voir `docs/SESSION_IMPLEMENTATION_STATUS.md`)
+**État** : **✅ COMPLÈTE** (voir `docs/PHASE1_REALIGNMENT.md` pour détails)
 
-**Fait** :
+**Implémenté** :
 - ✅ Table `user_sessions` créée dans baseline
 - ✅ `AuthUser` enrichi avec `session_id`, `current_organization_role`
 - ✅ JWT Claims enrichis avec `session_id`, `current_organization_role`, `jti`
 - ✅ `login()` crée session en DB
 - ✅ `logout()` révoque session
 - ✅ `set_current_organization()` met à jour session en DB
-
-**À compléter** :
-- ⏳ `GET /auth/sessions` (liste sessions actives)
-- ⏳ `POST /auth/sessions/:id/revoke` (révoquer session)
-- ⏳ `MeResponse` enrichi avec `current_organization_role`
-- ⏳ Frontend : Type `Me` enrichi + UI liste sessions
+- ✅ `GET /auth/sessions` (liste sessions actives) - **IMPLÉMENTÉ**
+- ✅ `POST /auth/sessions/:id/revoke` (révoquer session) - **IMPLÉMENTÉ**
+- ✅ `MeResponse` enrichi avec `current_organization_role` - **IMPLÉMENTÉ**
+- ✅ Frontend : Type `Me` enrichi + `SessionsDialog.tsx` créé et intégré - **IMPLÉMENTÉ**
+- ✅ Tests unitaires complets dans `auth.rs`
 
 ---
 
 ## 🎯 Objectifs Multi-Tenant - Prochaines Étapes
 
-### Phase 1 : Finaliser Architecture Sessions (Priorité Critique)
+### Phase 1 : Finaliser Architecture Sessions ✅ **COMPLÈTE**
 
 **Objectif** : Permettre plusieurs sessions simultanées avec organisations différentes
 
-**Tâches** :
-1. **Vérifier état DB**
-   - [ ] Vérifier si `users.current_organization_id` existe encore dans baseline
-   - [ ] Vérifier que migrations sessions ont été appliquées
-   - [ ] Si nécessaire, créer migration pour retirer `current_organization_id` de `users`
+**Statut** : **✅ COMPLÈTE** - Voir `docs/PHASE1_REALIGNMENT.md` pour détails complets
 
-2. **Compléter Backend**
-   - [ ] Créer endpoint `GET /auth/sessions` (liste sessions actives)
-   - [ ] Créer endpoint `POST /auth/sessions/:id/revoke` (révoquer session)
-   - [ ] Enrichir `MeResponse` avec `current_organization_role`
+**Implémenté** :
+- ✅ Table `user_sessions` créée et fonctionnelle
+- ✅ `AuthUser` enrichi avec `session_id`, `current_organization_role`
+- ✅ JWT Claims enrichis avec `session_id`, `current_organization_role`, `jti`
+- ✅ `login()` crée session en DB avec org + rôle
+- ✅ `logout()` révoque session en DB
+- ✅ `set_current_organization()` met à jour session en DB + régénère JWT
+- ✅ `GET /auth/sessions` implémenté (liste sessions actives)
+- ✅ `POST /auth/sessions/:id/revoke` implémenté (révoquer session)
+- ✅ `MeResponse` enrichi avec `current_organization_role`
+- ✅ Type `Me` enrichi avec `current_organization_role`
+- ✅ `SessionsDialog.tsx` créé et intégré dans `AccountSection.tsx`
+- ✅ Tests unitaires complets dans `auth.rs`
 
-3. **Compléter Frontend**
-   - [ ] Ajouter `current_organization_role` dans type `Me`
-   - [ ] Créer composant `SessionsDialog.tsx` (liste/révocation)
-   - [ ] Intégrer dans `AccountSection.tsx`
-
-4. **Tests**
-   - [ ] Tests unitaires : création/validation/révocation sessions
-   - [ ] Tests d'intégration : multi-sessions avec orgs différentes
-   - [ ] Tests manuels : login/logout/switch org
-
-**Fichiers** :
-- `inventiv-api/src/auth_endpoints.rs` (endpoints sessions)
-- `inventiv-frontend/src/components/account/SessionsDialog.tsx` (nouveau)
-- `inventiv-frontend/src/components/account/AccountSection.tsx` (modifier)
-
-**Estimation** : 2-3h développement + 1h tests
+**Note** : La Phase 1 est complètement implémentée et fonctionnelle. On peut passer directement à la Phase 2.
 
 ---
 

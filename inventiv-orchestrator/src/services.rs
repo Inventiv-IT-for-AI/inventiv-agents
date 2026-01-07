@@ -4014,7 +4014,11 @@ pub async fn process_catalog_sync(pool: Pool<Postgres>) {
 
             // Ensure region+zone exist (so Settings UI doesn't stay empty).
             // Region code heuristic: drop the trailing "-<digit>" (e.g., fr-par-2 -> fr-par).
-            let region_code = zone.rsplit_once('-').map(|(_, r)| r).unwrap_or(zone).to_string();
+            let region_code = zone
+                .rsplit_once('-')
+                .map(|(_, r)| r)
+                .unwrap_or(zone)
+                .to_string();
             let region_name = region_code.clone();
             let region_id: Option<Uuid> = sqlx::query_scalar(
                 r#"

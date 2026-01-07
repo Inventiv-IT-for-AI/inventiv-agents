@@ -8,11 +8,13 @@ Le but est de supprimer tous les fichier de documentation ou sections de documen
 Ceci pour garder une doc clair, bien structurée avec des plans clairs, des parties de descriptions générales et des parties d'exlications détaillé
 
 Les points d'entré les plus importants de la doc du projet, et qu'il est absolument necessaire de soigner, et de garder tout le temps à jour sont les :
-- les README.md, 
-- les documents de specification générale et détaille du projet
-- le design system et les AI UI widgets
-- le TODO.md
-- le domain-and-data-model
+- README.md, 
+- TODO.md
+- docs/project-requirements.md (avec des doucment contenant les sous sections)
+- docs/architecture.md
+- docs/domain-and-data-model.md
+- docs/design-system.md (avec les informaion sur le frontend, la UI les AI widgets réutilisables)
+- docs/testing.md
 
 Les documents de synthèse (et de préparation de plan d'actions) sont à mettre absolument dans le dossier "./docs/syntheses". Ne garder que les plans a réaliser ou en cours. Tous les documents de synthese et de plan d'action dejà réalisé ou obsolettes sont à mettre dans le dossier "./docs/syntheses/archives".
 
