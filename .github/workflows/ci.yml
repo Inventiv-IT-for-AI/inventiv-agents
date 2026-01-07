@@ -94,14 +94,19 @@ jobs:
           cache: "npm"  # Cache automatique des node_modules
 
       # Installation des dépendances npm (clean install, sans audit/fund)
+      # Note: npm ci installe les dépendances natives (lightningcss) correctement
       - name: Install
         run: npm ci --no-audit --no-fund
+        env:
+          # S'assure que les binaires natifs sont installés pour lightningcss
+          npm_config_build_from_source: false
 
       # Linting ESLint du code frontend (détecte erreurs et warnings)
       - name: Lint
         run: npm run lint:ui
 
       # Build de production du frontend (vérifie que le build fonctionne)
+      # Note: lightningcss nécessite des binaires natifs qui sont installés via npm ci
       - name: Build
         run: npm run build:ui
 

@@ -191,12 +191,10 @@ export default function ChatPage() {
     void loadModels().catch(() => null);
     void loadRuns().catch(() => null);
     void loadProjects().catch(() => null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     scrollToBottom();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages.length]);
 
   const stop = () => {

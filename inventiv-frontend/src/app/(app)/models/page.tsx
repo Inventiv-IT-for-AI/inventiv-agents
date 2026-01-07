@@ -22,7 +22,6 @@ export default function ModelsPage() {
 
     useEffect(() => {
         void load().catch(() => null);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [refreshTick]);
 
     useEffect(() => {

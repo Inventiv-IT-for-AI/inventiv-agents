@@ -26,6 +26,10 @@ KEY_HEADER_REGEX='^[[:space:]]*[^#].*-----BEGIN (OPENSSH|RSA|EC) PRIVATE KEY----
 
 hit=0
 while IFS= read -r -d '' f; do
+  # Skip the security check script itself (it contains the regex pattern)
+  if [[ "$f" == "scripts/check_no_private_keys.sh" ]]; then
+    continue
+  fi
   # Best-effort skip huge vendor files (still tracked) if any; keep simple.
   if grep -I -n -E "${KEY_HEADER_REGEX}" "$f" >/dev/null 2>&1; then
     if [[ "${hit}" -eq 0 ]]; then

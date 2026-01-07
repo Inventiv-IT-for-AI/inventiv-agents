@@ -800,7 +800,6 @@ function SettingsPageInner() {
             })
             .catch(() => null)
             .finally(() => setGlobalSettingsLoading(false));
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeTab, refreshTick.global_params]);
 
     const modelColumns: IADataTableColumn<ModelRow>[] = [

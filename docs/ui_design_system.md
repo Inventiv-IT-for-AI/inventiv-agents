@@ -1,87 +1,85 @@
 # UI Design System (Inventiv Agents)
 
-Ce document décrit **la charte UI** et **les conventions de composants** pour maintenir une interface cohérente, réutilisable et “design-system first”.
+This document describes **the UI charter** and **component conventions** to maintain a consistent, reusable, and "design-system first" interface.
 
-## Objectifs
+## Objectives
 
-- **Cohérence visuelle**: mêmes patterns, mêmes composants, mêmes tokens.
-- **Réutilisabilité**: composants réutilisables regroupés dans le package `ia-widgets`.
-- **Évolutivité**: ajouter des composants sans “drift” visuel ni divergence de styles.
+- **Visual consistency**: same patterns, same components, same tokens.
+- **Reusability**: reusable components grouped in the `ia-widgets` package.
+- **Scalability**: add components without "visual drift" or style divergence.
 
-> Pour les règles de **maintenabilité/clean code** (éviter les “god files” type `page.tsx`), voir : `docs/engineering_guidelines.md`.
+> For **maintainability/clean code** rules (avoid "god files" like `page.tsx`), see: `docs/engineering_guidelines.md`.
 
-## Stack UI (référence)
+## UI Stack (reference)
 
 - **Next.js (App Router)**: `inventiv-frontend`
-- **Tailwind CSS v4**: classes utilitaires + tokens via CSS variables
-- **`ia-designsys`**: primitives UI (Button, Dialog, Input, Select, Tabs, etc.) centralisées (shadcn/ui style)
-- **`ia-widgets`**: widgets de plus haut niveau (table, modals, copy, etc.)
-- **Radix UI**: primitives accessibles (Dialog, Select, Switch, etc.)
+- **Tailwind CSS v4**: utility classes + tokens via CSS variables
+- **`ia-designsys`**: centralized UI primitives (Button, Dialog, Input, Select, Tabs, etc.) (shadcn/ui style)
+- **`ia-widgets`**: higher-level widgets (table, modals, copy, etc.)
+- **Radix UI**: accessible primitives (Dialog, Select, Switch, etc.)
 
-## Règle d’or: ne pas inventer de nouveaux widgets sans validation
+## Golden rule: don't invent new widgets without validation
 
-- **Par défaut**: réutiliser les composants existants (`shadcn/ui`, `ia-widgets`, `shared` existants).
-- **Si un besoin UI est nouveau**: on valide d’abord **le besoin**, **le style**, **l’état (states)** et **l’accessibilité**.
-- Une fois validé: on implémente dans `ia-widgets` (si réutilisable) ou dans `inventiv-frontend/src/components/ui/*` (si pattern shadcn local au produit).
+- **By default**: reuse existing components (`shadcn/ui`, `ia-widgets`, existing `shared`).
+- **If a UI need is new**: validate first **the need**, **the style**, **the state (states)** and **accessibility**.
+- Once validated: implement in `ia-widgets` (if reusable) or in `inventiv-frontend/src/components/ui/*` (if shadcn pattern local to the product).
 
-## Fondations visuelles
+## Visual foundations
 
-- **Couleurs & tokens**: utiliser les classes Tailwind basées sur les variables (ex: `bg-background`, `text-foreground`, `text-muted-foreground`, `border`, `ring-*`).
-- **Spacing**: préférer les échelles Tailwind (`gap-2`, `p-4`, `space-y-6`, etc.), éviter les valeurs “custom” sauf nécessité.
-- **Typographie**: privilégier `text-sm`, `text-base`, `text-lg`, `font-medium`, `font-semibold`.
-- **États**: gérer systématiquement `hover`, `focus-visible`, `disabled`, `aria-invalid`, `data-[state=*]`.
+- **Colors & tokens**: use Tailwind classes based on variables (e.g., `bg-background`, `text-foreground`, `text-muted-foreground`, `border`, `ring-*`).
+- **Spacing**: prefer Tailwind scales (`gap-2`, `p-4`, `space-y-6`, etc.), avoid "custom" values unless necessary.
+- **Typography**: prefer `text-sm`, `text-base`, `text-lg`, `font-medium`, `font-semibold`.
+- **States**: systematically handle `hover`, `focus-visible`, `disabled`, `aria-invalid`, `data-[state=*]`.
 
-## Composants: où mettre quoi ?
+## Components: where to put what?
 
 ### 1) `inventiv-frontend/src/components/ui/*` (shadcn/ui)
 
-À utiliser pour des primitives UI (Button, Dialog, Input, Select, Tabs, etc.) qui suivent le style shadcn.
+Use for UI primitives (Button, Dialog, Input, Select, Tabs, etc.) that follow the shadcn style.
 
-### 2) `inventiv-ui/ia-widgets` (réutilisable multi-projets)
+### 2) `inventiv-ui/ia-widgets` (reusable multi-projects)
 
-À utiliser pour des composants **réutilisables**, orientés “IA platform”, et potentiellement ré-extractables.
+Use for **reusable** components, oriented "IA platform", and potentially re-extractable.
 
-- Naming: **préfixe `IA*`** (ex: `IADataTable`, `AIToggle`)
-- Import côté app: `import { IADataTable } from "ia-widgets";`
+- Naming: **prefix `IA*`** (e.g., `IADataTable`, `AIToggle`)
+- Import in app: `import { IADataTable } from "ia-widgets";`
 
 ### 3) `inventiv-frontend/src/components/*` (feature/components)
 
-Composants spécifiques à une feature (instances, settings, monitoring…), non destinés à être réutilisés hors du projet.
+Components specific to a feature (instances, settings, monitoring…), not intended to be reused outside the project.
 
-## Patterns validés (exemples)
+## Validated patterns (examples)
 
-- **Toggle**: utiliser `AIToggle` (pattern compact, accent sky) ou `Switch` shadcn selon le besoin.
+- **Toggle**: use `AIToggle` (compact pattern, sky accent) or `Switch` shadcn depending on need.
 - **Tables**:
-  - `IADataTable` pour tables virtualisées avec colonnes configurables + persistance locale.
-  - éviter des implémentations ad-hoc de tables.
-- **Modals**: `Dialog` shadcn, header/footer standardisés.
-- **Actions**: `Button` + `variant` (`default`, `outline`, `secondary`, `destructive`, `ghost`) au lieu de `<button className="...">`.
+  - `IADataTable` for virtualized tables with configurable columns + local persistence.
+  - avoid ad-hoc table implementations.
+- **Modals**: `Dialog` shadcn, standardized header/footer.
+- **Actions**: `Button` + `variant` (`default`, `outline`, `secondary`, `destructive`, `ghost`) instead of `<button className="...">`.
 
-## Multi-tenant UX : indicateurs de scope (Personal vs Organisation)
+## Multi-tenant UX: scope indicators (Personal vs Organization)
 
-Règle : le **workspace courant** (Personal vs Organisation) change le **scope** de toutes les actions.
-Le design doit rendre ce changement **visuellement évident**.
+Rule: the **current workspace** (Personal vs Organization) changes the **scope** of all actions.
+The design must make this change **visually obvious**.
 
-### Sidebar background “org color” (anti-erreur)
-- Chaque organisation doit pouvoir définir une **couleur / thème visuel** (MVP: fond de la sidebar).
-- Quand l’utilisateur change d’organisation, la sidebar doit changer de couleur immédiatement.
-- La couleur doit être suffisamment contrastée pour rester lisible (texte/icônes).
-- En mode **Personal**, utiliser le thème neutre par défaut.
+### Sidebar background "org color" (error prevention)
+- Each organization must be able to define a **color / visual theme** (MVP: sidebar background).
+- When the user changes organization, the sidebar must change color immediately.
+- The color must be sufficiently contrasted to remain readable (text/icons).
+- In **Personal** mode, use the default neutral theme.
 
-> Note: l’objectif est la prévention d’erreur (“je pensais être dans l’org A mais j’étais dans l’org B”).
+> Note: the goal is error prevention ("I thought I was in org A but I was in org B").
 
-## Accessibilité (checklist)
+## Accessibility (checklist)
 
-- Tous les controls doivent avoir un **label** (`<Label>`, `aria-label`, `aria-describedby`).
-- Utiliser `focus-visible` et éviter de “cacher” le focus.
-- Ne pas dépendre uniquement de la couleur (ajouter texte/icône).
+- All controls must have a **label** (`<Label>`, `aria-label`, `aria-describedby`).
+- Use `focus-visible` and avoid "hiding" focus.
+- Don't rely solely on color (add text/icon).
 
 ## Review checklist (PR)
 
-- Aucun nouveau composant “widget” non validé.
-- Usage systématique de `Button`, `Dialog`, `Input`, `Select`, `Switch`/`AIToggle`.
-- Tokens (background/foreground/muted/border) respectés.
-- États UI complets (loading/error/empty/disabled).
-- Accessibilité OK (labels, focus, roles).
-
-
+- No new "widget" component without validation.
+- Systematic use of `Button`, `Dialog`, `Input`, `Select`, `Switch`/`AIToggle`.
+- Tokens (background/foreground/muted/border) respected.
+- Complete UI states (loading/error/empty/disabled).
+- Accessibility OK (labels, focus, roles).
