@@ -320,10 +320,12 @@ ALTER TABLE instances ADD COLUMN is_operational boolean GENERATED ALWAYS AS (
 - `is_operational` : `true` si les deux activations sont présentes
 
 **Règles** :
-- Owner peut activer tech + eco
+- Owner peut activer tech + eco (mais doit faire les 2 activations explicitement)
 - Admin peut activer tech uniquement
 - Manager peut activer eco uniquement
 - User ne peut rien activer
+
+**Note importante** : Même si Owner a les deux rôles (Admin + Manager), il doit faire la double activation explicitement. C'est une règle de gouvernance pour éviter les erreurs.
 
 ---
 
@@ -363,29 +365,43 @@ ALTER TABLE instances ADD COLUMN is_operational boolean GENERATED ALWAYS AS (
 
 ## ⚠️ Points à Clarifier / Décider
 
-### 1. Plan User vs Plan Organisation
+### 1. Plan User vs Plan Organisation ✅ CLARIFIÉ
 
-**Question** : Un user avec `account_plan = 'subscriber'` dans une org `subscription_plan = 'free'` voit-il les modèles `subscription_required` ?
+**Règle** : Le plan s'applique selon le **workspace (session) actif** :
 
-**Proposition** : **Non** - Le plan org prime sur le plan user pour les modèles accessibles dans le workspace org.
+- **Session Personal** (`current_organization_id = NULL`) → `users.account_plan` s'applique
+- **Session Organisation A** (`current_organization_id = org_a_id`) → `organizations.subscription_plan` (org A) s'applique
+- **Session Organisation B** (`current_organization_id = org_b_id`) → `organizations.subscription_plan` (org B) s'applique
 
-**Raison** : Cohérence workspace - Si l'org n'a pas d'abonnement, les membres ne peuvent pas accéder aux modèles premium même s'ils sont abonnés personnellement.
+**Comportement** :
+- Si le user switch de workspace (Personal ↔ Org A ↔ Org B), le plan qui s'applique change immédiatement
+- Chaque session a son propre contexte de plan
+- Pas de "prime" d'un plan sur l'autre : c'est le workspace actif qui détermine le plan
 
-**Exception** : En mode Personal, le plan user s'applique.
+**Exemple** :
+- User avec `account_plan = 'subscriber'` en session Personal → voit modèles `subscription_required`
+- Même user en session Org A avec `subscription_plan = 'free'` → voit seulement modèles `free`
+- Même user en session Org B avec `subscription_plan = 'subscriber'` → voit modèles `subscription_required`
 
 ---
 
-### 2. Wallet User vs Wallet Organisation
+### 2. Wallet User vs Wallet Organisation ✅ CLARIFIÉ
 
-**Question** : Un user peut-il avoir un wallet personnel ET l'org peut avoir un wallet séparé ?
+**Règle** : Le wallet s'applique selon le **workspace (session) actif** :
 
-**Proposition** : **Oui** - Deux wallets distincts :
-- `users.wallet_balance_eur` : Wallet personnel (mode Personal)
-- `organizations.wallet_balance_eur` : Wallet org (mode Organisation)
+- **Session Personal** → débit depuis `users.wallet_balance_eur`
+- **Session Organisation A** → débit depuis `organizations.wallet_balance_eur` (org A)
+- **Session Organisation B** → débit depuis `organizations.wallet_balance_eur` (org B)
 
-**Logique** :
-- En mode Personal → débit depuis `users.wallet_balance_eur`
-- En mode Organisation → débit depuis `organizations.wallet_balance_eur`
+**Comportement** :
+- Si le user switch de workspace, le wallet utilisé change immédiatement
+- Chaque session a son propre contexte de wallet
+- Trois wallets distincts possibles : 1 user wallet + N org wallets (une par org)
+
+**Exemple** :
+- User avec `wallet_balance_eur = 100€` en session Personal → consomme depuis wallet personnel
+- Même user en session Org A avec `wallet_balance_eur = 50€` → consomme depuis wallet org A
+- Même user en session Org B avec `wallet_balance_eur = 200€` → consomme depuis wallet org B
 
 ---
 
@@ -417,14 +433,15 @@ ALTER TABLE instances ADD COLUMN is_operational boolean GENERATED ALWAYS AS (
 
 ---
 
-### 5. Instances Legacy (sans organization_id)
+### 5. Instances Legacy ✅ CLARIFIÉ
 
-**Question** : Comment gérer les instances créées avant la migration multi-tenant ?
+**Règle** : **Pas de legacy à gérer** - On part sur un modèle propre.
 
-**Proposition** : **Backward compat** :
-- Instances avec `organization_id IS NULL` → accessibles en mode Personal uniquement
-- En mode Organisation → filtrées (non visibles)
-- Migration optionnelle : Assigner instances legacy à une org
+**Comportement** :
+- Application vierge avec seulement les comptes seed (default admin user + default Organisation)
+- Pas de migration de données legacy
+- Migration du data model uniquement (ajout colonnes, contraintes)
+- Toutes les nouvelles instances auront `organization_id` défini dès la création
 
 ---
 
@@ -459,15 +476,15 @@ ALTER TABLE instances ADD COLUMN is_operational boolean GENERATED ALWAYS AS (
 
 ---
 
-## ❓ Questions Ouvertes
+## ✅ Décisions Validées
 
-1. **Plan User vs Plan Org** : Confirmer que le plan org prime en mode Organisation ?
-2. **Wallet séparé** : Confirmer deux wallets distincts (user + org) ?
-3. **Instances legacy** : Migration automatique ou manuelle ?
-4. **Double activation** : Implémenter dès Phase 2 ou Phase ultérieure ?
-5. **Terminologie** : Valider les termes proposés ?
+1. **Plan User vs Plan Org** : ✅ Le plan s'applique selon le workspace (session) actif
+2. **Wallet séparé** : ✅ Wallet selon le workspace (session) actif
+3. **Instances legacy** : ✅ Pas de legacy - modèle propre dès le départ
+4. **Double activation** : ✅ Implémenter dès Phase 2, Owner doit faire les 2 activations explicitement
+5. **Terminologie** : ✅ Validée - À documenter dans `docs/domain_design_and_data_model.md`
 
 ---
 
-**Prochaine étape** : Valider ce document ensemble avant de lancer Phase 2.
+**Prochaine étape** : Mettre à jour `docs/domain_design_and_data_model.md` avec la vision cible complète, puis lancer Phase 2.
 

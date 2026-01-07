@@ -1,11 +1,72 @@
 # Domain Design & Data Structures (DDD)
 
+**Date de mise à jour** : 2025-01-XX  
+**Vision** : Multi-tenant avec Users first-class + Organisations + RBAC + Double Activation
+
+---
+
 ## 1. Ubiquitous Language (Langage Commun)
+
+### Infrastructure & Compute
 *   **Provider**: Un fournisseur d'infrastructure (ex: Scaleway, AWS, Mock).
 *   **Instance (Node)**: Une machine virtuelle ou bare-metal fournie par un Provider. Elle possède une IP et des ressources GPU.
 *   **Worker**: Le processus (Conteneur) qui s'exécute sur une Instance pour servir des modèles.
 *   **Model**: Un modèle LLM spécifique (ex: `llama-3-70b-instruct`) avec des pré-requis techniques.
 *   **Deployment**: L'association d'un Modèle sur une Instance.
+
+### Multi-Tenant & Workspace
+*   **Workspace**: Le contexte actif d'un utilisateur (Personal ou Organisation).
+  *   **Personal**: Mode utilisateur sans organisation (`current_organization_id = NULL`)
+  *   **Organization**: Mode utilisateur avec organisation (`current_organization_id != NULL`)
+*   **Session**: Une session utilisateur avec un workspace spécifique (peut avoir plusieurs sessions simultanées avec des workspaces différents).
+
+### Account & Subscription Plans
+*   **Account Plan (User)**: Plan de souscription d'un utilisateur (`free` | `subscriber`).
+  *   **Free**: Compte gratuit (`account_plan = 'free'`)
+  *   **Subscriber**: Compte abonné (`account_plan = 'subscriber'`)
+*   **Subscription Plan (Organization)**: Plan de souscription d'une organisation (`free` | `subscriber`).
+  *   **Free**: Organisation gratuite (`subscription_plan = 'free'`)
+  *   **Subscriber**: Organisation abonnée (`subscription_plan = 'subscriber'`)
+
+**Règle importante** : Le plan s'applique selon le **workspace (session) actif** :
+- Session Personal → `users.account_plan` s'applique
+- Session Organisation A → `organizations.subscription_plan` (org A) s'applique
+- Session Organisation B → `organizations.subscription_plan` (org B) s'applique
+- Si switch de workspace, le plan change immédiatement
+
+### Wallet & Billing
+*   **Wallet User**: Solde tokens personnel (`users.wallet_balance_eur`).
+*   **Wallet Organisation**: Solde tokens organisation (`organizations.wallet_balance_eur`).
+
+**Règle importante** : Le wallet utilisé dépend du **workspace (session) actif** :
+- Session Personal → débit depuis `users.wallet_balance_eur`
+- Session Organisation A → débit depuis `organizations.wallet_balance_eur` (org A)
+- Session Organisation B → débit depuis `organizations.wallet_balance_eur` (org B)
+
+### Organization Roles (RBAC)
+*   **Owner**: Propriétaire (`organization_role = 'owner'`) - Peut tout faire, doit faire double activation explicitement.
+*   **Admin**: Administrateur technique (`organization_role = 'admin'`) - Gère infrastructure, instances, models, peut activer tech uniquement.
+*   **Manager**: Gestionnaire financier (`organization_role = 'manager'`) - Gère finances, prix, autorisations, peut activer eco uniquement.
+*   **User**: Utilisateur (`organization_role = 'user'`) - Utilise les ressources, pas de permissions d'administration.
+
+### Model Visibility & Access
+*   **Visibility**: Qui peut *voir* l'offering (`public` | `unlisted` | `private`).
+  *   **Public**: Visible à tous (`visibility = 'public'`)
+  *   **Unlisted**: Non listé mais accessible si autorisé (`visibility = 'unlisted'`)
+  *   **Private**: Visible uniquement aux membres org (`visibility = 'private'`)
+*   **Access Policy**: Dans quelles conditions on peut *utiliser* l'offering (`free` | `subscription_required` | `request_required` | `pay_per_token` | `trial`).
+  *   **Free**: Usage gratuit (`access_policy = 'free'`)
+  *   **Subscription Required**: Réservé aux abonnés (`access_policy = 'subscription_required'`)
+  *   **Request Required**: Demande d'accès requise (`access_policy = 'request_required'`)
+  *   **Pay Per Token**: Facturation au token (`access_policy = 'pay_per_token'`)
+  *   **Trial**: Gratuit jusqu'à date/quota (`access_policy = 'trial'`)
+
+### Double Activation
+*   **Tech Activation**: Activation technique (`tech_activated_by`, `tech_activated_at`) - Admin/Owner uniquement.
+*   **Eco Activation**: Activation économique (`eco_activated_by`, `eco_activated_at`) - Manager/Owner uniquement.
+*   **Operational**: Ressource opérationnelle (`is_operational = true`) - Requiert les deux activations.
+
+**Règle importante** : Même si Owner a les deux rôles (Admin + Manager), il doit faire la double activation explicitement. C'est une règle de gouvernance pour éviter les erreurs.
 
 ## 2. Domain Entities (Rust Structs)
 

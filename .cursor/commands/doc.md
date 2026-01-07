@@ -10,10 +10,10 @@ Ceci pour garder une doc clair, bien structurée avec des plans clairs, des part
 Les points d'entré les plus importants de la doc du projet, et qu'il est absolument necessaire de soigner, et de garder tout le temps à jour sont les :
 - README.md, 
 - TODO.md
-- docs/project-requirements.md (avec des doucment contenant les sous sections)
+- docs/project_requirements.md (avec des doucment contenant les sous sections)
 - docs/architecture.md
-- docs/domain-and-data-model.md
-- docs/design-system.md (avec les informaion sur le frontend, la UI les AI widgets réutilisables)
+- docs/domain_design_and_data_model.md
+- docs/ui_design_system.md (avec les informaion sur le frontend, la UI les AI widgets réutilisables)
 - docs/testing.md
 
 Les documents de synthèse (et de préparation de plan d'actions) sont à mettre absolument dans le dossier "./docs/syntheses". Ne garder que les plans a réaliser ou en cours. Tous les documents de synthese et de plan d'action dejà réalisé ou obsolettes sont à mettre dans le dossier "./docs/syntheses/archives".
