@@ -2,7 +2,7 @@
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![GHCR (build + promote)](https://github.com/Inventiv-IT-for-AI/inventiv-agents/actions/workflows/ghcr.yml/badge.svg)](https://github.com/Inventiv-IT-for-AI/inventiv-agents/actions/workflows/ghcr.yml)
-[![Version](https://img.shields.io/badge/version-0.5.1-blue.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-0.5.2-blue.svg)](VERSION)
 
 **Control-plane + data-plane to run AI agents/instances** — Scalable, modular, and performant LLM inference infrastructure, written in **Rust**.
 
@@ -12,7 +12,7 @@
 
 **Why it's useful**: Enables standardized deployment and scaling of LLM models (vLLM), with integrated financial tracking and granular control over cloud resources.
 
-📘 **Detailed documentation**: [Architecture](docs/architecture.md) | [Domain Design & CQRS](docs/domain_design.md) | [General Specifications](docs/specification_generale.md) | [UI Design System](docs/ui_design_system.md) | [`ia-widgets`](docs/ia_widgets.md) | [Engineering Guidelines](docs/engineering_guidelines.md) | [State Machine & Progress](docs/STATE_MACHINE_AND_PROGRESS.md) | [Agent Version Management](docs/AGENT_VERSION_MANAGEMENT.md) | [Storage Management](docs/STORAGE_MANAGEMENT.md) | [Scaleway Provisioning](docs/SCALEWAY_PROVISIONING.md) | [Session Close 2026-01-05](docs/SESSION_CLOSE_20260105.md)
+📘 **Detailed documentation**: [Architecture](docs/architecture.md) | [Domain Design & CQRS](docs/domain_design.md) | [General Specifications](docs/specification_generale.md) | [UI Design System](docs/ui_design_system.md) | [`ia-widgets`](docs/ia_widgets.md) | [Engineering Guidelines](docs/engineering_guidelines.md) | [State Machine & Progress](docs/STATE_MACHINE_AND_PROGRESS.md) | [Agent Version Management](docs/AGENT_VERSION_MANAGEMENT.md) | [Storage Management](docs/STORAGE_MANAGEMENT.md) | [Scaleway Provisioning](docs/SCALEWAY_PROVISIONING.md) | [CI/CD](docs/CI_CD.md) | [Session Close 2026-01-05](docs/SESSION_CLOSE_20260105.md) | [Session Close 2026-01-08](docs/SESSION_CLOSE_20260108.md)
 
 ## Key Features
 
@@ -784,14 +784,30 @@ See [SECURITY.md](SECURITY.md) for security reports.
 
 ```bash
 make check       # cargo check
+make fmt-check   # cargo fmt --check
+make clippy      # cargo clippy (warnings = errors)
 make test        # Unit tests
+make ci-fast     # Quick CI checks (fmt/clippy/test + frontend lint/build)
+make ci          # Full CI checks (includes security-check + agent-version-check)
 ```
 
 **Conventions**:
 - **Commits**: Conventional commits (`feat:`, `fix:`, `chore:`, etc.)
 - **PR**: Clear description, reference issues if applicable
+- **CI/CD**: All code must pass `make ci-fast` before merging
 
 See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for detailed guidelines and [docs/DEVELOPMENT_SETUP.md](docs/DEVELOPMENT_SETUP.md) for the multi-platform configuration guide.
+
+### CI/CD
+
+**Local CI**: Run `make ci-fast` or `make ci` to validate code before pushing.
+
+**GitHub Actions**:
+- **CI**: Automatic on PRs and pushes to `main` (Rust fmt/clippy/test + Frontend lint/build)
+- **Deploy Staging**: Automatic on push to `main` (build ARM64 images + promote to `:staging` + deploy)
+- **Deploy Production**: Manual via GitHub Actions UI (promote tag to `:prod` + deploy)
+
+See [docs/CI_CD.md](docs/CI_CD.md) for detailed CI/CD documentation.
 
 ## Roadmap / project status
 

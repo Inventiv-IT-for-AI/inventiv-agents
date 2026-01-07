@@ -44,6 +44,7 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 - **IADataTable**: table virtualisée réutilisable (dans `ia-widgets`) + **resize via séparateurs dédiés** (5px) entre colonnes.
 - **Ergonomie dev**: `make ui-down` et `make ui-local-down` (stop UI Docker / kill UI host).
 - ✅ **Affichage Version**: Badge discret sous le titre de l'application avec popover au hover/click affichant version FE, BE et timestamp du build.
+- ✅ **CI/CD Pipeline**: Pipeline GitHub Actions complet (CI automatique, déploiement staging automatique, déploiement production manuel). Uniformisation axum 0.8 dans tous les projets. Corrections imports non utilisés et erreurs clippy/lint.
 
 ### Dev ergonomics
 - **PORT_OFFSET** (worktrees) + UI-only exposée.
@@ -68,6 +69,8 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 - ✅ **Health checks "starting"**: Corrigé - les instances "starting" sont maintenant vérifiées par le health check job
 - ✅ **Résolution modèles publics**: Corrigé - les modèles HuggingFace publics fonctionnent sans organisation
 - ⚠️ **Volumes non libérés**: Certaines terminaisons d'instances ne libèrent pas correctement les block storage associés (voir section "Fiabilité Workers & Instances").
+- ⚠️ **Warnings clippy restants**: 37 erreurs clippy de style non bloquantes (equality checks, redundant closures, etc.) - à corriger progressivement pour améliorer la qualité du code.
+- ⚠️ **Warnings frontend restants**: 10 warnings ESLint non bloquants - à corriger progressivement pour améliorer la qualité du code.
 
 ---
 
