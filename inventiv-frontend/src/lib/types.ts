@@ -194,6 +194,18 @@ export type OrganizationMember = {
   created_at: string;
 };
 
+export type OrganizationInvitation = {
+  id: string;
+  organization_id: string;
+  organization_name: string;
+  email: string;
+  role: "owner" | "admin" | "manager" | "user";
+  expires_at: string;
+  accepted_at?: string | null;
+  created_at: string;
+  invited_by_username?: string | null;
+};
+
 // -----------------------------
 // Workbench (persisted runs)
 // -----------------------------

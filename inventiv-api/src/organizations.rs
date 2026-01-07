@@ -899,6 +899,460 @@ pub async fn resolve_active_wallet(
     }
 }
 
+// --- Phase 3: Organization Invitations ---
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct OrganizationInvitationRow {
+    pub id: uuid::Uuid,
+    pub organization_id: uuid::Uuid,
+    pub email: String,
+    pub role: String,
+    pub token: String,
+    pub invited_by_user_id: uuid::Uuid,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+    pub accepted_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub invited_by_username: Option<String>,
+    pub organization_name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OrganizationInvitationResponse {
+    pub id: uuid::Uuid,
+    pub organization_id: uuid::Uuid,
+    pub organization_name: String,
+    pub email: String,
+    pub role: String,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+    pub accepted_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub invited_by_username: Option<String>,
+}
+
+impl From<OrganizationInvitationRow> for OrganizationInvitationResponse {
+    fn from(r: OrganizationInvitationRow) -> Self {
+        Self {
+            id: r.id,
+            organization_id: r.organization_id,
+            organization_name: r.organization_name.unwrap_or_else(|| "Unknown".to_string()),
+            email: r.email,
+            role: r.role,
+            expires_at: r.expires_at,
+            accepted_at: r.accepted_at,
+            created_at: r.created_at,
+            invited_by_username: r.invited_by_username,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateInvitationRequest {
+    pub email: String,
+    pub role: Option<String>,
+    pub expires_in_days: Option<i64>, // Default: 7 days
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateInvitationResponse {
+    pub id: uuid::Uuid,
+    pub token: String,
+    pub email: String,
+    pub role: String,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+fn generate_invitation_token() -> String {
+    use rand::Rng;
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    const TOKEN_LENGTH: usize = 32;
+    let mut rng = rand::thread_rng();
+    (0..TOKEN_LENGTH)
+        .map(|_| {
+            let idx = rng.gen_range(0..CHARSET.len());
+            CHARSET[idx] as char
+        })
+        .collect()
+}
+
+pub async fn create_current_organization_invitation(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
+    Json(req): Json<CreateInvitationRequest>,
+) -> impl IntoResponse {
+    let Some(org_id) = user.current_organization_id else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid_request","message":"no_current_organization"})),
+        )
+            .into_response();
+    };
+
+    let Some(actor_role) = get_membership_role(&state.db, org_id, user.user_id).await else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"forbidden","message":"not_a_member"})),
+        )
+            .into_response();
+    };
+
+    // RBAC: Only Owner/Admin/Manager can invite
+    if !rbac::can_invite(actor_role) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"forbidden","message":"insufficient_permissions_to_invite"})),
+        )
+            .into_response();
+    }
+
+    let email = req.email.trim().to_lowercase();
+    if email.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid_request","message":"email_required"})),
+        )
+            .into_response();
+    }
+
+    // Validate email format (basic)
+    if !email.contains('@') || !email.contains('.') {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid_request","message":"invalid_email_format"})),
+        )
+            .into_response();
+    }
+
+    let role_str = req.role.as_deref().unwrap_or("user");
+    let Some(invite_role) = rbac::OrgRole::parse(role_str) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid_request","message":"invalid_role"})),
+        )
+            .into_response();
+    };
+
+    // Owner can invite any role, Admin/Manager can only invite User/Manager
+    if actor_role != rbac::OrgRole::Owner {
+        if invite_role == rbac::OrgRole::Owner || invite_role == rbac::OrgRole::Admin {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"error":"forbidden","message":"cannot_invite_owner_or_admin_role"})),
+            )
+                .into_response();
+        }
+    }
+
+    // Check if user is already a member
+    let existing_user: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+            .bind(&email)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None);
+
+    if let Some(existing_user_id) = existing_user {
+        let is_member = is_member(&state.db, org_id, existing_user_id).await;
+        if is_member {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error":"conflict","message":"user_already_member"})),
+            )
+                .into_response();
+        }
+    }
+
+    // Check for existing pending invitation
+    let existing_invitation: Option<uuid::Uuid> = sqlx::query_scalar(
+        r#"
+        SELECT id FROM organization_invitations
+        WHERE organization_id = $1 AND email = $2 AND accepted_at IS NULL AND expires_at > NOW()
+        "#,
+    )
+    .bind(org_id)
+    .bind(&email)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap_or(None);
+
+    if existing_invitation.is_some() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error":"conflict","message":"invitation_already_exists"})),
+        )
+            .into_response();
+    }
+
+    let expires_in_days = req.expires_in_days.unwrap_or(7);
+    let expires_at = chrono::Utc::now() + chrono::Duration::days(expires_in_days);
+    let token = generate_invitation_token();
+
+    let invitation_id = uuid::Uuid::new_v4();
+    let res: Result<(uuid::Uuid, String, chrono::DateTime<chrono::Utc>), sqlx::Error> = sqlx::query_as(
+        r#"
+        INSERT INTO organization_invitations 
+        (id, organization_id, email, role, token, invited_by_user_id, expires_at, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+        RETURNING id, token, expires_at
+        "#,
+    )
+    .bind(invitation_id)
+    .bind(org_id)
+    .bind(&email)
+    .bind(invite_role.as_str())
+    .bind(&token)
+    .bind(user.user_id)
+    .bind(expires_at)
+    .fetch_one(&state.db)
+    .await;
+
+    match res {
+        Ok((id, token, expires_at)) => {
+            insert_audit_action(
+                &state.db,
+                "ORG_INVITATION_CREATED",
+                user.user_id,
+                json!({
+                    "organization_id": org_id,
+                    "invitation_id": id,
+                    "email": email,
+                    "role": invite_role.as_str(),
+                }),
+                None,
+            )
+            .await;
+
+            Json(CreateInvitationResponse {
+                id,
+                token,
+                email,
+                role: invite_role.as_str().to_string(),
+                expires_at,
+            })
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"db_error","message": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn list_current_organization_invitations(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
+) -> impl IntoResponse {
+    let Some(org_id) = user.current_organization_id else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid_request","message":"no_current_organization"})),
+        )
+            .into_response();
+    };
+
+    let ok = is_member(&state.db, org_id, user.user_id).await;
+    if !ok {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"forbidden","message":"not_a_member"})),
+        )
+            .into_response();
+    }
+
+    let rows: Vec<OrganizationInvitationRow> = sqlx::query_as(
+        r#"
+        SELECT 
+            i.id,
+            i.organization_id,
+            i.email,
+            i.role,
+            i.token,
+            i.invited_by_user_id,
+            i.expires_at,
+            i.accepted_at,
+            i.created_at,
+            u.username AS invited_by_username,
+            o.name AS organization_name
+        FROM organization_invitations i
+        JOIN organizations o ON o.id = i.organization_id
+        LEFT JOIN users u ON u.id = i.invited_by_user_id
+        WHERE i.organization_id = $1
+        ORDER BY i.created_at DESC
+        "#,
+    )
+    .bind(org_id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    Json(
+        rows.into_iter()
+            .map(OrganizationInvitationResponse::from)
+            .collect::<Vec<_>>(),
+    )
+    .into_response()
+}
+
+pub async fn accept_invitation(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
+    axum::extract::Path(token): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    // Find invitation by token
+    let invitation: Option<OrganizationInvitationRow> = sqlx::query_as(
+        r#"
+        SELECT 
+            i.id,
+            i.organization_id,
+            i.email,
+            i.role,
+            i.token,
+            i.invited_by_user_id,
+            i.expires_at,
+            i.accepted_at,
+            i.created_at,
+            u.username AS invited_by_username,
+            o.name AS organization_name
+        FROM organization_invitations i
+        JOIN organizations o ON o.id = i.organization_id
+        LEFT JOIN users u ON u.id = i.invited_by_user_id
+        WHERE i.token = $1
+        "#,
+    )
+    .bind(&token)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap_or(None);
+
+    let Some(inv) = invitation else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"not_found","message":"invitation_not_found"})),
+        )
+            .into_response();
+    };
+
+    // Check if already accepted
+    if inv.accepted_at.is_some() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error":"conflict","message":"invitation_already_accepted"})),
+        )
+            .into_response();
+    }
+
+    // Check if expired
+    if inv.expires_at < chrono::Utc::now() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid_request","message":"invitation_expired"})),
+        )
+            .into_response();
+    }
+
+    // Verify email matches (if user is logged in)
+    if user.email.to_lowercase() != inv.email.to_lowercase() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"forbidden","message":"email_mismatch"})),
+        )
+            .into_response();
+    }
+
+    let mut tx = match state.db.begin().await {
+        Ok(t) => t,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"db_error","message": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    // Mark invitation as accepted
+    let res = sqlx::query(
+        r#"
+        UPDATE organization_invitations
+        SET accepted_at = NOW(), updated_at = NOW()
+        WHERE id = $1 AND accepted_at IS NULL
+        "#,
+    )
+    .bind(inv.id)
+    .execute(&mut *tx)
+    .await;
+
+    if let Err(e) = res {
+        let _ = tx.rollback().await;
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"db_error","message": e.to_string()})),
+        )
+            .into_response();
+    }
+
+    // Create membership (or update if exists)
+    let Some(role) = rbac::OrgRole::parse(&inv.role) else {
+        let _ = tx.rollback().await;
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"invalid_role"})),
+        )
+            .into_response();
+    };
+
+    let res = sqlx::query(
+        r#"
+        INSERT INTO organization_memberships (organization_id, user_id, role, created_at)
+        VALUES ($1, $2, $3, NOW())
+        ON CONFLICT (organization_id, user_id) DO UPDATE SET role = $3
+        "#,
+    )
+    .bind(inv.organization_id)
+    .bind(user.user_id)
+    .bind(role.as_str())
+    .execute(&mut *tx)
+    .await;
+
+    if let Err(e) = res {
+        let _ = tx.rollback().await;
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"db_error","message": e.to_string()})),
+        )
+            .into_response();
+    }
+
+    if let Err(e) = tx.commit().await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"db_error","message": e.to_string()})),
+        )
+            .into_response();
+    }
+
+    insert_audit_action(
+        &state.db,
+        "ORG_INVITATION_ACCEPTED",
+        user.user_id,
+        json!({
+            "organization_id": inv.organization_id,
+            "invitation_id": inv.id,
+            "role": inv.role,
+        }),
+        None,
+    )
+    .await;
+
+    Json(json!({
+        "status":"ok",
+        "organization_id": inv.organization_id,
+        "organization_name": inv.organization_name,
+        "role": inv.role
+    }))
+    .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -975,7 +1429,9 @@ mod tests {
         .execute(&pool)
         .await;
 
-        let plan = resolve_active_plan(&pool, user_id, Some(org_id)).await.unwrap();
+        let plan = resolve_active_plan(&pool, user_id, Some(org_id))
+            .await
+            .unwrap();
         assert_eq!(plan, "subscriber");
 
         // Test 4: Org with free plan
@@ -983,7 +1439,9 @@ mod tests {
             .bind(org_id)
             .execute(&pool)
             .await;
-        let plan = resolve_active_plan(&pool, user_id, Some(org_id)).await.unwrap();
+        let plan = resolve_active_plan(&pool, user_id, Some(org_id))
+            .await
+            .unwrap();
         assert_eq!(plan, "free");
 
         // Test 5: Default fallback to 'free' if plan is NULL
@@ -991,7 +1449,9 @@ mod tests {
             .bind(org_id)
             .execute(&pool)
             .await;
-        let plan = resolve_active_plan(&pool, user_id, Some(org_id)).await.unwrap();
+        let plan = resolve_active_plan(&pool, user_id, Some(org_id))
+            .await
+            .unwrap();
         assert_eq!(plan, "free");
     }
 
@@ -1040,7 +1500,9 @@ mod tests {
         .execute(&pool)
         .await;
 
-        let wallet = resolve_active_wallet(&pool, user_id, Some(org_id)).await.unwrap();
+        let wallet = resolve_active_wallet(&pool, user_id, Some(org_id))
+            .await
+            .unwrap();
         assert_eq!(wallet, Some(250.75));
 
         // Test 4: Org with zero balance
@@ -1048,7 +1510,9 @@ mod tests {
             .bind(org_id)
             .execute(&pool)
             .await;
-        let wallet = resolve_active_wallet(&pool, user_id, Some(org_id)).await.unwrap();
+        let wallet = resolve_active_wallet(&pool, user_id, Some(org_id))
+            .await
+            .unwrap();
         assert_eq!(wallet, Some(0.0));
 
         // Test 5: Non-existent org → None

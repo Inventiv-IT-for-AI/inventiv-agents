@@ -79,6 +79,16 @@ pub fn create_protected_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/organizations/current/leave",
             post(organizations::leave_current_organization),
         )
+        // Organization invitations
+        .route(
+            "/organizations/current/invitations",
+            get(organizations::list_current_organization_invitations)
+                .post(organizations::create_current_organization_invitation),
+        )
+        .route(
+            "/organizations/invitations/{token}/accept",
+            post(organizations::accept_invitation),
+        )
         // API Keys (dashboard-managed)
         .route(
             "/api_keys",
