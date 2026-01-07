@@ -70,6 +70,7 @@ export default function ChatPage() {
       }
       const data = (await res.json()) as ChatModel[];
       setModels(Array.isArray(data) ? data : []);
+      setModelsError(null);
       if (!selectedModel && Array.isArray(data) && data.length > 0) {
         setSelectedModel(data[0].model);
       }
@@ -83,7 +84,6 @@ export default function ChatPage() {
   }, [selectedModel]);
 
   const loadRuns = useCallback(async () => {
-    setRunsError(null);
     try {
       const res = await fetch(apiUrl("workbench/runs?limit=30"), { cache: "no-store", credentials: "include" });
       if (!res.ok) {
@@ -92,6 +92,7 @@ export default function ChatPage() {
       }
       const data = (await res.json()) as WorkbenchRun[];
       setRuns(data);
+      setRunsError(null);
     } catch (e) {
       setRuns([]);
       setRunsError(e instanceof Error ? e.message : String(e));
@@ -99,7 +100,6 @@ export default function ChatPage() {
   }, []);
 
   const loadProjects = useCallback(async () => {
-    setProjectsError(null);
     try {
       const res = await fetch(apiUrl("workbench/projects"), { cache: "no-store", credentials: "include" });
       if (!res.ok) {
@@ -108,6 +108,7 @@ export default function ChatPage() {
       }
       const data = (await res.json()) as WorkbenchProject[];
       setProjects(Array.isArray(data) ? data : []);
+      setProjectsError(null);
     } catch (e) {
       setProjects([]);
       setProjectsError(e instanceof Error ? e.message : String(e));
