@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiUrl } from "@/lib/api";
 import type { RuntimeModel } from "@/lib/types";
 import { Card, CardContent } from "@/components/ui/card";
@@ -13,16 +13,16 @@ export default function ModelsPage() {
     const [rows, setRows] = useState<RuntimeModel[]>([]);
     const [refreshTick, setRefreshTick] = useState(0);
 
-    const load = async () => {
+    const load = useCallback(async () => {
         const res = await fetch(apiUrl("runtime/models"));
         if (!res.ok) return;
         const data = (await res.json()) as RuntimeModel[];
         setRows(data);
-    };
+    }, []);
 
     useEffect(() => {
         void load().catch(() => null);
-    }, [refreshTick]);
+    }, [load, refreshTick]);
 
     useEffect(() => {
         const onRefresh = () => setRefreshTick((t) => t + 1);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { apiUrl } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -191,7 +191,7 @@ export default function ChatPage() {
     void loadModels().catch(() => null);
     void loadRuns().catch(() => null);
     void loadProjects().catch(() => null);
-  }, []);
+  }, [loadModels, loadRuns, loadProjects]);
 
   useEffect(() => {
     scrollToBottom();
