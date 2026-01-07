@@ -7,19 +7,31 @@ use serde_json::json;
 
 #[tokio::test]
 async fn test_login_success() {
+    // Ensure JWT_SECRET is set for tests
+    std::env::set_var("JWT_SECRET", "test-secret-key-for-testing-only");
+    std::env::set_var("JWT_ISSUER", "inventiv-api");
+
     let app = create_test_app_service().await;
     let server = TestServer::new(app).unwrap();
 
     let pool = get_test_db_pool().await;
 
-    // Create a test user
-    let user_id = create_test_user(&pool, "test_user@test.com", "password123").await;
+    // Clean up any existing test data
+    let _ = sqlx::query("DELETE FROM user_sessions WHERE user_id IN (SELECT id FROM users WHERE email = 'test_login_success@test.com')")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM users WHERE email = 'test_login_success@test.com'")
+        .execute(&pool)
+        .await;
+
+    // Create a test user with unique email
+    let user_id = create_test_user(&pool, "test_login_success@test.com", "password123").await;
 
     // Test login
     let response = server
         .post("/auth/login")
         .json(&json!({
-            "email": "test_user@test.com",
+            "email": "test_login_success@test.com",
             "password": "password123"
         }))
         .await;
@@ -53,10 +65,22 @@ async fn test_login_invalid_credentials() {
 
 #[tokio::test]
 async fn test_me_endpoint() {
+    // Ensure JWT_SECRET is set for tests
+    std::env::set_var("JWT_SECRET", "test-secret-key-for-testing-only");
+    std::env::set_var("JWT_ISSUER", "inventiv-api");
+
     let app = create_test_app_service().await;
     let server = TestServer::new(app).unwrap();
 
     let pool = get_test_db_pool().await;
+
+    // Clean up any existing test data
+    let _ = sqlx::query("DELETE FROM user_sessions WHERE user_id IN (SELECT id FROM users WHERE email LIKE 'test_%@test.com')")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM users WHERE email LIKE 'test_%@test.com'")
+        .execute(&pool)
+        .await;
 
     // Create a test user and session
     let user_id = create_test_user(&pool, "test_user@test.com", "password123").await;
@@ -103,10 +127,28 @@ async fn test_logout() {
 
 #[tokio::test]
 async fn test_list_sessions() {
+    // Ensure JWT_SECRET is set for tests (must be set BEFORE creating the app)
+    std::env::set_var("JWT_SECRET", "test-secret-key-for-testing-only");
+    std::env::set_var("JWT_ISSUER", "inventiv-api");
+
     let app = create_test_app_service().await;
     let server = TestServer::new(app).unwrap();
 
     let pool = get_test_db_pool().await;
+
+    // Clean up any existing test data
+    let _ = sqlx::query("DELETE FROM user_sessions WHERE user_id IN (SELECT id FROM users WHERE email LIKE 'test_%@test.com')")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM organization_memberships WHERE user_id IN (SELECT id FROM users WHERE email LIKE 'test_%@test.com')")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM organizations WHERE slug LIKE 'test-%'")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM users WHERE email LIKE 'test_%@test.com'")
+        .execute(&pool)
+        .await;
 
     // Create a test user
     let user_id = create_test_user(&pool, "test_user@test.com", "password123").await;

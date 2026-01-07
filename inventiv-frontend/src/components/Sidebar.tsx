@@ -4,9 +4,11 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { LayoutDashboard, Settings, Activity, Archive, BarChart3, Server, Users, Terminal, KeyRound, Cpu, MessageSquare, Building2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { useState, useEffect } from "react";
 import type { Me } from "@/components/account/AccountSection";
 import { AccountSection } from "@/components/account/AccountSection";
+import { FRONTEND_VERSION, getBackendVersion, type BackendVersionInfo } from "@/lib/version";
 
 interface SidebarLinkProps {
     href: string;
@@ -36,15 +38,33 @@ function SidebarLink({ href, icon: Icon, label, disabled }: SidebarLinkProps) {
 
 export function Sidebar() {
     const [meRole, setMeRole] = useState<string | null>(null);
+    const [backendVersion, setBackendVersion] = useState<BackendVersionInfo | null>(null);
     const isAdmin = meRole === "admin";
+
+    useEffect(() => {
+        // Fetch backend version on mount
+        getBackendVersion().then(setBackendVersion).catch(() => {});
+    }, []);
 
     return (
         <div className="w-64 border-r min-h-screen bg-background text-foreground hidden md:flex flex-col">
             <div className="space-y-4 py-4 flex-1">
                 <div className="px-3 py-2">
-                    <h2 className="mb-2 px-4 text-lg font-semibold tracking-tight text-primary">
-                        Inventiv Agents
-                    </h2>
+                    <div className="mb-2 px-4 flex items-center gap-2">
+                        <h2 className="text-lg font-semibold tracking-tight text-primary">
+                            Inventiv Agents
+                        </h2>
+                        <div className="flex items-center gap-1">
+                            <Badge variant="secondary" className="text-xs font-mono">
+                                FE: {FRONTEND_VERSION}
+                            </Badge>
+                            {backendVersion && (
+                                <Badge variant="outline" className="text-xs font-mono">
+                                    BE: {backendVersion.backend_version}
+                                </Badge>
+                            )}
+                        </div>
+                    </div>
                     <div className="space-y-1">
                         <SidebarLink href="/" icon={LayoutDashboard} label="Dashboard" />
                         <SidebarLink href="/chat" icon={MessageSquare} label="Chat" />

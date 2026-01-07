@@ -26,6 +26,7 @@ pub mod settings;
 pub mod setup;
 pub mod simple_logger;
 pub mod users_endpoint;
+pub mod version;
 pub mod workbench;
 pub mod worker_routing;
 

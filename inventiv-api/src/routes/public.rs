@@ -9,6 +9,7 @@ use utoipa_swagger_ui::SwaggerUi;
 use crate::api_docs;
 use crate::auth_endpoints;
 use crate::password_reset;
+use crate::version;
 
 /// Create public routes router
 pub fn create_public_routes() -> Router<Arc<AppState>> {
@@ -28,6 +29,13 @@ pub fn create_public_routes() -> Router<Arc<AppState>> {
             "/auth/password-reset/reset",
             post(password_reset::reset_password),
         )
+        .route("/version", get(get_version))
+        .route("/api/version", get(get_version))
+}
+
+/// Get version information (public endpoint)
+async fn get_version() -> axum::Json<version::VersionInfo> {
+    axum::Json(version::get_version_info())
 }
 
 async fn root() -> &'static str {

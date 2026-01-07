@@ -1,5 +1,17 @@
 import type { NextConfig } from "next";
 import path from "node:path";
+import fs from "node:fs";
+
+// Read VERSION file from project root
+let appVersion = "unknown";
+try {
+  const versionPath = path.join(__dirname, "..", "VERSION");
+  if (fs.existsSync(versionPath)) {
+    appVersion = fs.readFileSync(versionPath, "utf8").trim();
+  }
+} catch (e) {
+  console.warn("Could not read VERSION file:", e);
+}
 
 const nextConfig: NextConfig = {
   // NOTE: `/api/backend/*` is implemented as a Next route handler
@@ -8,6 +20,9 @@ const nextConfig: NextConfig = {
   experimental: {
     // Allow transpiling packages that live outside the Next.js app dir (monorepo/file deps).
     externalDir: true,
+  },
+  env: {
+    NEXT_PUBLIC_APP_VERSION: appVersion,
   },
   webpack: (config) => {
     // When `ia-widgets` is resolved to a path outside `/app` (Docker bind mount),

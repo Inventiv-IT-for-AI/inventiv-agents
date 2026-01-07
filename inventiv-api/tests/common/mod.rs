@@ -5,7 +5,7 @@ use inventiv_api::bootstrap_admin;
 use inventiv_api::config::{database::create_pool, redis::create_client};
 use inventiv_api::routes::{create_router, openai, protected, public, workbench, worker};
 use inventiv_api::setup::{maybe_seed_catalog, maybe_seed_provider_credentials, run_migrations};
-use sqlx::{Pool, Postgres};
+use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 
@@ -21,10 +21,13 @@ pub async fn get_test_db_pool() -> Pool<Postgres> {
     TEST_DB_POOL
         .get_or_init(|| async {
             let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
-                "postgresql://postgres:postgres@localhost:5432/inventiv_test".to_string()
+                "postgresql://postgres:password@localhost:5432/inventiv_test".to_string()
             });
 
-            let pool = create_pool(&database_url)
+            // Use a larger pool for tests to avoid timeouts when running tests in parallel
+            let pool = PgPoolOptions::new()
+                .max_connections(20)
+                .connect(&database_url)
                 .await
                 .expect("Failed to create test database pool");
 
@@ -174,18 +177,39 @@ pub async fn get_mock_instance_type_id(pool: &Pool<Postgres>) -> Option<uuid::Uu
 }
 
 /// Create a test user and return user ID and password hash
+/// Automatically cleans up any existing user with the same email first
 pub async fn create_test_user(pool: &Pool<Postgres>, email: &str, password: &str) -> uuid::Uuid {
     use bcrypt::{hash, DEFAULT_COST};
 
+    // Clean up any existing user with this email first
+    let _ = sqlx::query(
+        "DELETE FROM user_sessions WHERE user_id IN (SELECT id FROM users WHERE email = $1)",
+    )
+    .bind(email)
+    .execute(pool)
+    .await;
+    let _ = sqlx::query("DELETE FROM organization_memberships WHERE user_id IN (SELECT id FROM users WHERE email = $1)")
+        .bind(email)
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM users WHERE email = $1")
+        .bind(email)
+        .execute(pool)
+        .await;
+
     let password_hash = hash(password, DEFAULT_COST).expect("Failed to hash test password");
 
+    // Extract username from email (before @)
+    let username = email.split('@').next().unwrap_or(email);
+
     let user_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO users (id, email, password_hash, is_active, created_at)
-         VALUES (gen_random_uuid(), $1, $2, true, NOW())
+        "INSERT INTO users (id, email, password_hash, username, created_at)
+         VALUES (gen_random_uuid(), $1, $2, $3, NOW())
          RETURNING id",
     )
     .bind(email)
     .bind(password_hash)
+    .bind(username)
     .fetch_one(pool)
     .await
     .expect("Failed to create test user");
@@ -194,19 +218,21 @@ pub async fn create_test_user(pool: &Pool<Postgres>, email: &str, password: &str
 }
 
 /// Create a test session token for a user
+/// NOTE: This creates a simple token string, NOT a JWT. For JWT-based sessions,
+/// use inventiv_api::auth::{sign_session_jwt, hash_session_token, create_session} directly.
 pub async fn create_test_session(
     pool: &Pool<Postgres>,
     user_id: uuid::Uuid,
     organization_id: Option<uuid::Uuid>,
     role: Option<&str>,
 ) -> String {
-    use base64::{engine::general_purpose, Engine as _};
     use sha2::{Digest, Sha256};
 
     let session_token = format!("test_session_{}", uuid::Uuid::new_v4());
+    // Use hex format to match hash_session_token() behavior
     let mut hasher = Sha256::new();
     hasher.update(session_token.as_bytes());
-    let token_hash = general_purpose::STANDARD.encode(hasher.finalize());
+    let token_hash = format!("{:x}", hasher.finalize());
 
     sqlx::query(
         "INSERT INTO user_sessions (id, user_id, current_organization_id, organization_role, session_token_hash, ip_address, user_agent, created_at, last_used_at, expires_at)

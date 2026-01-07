@@ -241,24 +241,24 @@ pub async fn require_user(
 ) -> Response {
     // Extract token from headers
     let token = extract_cookie(req.headers(), &session_cookie_name())
-        .or_else(|| extract_bearer(req.headers()))
-        .ok_or_else(|| {
+        .or_else(|| extract_bearer(req.headers()));
+
+    let token = match token {
+        Some(t) => t,
+        None => {
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({"error":"unauthorized","message":"login_required"})),
             )
                 .into_response();
-        });
-
-    let token = match token {
-        Ok(t) => t,
-        Err(resp) => return resp,
+        }
     };
 
     // Decode JWT
     let user = match decode_session_jwt(&token) {
         Ok(u) => u,
-        Err(_) => {
+        Err(e) => {
+            tracing::debug!("JWT decode failed: {}", e);
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({"error":"unauthorized","message":"invalid_token"})),
@@ -270,7 +270,8 @@ pub async fn require_user(
     // Verify session in DB
     let session_id = match uuid::Uuid::parse_str(&user.session_id) {
         Ok(id) => id,
-        Err(_) => {
+        Err(e) => {
+            tracing::debug!("Invalid session_id format: {}", e);
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({"error":"unauthorized","message":"invalid_session_id"})),
@@ -287,8 +288,21 @@ pub async fn require_user(
             req.extensions_mut().insert(user);
             next.run(req).await
         }
-        Ok(false) | Err(_) => {
+        Ok(false) => {
+            tracing::debug!(
+                "Session verification failed: session_id={}, token_hash={}",
+                session_id,
+                token_hash
+            );
             // Session invalid, expired, or revoked
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error":"unauthorized","message":"session_invalid_or_expired"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::debug!("Session verification error: {}", e);
             (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({"error":"unauthorized","message":"session_invalid_or_expired"})),
@@ -466,25 +480,52 @@ pub async fn verify_session_db(
     session_id: uuid::Uuid,
     token_hash: &str,
 ) -> anyhow::Result<bool> {
+    // First check if session exists at all (for early return)
+    let session_exists: Option<(String, bool, bool)> = sqlx::query_as(
+        "SELECT session_token_hash, expires_at > NOW() as not_expired, revoked_at IS NULL as not_revoked 
+         FROM user_sessions WHERE id = $1"
+    )
+    .bind(session_id)
+    .fetch_optional(db)
+    .await?;
+
+    // First check if session exists at all (for early return)
+    let session_exists: Option<(String, bool, bool)> = sqlx::query_as(
+        "SELECT session_token_hash, expires_at > NOW() as not_expired, revoked_at IS NULL as not_revoked 
+         FROM user_sessions WHERE id = $1"
+    )
+    .bind(session_id)
+    .fetch_optional(db)
+    .await?;
+
+    if session_exists.is_none() {
+        return Ok(false);
+    }
+
+    // Fetch the row and compare hash in Rust (avoids SQL string comparison issues)
+    // Use a small buffer for expires_at comparison to avoid race conditions
     let row: Option<SessionRow> = sqlx::query_as(
         r#"
         SELECT id, user_id, current_organization_id, organization_role,
-               session_token_hash, ip_address, user_agent,
+               session_token_hash, ip_address::text as ip_address, user_agent,
                created_at, last_used_at, expires_at, revoked_at
         FROM user_sessions
         WHERE id = $1
           AND revoked_at IS NULL
-          AND expires_at > NOW()
-          AND session_token_hash = $2
+          AND expires_at > (NOW() - INTERVAL '1 second')
         LIMIT 1
         "#,
     )
     .bind(session_id)
-    .bind(token_hash)
     .fetch_optional(db)
     .await?;
 
-    Ok(row.is_some())
+    let result = match row {
+        Some(row) => row.session_token_hash == token_hash,
+        None => false,
+    };
+
+    Ok(result)
 }
 
 /// Update session's last_used_at timestamp

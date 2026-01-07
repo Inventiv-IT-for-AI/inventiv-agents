@@ -3,7 +3,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useMemo, useState } from "react";
 import type { InstanceStorageInfo } from "@/lib/types";
-import { displayOrDash } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
 import { fr } from "date-fns/locale";
 import { HardDrive, Trash2, CheckCircle2, Clock, AlertCircle } from "lucide-react";

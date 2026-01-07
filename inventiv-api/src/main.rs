@@ -30,6 +30,7 @@ mod rbac;
 mod settings;
 mod simple_logger;
 mod users_endpoint;
+mod version;
 mod workbench;
 mod worker_routing;
 
