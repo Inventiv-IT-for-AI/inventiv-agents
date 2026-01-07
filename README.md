@@ -27,7 +27,8 @@
 - ✅ **FinOps (costs/forecast)**: Tracking of real and forecasted costs by instance/type/region/provider, time windows (minute/hour/day/30d/365d)
 - ✅ **Frontend (web console)**: Next.js dashboard with FinOps monitoring, instance management, settings (providers/zones/types), action logs
 - ✅ **Version Display**: Frontend and backend version information displayed in UI (discrete badge with hover details)
-- ✅ **Auth (JWT session + users)**: Cookie-based session authentication, user management, automatic admin bootstrap
+- ✅ **Auth (JWT session + users)**: Cookie-based session authentication, user management, automatic admin bootstrap, multi-session support with organization context
+- ✅ **Session Management**: List and revoke active sessions, session verification in DB, proper error handling with redirect to login
 - ✅ **Worker Auth (token per instance)**: Secure worker authentication with hashed tokens in DB, automatic bootstrap
 
 ## Architecture (Overview)
@@ -348,9 +349,11 @@ psql "postgresql://postgres:password@localhost:5432/llminfra" -f seeds/catalog_s
 **JWT Session** (cookie):
 - `POST /auth/login`: Login (username or email)
 - `POST /auth/logout`: Logout
-- `GET /auth/me`: User profile
+- `GET /auth/me`: User profile (includes `current_organization_role`)
 - `PUT /auth/me`: Update profile
 - `PUT /auth/me/password`: Change password
+- `GET /auth/sessions`: List all active sessions for current user
+- `POST /auth/sessions/{session_id}/revoke`: Revoke a specific session
 - `GET /auth/sessions`: List active sessions
 - `POST /auth/sessions/:id/revoke`: Revoke a session
 

@@ -208,7 +208,7 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 - ✅ **Code Reorganization**: Refactoring majeur de `main.rs` (~3500 lignes → ~86 lignes), extraction en modules `config/`, `setup/`, `routes/`, `handlers/` pour meilleure maintenabilité.
 - ✅ **Integration Tests**: Infrastructure de tests d'intégration avec `axum-test`, tests pour auth, deployments, instances (Mock provider uniquement pour éviter coûts cloud).
 - ✅ **Axum 0.8 Upgrade**: Migration vers `axum 0.8` et `axum-test 18.0`, corrections pour `async_trait`, `SwaggerUi`, `FromRequestParts`, compatibilité OpenAPI avec `utoipa 5.4`.
-- ⏳ **Architecture Sessions Multi-Org**: Table `user_sessions` pour plusieurs sessions simultanées avec orgs différentes (voir `docs/SESSION_ARCHITECTURE_PROPOSAL.md`).
+- ✅ **Architecture Sessions Multi-Org**: Table `user_sessions` créée, migrations appliquées, endpoints GET/POST /auth/sessions implémentés, UI SessionsDialog créée, tests d'intégration ajoutés (voir `docs/SESSION_IMPLEMENTATION_STATUS.md`).
 - ⏳ **Scoping Instances**: Isoler instances par `organization_id` + RBAC.
 - ⏳ **Scoping Models**: Isoler modèles par `organization_id` + visibilité publique/privée.
 - ⏳ **Invitations**: Inviter users par email dans une organisation.
