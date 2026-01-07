@@ -1,173 +1,173 @@
 # Inventiv Agents Platform
 
-## 1. Objectif du Projet
-**Inventiv Agents** est une infrastructure **Souveraine**, **Open-Source** et **Agnostique du Cloud** permettant de déployer, gérer et scaler des modèles de langage (LLM) à la demande.
+## 1. Project Objective
+**Inventiv Agents** is a **Sovereign**, **Open-Source**, and **Cloud-Agnostic** infrastructure for deploying, managing, and scaling Language Models (LLM) on demand.
 
-L'objectif est de fournir une couche d'orchestration intelligente capable de :
-*   Provisionner dynamiquement des ressources GPU (via Scaleway, AWS, ou On-Premise).
-*   Déployer des modèles LLM (via vLLM, TGI, etc.) de manière standardisée.
-*   Exposer ces modèles via une API unique compatible OpenAI.
-*   Gérer le cycle de vie complet : du "Model Definition" au "Scaling-to-Zero".
+The objective is to provide an intelligent orchestration layer capable of:
+*   Dynamically provisioning GPU resources (via Scaleway, AWS, or On-Premise).
+*   Deploying LLM models (via vLLM, TGI, etc.) in a standardized manner.
+*   Exposing these models via a single OpenAI-compatible API.
+*   Managing the complete lifecycle: from "Model Definition" to "Scaling-to-Zero".
 
-## 2. Architecture Technique
-Le système repose sur une séparation stricte des responsabilités (Pattern **CQRS / Event-Driven**) pour garantir la scalabilité et la robustesse.
+## 2. Technical Architecture
+The system relies on strict separation of responsibilities (**CQRS / Event-Driven** pattern) to ensure scalability and robustness.
 
-### Composants & Responsabilités
+### Components & Responsibilities
 
 #### 1. Inventiv Backend (Product Plane - Synchronous)
-*   **Rôle** : Interface purement transactionnelle orientée HTTP Request/Response.
-*   **Responsabilités** :
-    *   Gère l'API publique (hors inférence), l'Authentification, le Billing, et le contrôle d'accès.
-    *   Effectue les lectures/écritures d'état "Business" dans la BDD.
-    *   **Ne réalise aucune tâche de fond** ni traitement asynchrone.
-    *   Notifie le système des changements d'intention (ex: "User veut déployer X") via Events/DB.
-    *   Relais Temps-Réel : pousse les notifications vers le Frontend (MVP: **SSE** côté API).
+*   **Role**: Purely transactional HTTP Request/Response interface.
+*   **Responsibilities**:
+    *   Manages public API (excluding inference), Authentication, Billing, and access control.
+    *   Performs "Business" state reads/writes in the database.
+    *   **Does not perform any background tasks** or asynchronous processing.
+    *   Notifies the system of intent changes (e.g., "User wants to deploy X") via Events/DB.
+    *   Real-time Relay: pushes notifications to the Frontend (MVP: **SSE** on API side).
 
 #### 2. Inventiv Orchestrator (Control Plane - Asynchronous)
-*   **Rôle** : Moteur d'exécution et de surveillance (Invisible du public).
-*   **Responsabilités** :
-    *   Gère **toutes** les tâches asynchrones et jobs de fond (Monitoring, Scaling, Provisioning).
-    *   Supervise les Instances, le Trafic, et les Compteurs de consommation (Tokens).
-    *   Communiqué avec les Workers et le Router.
-    *   **N'expose aucun endpoint public** et n'interagit jamais directement avec les utilisateurs.
-*   **Pattern de Communication** :
-    *   **Ecritures** : Met à jour l'état technique dans PostgreSQL (Status des instances, IPs).
-    *   **Lecture/Réaction** : Consomme les événements du Backend (via Redis Pub/Sub) pour déclencher des actions immédiates (Scale Up, Block API Key).
+*   **Role**: Execution and monitoring engine (invisible to the public).
+*   **Responsibilities**:
+    *   Manages **all** asynchronous tasks and background jobs (Monitoring, Scaling, Provisioning).
+    *   Supervises Instances, Traffic, and consumption counters (Tokens).
+    *   Communicates with Workers and the Router.
+    *   **Exposes no public endpoints** and never interacts directly with users.
+*   **Communication Pattern**:
+    *   **Writes**: Updates technical state in PostgreSQL (Instance statuses, IPs).
+    *   **Read/React**: Consumes Backend events (via Redis Pub/Sub) to trigger immediate actions (Scale Up, Block API Key).
 
-##### Autoscaling (objectif)
-Dans le scénario “simple” (Docker Compose sur quelques machines), l’Orchestrator porte aussi un composant **Autoscaler**:
-- **Input**: signaux de charge/capacité (queue depth, latence/TTFT, GPU util, erreurs) + objectifs par pool/modèle.
-- **Decision**: calcule une capacité désirée (min/max) par pool.
-- **Action**: appelle le provider (Scaleway) pour **créer/terminer** des instances, en appliquant une politique **drain → terminate**.
+##### Autoscaling (objective)
+In the "simple" scenario (Docker Compose on a few machines), the Orchestrator also hosts an **Autoscaler** component:
+- **Input**: load/capacity signals (queue depth, latency/TTFT, GPU util, errors) + objectives per pool/model.
+- **Decision**: calculates desired capacity (min/max) per pool.
+- **Action**: calls the provider (Scaleway) to **create/terminate** instances, applying a **drain → terminate** policy.
 
-#### 3. Inventiv Router (Data Plane) — *statut*
-*   **Prévu** (OpenAI-compatible), mais **non présent** dans le repo à ce stade.
-*   **État actuel (repo)**: `inventiv-api` expose déjà les endpoints OpenAI-compatible (`/v1/*`) et route vers les workers disponibles.
-*   La doc “Router” reste utile pour la cible produit, mais doit être lue comme **roadmap** tant que ce service n’est pas réintroduit.
+#### 3. Inventiv Router (Data Plane) — *status*
+*   **Planned** (OpenAI-compatible), but **not present** in the repo at this stage.
+*   **Current state (repo)**: `inventiv-api` already exposes OpenAI-compatible endpoints (`/v1/*`) and routes to available workers.
+*   The "Router" documentation remains useful for the product target, but should be read as **roadmap** until this service is reintroduced.
 
 #### 4. Inventiv Worker (Agent Sidecar)
-*   Déployé sur les instances GPU.
-*   Pilote localement le moteur d'inférence (vLLM).
-*   **Objectif 0.2.1**: exposer une **readiness fiable** (`/readyz`) et remonter des **heartbeats/capacity** au control plane.
+*   Deployed on GPU instances.
+*   Locally drives the inference engine (vLLM).
+*   **Objective 0.2.1**: expose reliable **readiness** (`/readyz`) and report **heartbeats/capacity** to the control plane.
 
 ##### Worker ↔ Control Plane (via API / Gateway)
-Dans l’architecture cible (staging/prod), le Worker **ne parle pas directement** à l’orchestrator:
-- Le Worker appelle le **domaine API** (gateway) sur:
+In the target architecture (staging/prod), the Worker **does not speak directly** to the orchestrator:
+- The Worker calls the **API domain** (gateway) on:
   - `POST /internal/worker/register`
   - `POST /internal/worker/heartbeat`
-- L’API (ou l’edge: Nginx/Caddy) **proxy** ces endpoints vers `inventiv-orchestrator`.
+- The API (or edge: Nginx/Caddy) **proxies** these endpoints to `inventiv-orchestrator`.
 
-Cela permet:
-- d’éviter d’exposer l’orchestrator publiquement,
-- de garder un `CONTROL_PLANE_URL` stable (API domain) en dev/staging/prod.
+This allows:
+- avoiding exposing the orchestrator publicly,
+- keeping a stable `CONTROL_PLANE_URL` (API domain) in dev/staging/prod.
 
-##### Auth Worker (token par instance + bootstrap)
-Le Worker s’authentifie avec un token associé à une **instance** (`instances.id`):
-- **Stockage DB**: table `worker_auth_tokens` (hash du token, prefix, timestamps).
-- **Bootstrap**: lors du 1er `register`, si aucun token n’existe encore pour `instance_id`,
-  l’orchestrator peut générer un token et le renvoyer au worker (plaintext **uniquement** dans la réponse).
-- **Requêtes suivantes**: `Authorization: Bearer <token>` requis (register/heartbeat).
+##### Auth Worker (token per instance + bootstrap)
+The Worker authenticates with a token associated with an **instance** (`instances.id`):
+- **DB Storage**: `worker_auth_tokens` table (token hash, prefix, timestamps).
+- **Bootstrap**: on first `register`, if no token exists yet for `instance_id`,
+  the orchestrator can generate a token and return it to the worker (plaintext **only** in the response).
+- **Subsequent requests**: `Authorization: Bearer <token>` required (register/heartbeat).
 
 Important:
-- derrière un proxy, l’orchestrator utilise `X-Forwarded-For` (sinon fallback sur l’IP socket).
-- l’edge/gateway doit être configuré pour **écraser** `X-Forwarded-For` côté client (anti-spoofing),
-  ou pour ne faire confiance à `X-Forwarded-For` que depuis le réseau interne.
+- behind a proxy, the orchestrator uses `X-Forwarded-For` (otherwise fallback on socket IP).
+- the edge/gateway must be configured to **overwrite** `X-Forwarded-For` on client side (anti-spoofing),
+  or to only trust `X-Forwarded-For` from the internal network.
 
 ##### Auth User (session)
-L’UI + l’API publique “produit” sont protégées par une **session** (cookie JWT):
-- `POST /auth/login` (login = username ou email) → pose un cookie de session
-- `POST /auth/logout` → invalide la session côté client (cookie)
-- `GET/PUT /auth/me` + `PUT /auth/me/password` (profil + changement MDP)
-- Tous les endpoints métier de `inventiv-api` sont protégés (401 sans session).
+The UI + public "product" API are protected by a **session** (JWT cookie):
+- `POST /auth/login` (login = username or email) → sets a session cookie
+- `POST /auth/logout` → invalidates session on client side (cookie)
+- `GET/PUT /auth/me` + `PUT /auth/me/password` (profile + password change)
+- All business endpoints of `inventiv-api` are protected (401 without session).
 
-Bootstrap admin:
-- au démarrage, `inventiv-api` peut créer `username=admin` si absent
-- le mot de passe est lu depuis `DEFAULT_ADMIN_PASSWORD_FILE` (secret file monté dans `/run/secrets`)
+Admin bootstrap:
+- on startup, `inventiv-api` can create `username=admin` if absent
+- password is read from `DEFAULT_ADMIN_PASSWORD_FILE` (secret file mounted in `/run/secrets`)
 
-### Flux de Communication & Données
+### Communication & Data Flow
 
 1.  **Backend -> Orchestrator** :
-    *   **State (Cold)** : Le Backend écrit l'intention dans PostgreSQL (ex: `INSERT INTO instances status='provisioning'`).
-    *   **Event (Hot)** : Le Backend publie un événement Redis (ex: `CMD:PROVISION_INSTANCE`) pour réveil immédiat de l'Orchestrateur, évitant le polling fréquent.
+    *   **State (Cold)** : The Backend writes intent in PostgreSQL (e.g., `INSERT INTO instances status='provisioning'`).
+    *   **Event (Hot)** : The Backend publishes a Redis event (e.g., `CMD:PROVISION_INSTANCE`) for immediate Orchestrator wake-up, avoiding frequent polling.
 
 2.  **Orchestrator -> Backend (via DB/Redis)** :
-    *   L'Orchestrateur met à jour le statut dans la DB (`Booting` -> `Ready`).
-    *   L’API expose un flux **SSE** (`GET /events/stream`) et l’UI s’y abonne (instances/actions) pour rafraîchir quasi temps-réel.
+    *   The Orchestrator updates status in the DB (`Booting` -> `Ready`).
+    *   The API exposes an **SSE** stream (`GET /events/stream`) and the UI subscribes (instances/actions) for near real-time refresh.
 
 3.  **Monitoring & Scaling** :
-    *   L'Orchestrateur collecte les métriques (Workers/Router) en temps réel.
-    *   Il décide seul des actions de Scaling (Up/Down) et notifie le système via DB update + Event.
+    *   The Orchestrator collects metrics (Workers/Router) in real time.
+    *   It alone decides Scaling actions (Up/Down) and notifies the system via DB update + Event.
 
 ---
 
-## 2.1 Déploiement “simple” multi-machines (Docker Compose)
+## 2.1 "Simple" Multi-Machine Deployment (Docker Compose)
 
-### Principe
-- **1 machine control-plane**: `inventiv-api`, `inventiv-orchestrator`, `postgres`, `redis`
-- **N machines GPU**: `inventiv-worker` (agent + vLLM) + volume cache modèles
+### Principle
+- **1 control-plane machine**: `inventiv-api`, `inventiv-orchestrator`, `postgres`, `redis`
+- **N GPU machines**: `inventiv-worker` (agent + vLLM) + model cache volume
 
-### Réseau
-Docker Compose ne gère pas un réseau overlay multi-host. On utilise donc un réseau privé entre machines:
-- recommandé: **Tailscale**
+### Network
+Docker Compose does not manage a multi-host overlay network. We therefore use a private network between machines:
+- recommended: **Tailscale**
 - alternative: **WireGuard**
 
-Le Worker envoie ensuite ses heartbeats au control-plane via l’IP privée (tailnet).
+The Worker then sends its heartbeats to the control-plane via the private IP (tailnet).
 
-### Modèle de Données (Simplifié)
-*   **User** : Propriétaire des ressources.
-*   **Provider** : Abstraction du Cloud (ex: Scaleway).
-*   **InstanceType** : Définition hardware (ex: "RENDER-S", 1 GPU L4, 24GB VRAM).
-*   **LlmModel** (Le "Model-Code") : Définition virtuelle d'un service (ex: "My-Llama3-Sales-Bot") mappé à un *model_id* technique (ex: `meta-llama/Llama-3-70b-chat-hf`) et des contraintes hardware.
-*   **Instance** : Une machine virtuelle réelle provisionnée.
+### Data Model (Simplified)
+*   **User**: Resource owner.
+*   **Provider**: Cloud abstraction (e.g., Scaleway).
+*   **InstanceType**: Hardware definition (e.g., "RENDER-S", 1 GPU L4, 24GB VRAM).
+*   **LlmModel** (The "Model-Code"): Virtual service definition (e.g., "My-Llama3-Sales-Bot") mapped to a technical *model_id* (e.g., `meta-llama/Llama-3-70b-chat-hf`) and hardware constraints.
+*   **Instance**: A real provisioned virtual machine.
 
 ---
 
-## 3. Workflow de Gestion de Modèle (Lifecycle)
+## 3. Model Management Workflow (Lifecycle)
 
-Ce workflow décrit le processus complet, de la définition du besoin ("Je veux faire tourner Llama 3") jusqu'au décommissionnement.
+This workflow describes the complete process, from need definition ("I want to run Llama 3") to decommissioning.
 
-### Phase 1 : Définition & Matching
-1.  **Intention** : L'utilisateur veut exécuter un modèle LLM spécifique (ex: Llama 3 70B).
-2.  **Contraintes** : Il définit les besoins Hardware :
-    *   Nombre de GPUs (ex: 2).
-    *   VRAM par GPU nécessaire (ex: 80GB total -> 2x40GB ou 1x80GB).
-3.  **Choix du Provider** : Le système (ou l'utilisateur) filtre les providers capables de fournir ce type de ressource (ex: Scaleway via Instances H100 ou L40S).
+### Phase 1: Definition & Matching
+1.  **Intent**: The user wants to run a specific LLM model (e.g., Llama 3 70B).
+2.  **Constraints**: They define Hardware needs:
+    *   Number of GPUs (e.g., 2).
+    *   VRAM per GPU required (e.g., 80GB total -> 2x40GB or 1x80GB).
+3.  **Provider Choice**: The system (or user) filters providers capable of providing this type of resource (e.g., Scaleway via H100 or L40S Instances).
 
-### Phase 2 : Allocation & Provisioning
-4.  **Ciblage** : L'utilisateur (via API/UI) sélectionne les paramètres d'allocation (Zone géographique, Type d'instance précis).
-5.  **Vérification** : Le système vérifie la disponibilité (Quota, Stock Provider via API, ou contraintes internes).
-6.  **Provisioning** : L'Orchestrateur lance la création des instances réelles (`POST /instances/provision`).
-    *   *Action technique* : Appel API Cloud (ex: Scaleway `create_server` + `poweron`).
-7.  **Health Check** : L'instance démarre, le `Worker Agent` s'initialise, télécharge le modèle, et signale "READY" à l'Orchestrateur.
+### Phase 2: Allocation & Provisioning
+4.  **Targeting**: The user (via API/UI) selects allocation parameters (Geographic Zone, precise Instance Type).
+5.  **Verification**: The system checks availability (Quota, Provider Stock via API, or internal constraints).
+6.  **Provisioning**: The Orchestrator launches creation of real instances (`POST /instances/provision`).
+    *   *Technical action*: Cloud API call (e.g., Scaleway `create_server` + `poweron`).
+7.  **Health Check**: The instance starts, the `Worker Agent` initializes, downloads the model, and signals "READY" to the Orchestrator.
 
-### Phase 3 : Exposition & Routing
-8.  **Routing Setup** : L'instance est enregistrée comme "Active" pour ce modèle spécifique. Le Routeur met à jour sa table de routage (Redis/In-Memory).
-9.  **Model-Code Virtuel** : Le modèle est exposé publiquement via un identifiant logique (ex: `gpt-4-killer`). C'est ce nom que les clients utiliseront, pas l'IP de la machine.
-10. **Sécurité (API Keys)** : Création de clés d'API (`sk-...`) liées à ce Service Virtuel. Cela permet de révoquer l'accès ou de changer les instances sous-jacentes sans changer le code client.
+### Phase 3: Exposure & Routing
+8.  **Routing Setup**: The instance is registered as "Active" for this specific model. The Router updates its routing table (Redis/In-Memory).
+9.  **Virtual Model-Code**: The model is exposed publicly via a logical identifier (e.g., `gpt-4-killer`). This is the name clients will use, not the machine IP.
+10. **Security (API Keys)**: Creation of API keys (`sk-...`) linked to this Virtual Service. This allows revoking access or changing underlying instances without changing client code.
 
-### Phase 4 : Utilisation & Scaling
-11. **Consommation** : Le client appelle l'API :
+### Phase 4: Usage & Scaling
+11. **Consumption**: The client calls the API:
     ```bash
     curl https://api.inventiv.com/v1/chat/completions -d '{"model": "gpt-4-killer", ...}'
     ```
-12. **Auto-Scaling** :
-    *   *Scale Up* : Si la charge augmente (queue latency), l'Orchestrateur provisionne de nouvelles instances (retour étape 6).
-    *   *Scale Down* : Si inactivité, les instances surnuméraires sont drainées puis terminées.
+12. **Auto-Scaling**:
+    *   *Scale Up*: If load increases (queue latency), the Orchestrator provisions new instances (back to step 6).
+    *   *Scale Down*: If inactivity, surplus instances are drained then terminated.
 
-### Phase 5 : Fin de Vie
-13. **Décommissionnement** :
-    *   Suppression du Model-Code Virtuel.
-    *   L'Orchestrateur envoie l'ordre `terminate` à **toutes** les instances associées.
-    *   Nettoyage complet des ressources Cloud (Disques, IPs) pour arrêter la facturation.
-    *   Archivage des logs d'usage.
+### Phase 5: End of Life
+13. **Decommissioning**:
+    *   Deletion of Virtual Model-Code.
+    *   The Orchestrator sends `terminate` order to **all** associated instances.
+    *   Complete cleanup of Cloud resources (Disks, IPs) to stop billing.
+    *   Archiving of usage logs.
 
 ---
 
-## 4. API Endpoints (État Actuel MVP)
+## 4. API Endpoints (Current MVP State)
 
 ### Orchestrator (`:8001`)
-*   `GET /admin/status` : état du cluster (instances count, etc.).
-*   Provisioning/termination sont principalement déclenchés via **Redis Pub/Sub** (`CMD:*`) publiés par l’API.
+*   `GET /admin/status`: cluster state (instances count, etc.).
+*   Provisioning/termination are mainly triggered via **Redis Pub/Sub** (`CMD:*`) published by the API.
 
 ### Router (`:8002`)
-*   **Non présent** à date (voir section Router).
+*   **Not present** to date (see Router section).

@@ -1,81 +1,81 @@
 # Domain Design & Data Structures (DDD)
 
-**Date de mise à jour** : 2025-01-XX  
-**Vision** : Multi-tenant avec Users first-class + Organisations + RBAC + Double Activation
+**Last updated**: 2025-01-XX  
+**Vision**: Multi-tenant with Users first-class + Organizations + RBAC + Double Activation
 
 ---
 
-## 1. Ubiquitous Language (Langage Commun)
+## 1. Ubiquitous Language
 
 ### Infrastructure & Compute
-*   **Provider**: Un fournisseur d'infrastructure (ex: Scaleway, AWS, Mock).
-*   **Instance (Node)**: Une machine virtuelle ou bare-metal fournie par un Provider. Elle possède une IP et des ressources GPU.
-*   **Worker**: Le processus (Conteneur) qui s'exécute sur une Instance pour servir des modèles.
-*   **Model**: Un modèle LLM spécifique (ex: `llama-3-70b-instruct`) avec des pré-requis techniques.
-*   **Deployment**: L'association d'un Modèle sur une Instance.
+*   **Provider**: An infrastructure provider (e.g., Scaleway, AWS, Mock).
+*   **Instance (Node)**: A virtual machine or bare-metal provided by a Provider. It has an IP and GPU resources.
+*   **Worker**: The process (Container) that runs on an Instance to serve models.
+*   **Model**: A specific LLM model (e.g., `llama-3-70b-instruct`) with technical prerequisites.
+*   **Deployment**: The association of a Model on an Instance.
 
 ### Multi-Tenant & Workspace
-*   **Workspace**: Le contexte actif d'un utilisateur (Personal ou Organisation).
-  *   **Personal**: Mode utilisateur sans organisation (`current_organization_id = NULL`)
-  *   **Organization**: Mode utilisateur avec organisation (`current_organization_id != NULL`)
-*   **Session**: Une session utilisateur avec un workspace spécifique (peut avoir plusieurs sessions simultanées avec des workspaces différents).
+*   **Workspace**: The active context of a user (Personal or Organization).
+  *   **Personal**: User mode without organization (`current_organization_id = NULL`)
+  *   **Organization**: User mode with organization (`current_organization_id != NULL`)
+*   **Session**: A user session with a specific workspace (can have multiple simultaneous sessions with different workspaces).
 
 ### Account & Subscription Plans
-*   **Account Plan (User)**: Plan de souscription d'un utilisateur (`free` | `subscriber`).
-  *   **Free**: Compte gratuit (`account_plan = 'free'`)
-  *   **Subscriber**: Compte abonné (`account_plan = 'subscriber'`)
-*   **Subscription Plan (Organization)**: Plan de souscription d'une organisation (`free` | `subscriber`).
-  *   **Free**: Organisation gratuite (`subscription_plan = 'free'`)
-  *   **Subscriber**: Organisation abonnée (`subscription_plan = 'subscriber'`)
+*   **Account Plan (User)**: User subscription plan (`free` | `subscriber`).
+  *   **Free**: Free account (`account_plan = 'free'`)
+  *   **Subscriber**: Subscribed account (`account_plan = 'subscriber'`)
+*   **Subscription Plan (Organization)**: Organization subscription plan (`free` | `subscriber`).
+  *   **Free**: Free organization (`subscription_plan = 'free'`)
+  *   **Subscriber**: Subscribed organization (`subscription_plan = 'subscriber'`)
 
-**Règle importante** : Le plan s'applique selon le **workspace (session) actif** :
-- Session Personal → `users.account_plan` s'applique
-- Session Organisation A → `organizations.subscription_plan` (org A) s'applique
-- Session Organisation B → `organizations.subscription_plan` (org B) s'applique
-- Si switch de workspace, le plan change immédiatement
+**Important rule**: The plan applies according to the **active workspace (session)**:
+- Personal Session → `users.account_plan` applies
+- Organization A Session → `organizations.subscription_plan` (org A) applies
+- Organization B Session → `organizations.subscription_plan` (org B) applies
+- If workspace switches, the plan changes immediately
 
 ### Wallet & Billing
-*   **Wallet User**: Solde tokens personnel (`users.wallet_balance_eur`).
-*   **Wallet Organisation**: Solde tokens organisation (`organizations.wallet_balance_eur`).
+*   **Wallet User**: Personal token balance (`users.wallet_balance_eur`).
+*   **Wallet Organization**: Organization token balance (`organizations.wallet_balance_eur`).
 
-**Règle importante** : Le wallet utilisé dépend du **workspace (session) actif** :
-- Session Personal → débit depuis `users.wallet_balance_eur`
-- Session Organisation A → débit depuis `organizations.wallet_balance_eur` (org A)
-- Session Organisation B → débit depuis `organizations.wallet_balance_eur` (org B)
+**Important rule**: The wallet used depends on the **active workspace (session)**:
+- Personal Session → debit from `users.wallet_balance_eur`
+- Organization A Session → debit from `organizations.wallet_balance_eur` (org A)
+- Organization B Session → debit from `organizations.wallet_balance_eur` (org B)
 
 ### Organization Roles (RBAC)
-*   **Owner**: Propriétaire (`organization_role = 'owner'`) - Peut tout faire, doit faire double activation explicitement.
-*   **Admin**: Administrateur technique (`organization_role = 'admin'`) - Gère infrastructure, instances, models, peut activer tech uniquement.
-*   **Manager**: Gestionnaire financier (`organization_role = 'manager'`) - Gère finances, prix, autorisations, peut activer eco uniquement.
-*   **User**: Utilisateur (`organization_role = 'user'`) - Utilise les ressources, pas de permissions d'administration.
+*   **Owner**: Owner (`organization_role = 'owner'`) - Can do everything, must do double activation explicitly.
+*   **Admin**: Technical administrator (`organization_role = 'admin'`) - Manages infrastructure, instances, models, can activate tech only.
+*   **Manager**: Financial manager (`organization_role = 'manager'`) - Manages finances, prices, authorizations, can activate eco only.
+*   **User**: User (`organization_role = 'user'`) - Uses resources, no administration permissions.
 
 ### Model Visibility & Access
-*   **Visibility**: Qui peut *voir* l'offering (`public` | `unlisted` | `private`).
-  *   **Public**: Visible à tous (`visibility = 'public'`)
-  *   **Unlisted**: Non listé mais accessible si autorisé (`visibility = 'unlisted'`)
-  *   **Private**: Visible uniquement aux membres org (`visibility = 'private'`)
-*   **Access Policy**: Dans quelles conditions on peut *utiliser* l'offering (`free` | `subscription_required` | `request_required` | `pay_per_token` | `trial`).
-  *   **Free**: Usage gratuit (`access_policy = 'free'`)
-  *   **Subscription Required**: Réservé aux abonnés (`access_policy = 'subscription_required'`)
-  *   **Request Required**: Demande d'accès requise (`access_policy = 'request_required'`)
-  *   **Pay Per Token**: Facturation au token (`access_policy = 'pay_per_token'`)
-  *   **Trial**: Gratuit jusqu'à date/quota (`access_policy = 'trial'`)
+*   **Visibility**: Who can *see* the offering (`public` | `unlisted` | `private`).
+  *   **Public**: Visible to all (`visibility = 'public'`)
+  *   **Unlisted**: Not listed but accessible if authorized (`visibility = 'unlisted'`)
+  *   **Private**: Visible only to org members (`visibility = 'private'`)
+*   **Access Policy**: Under what conditions one can *use* the offering (`free` | `subscription_required` | `request_required` | `pay_per_token` | `trial`).
+  *   **Free**: Free usage (`access_policy = 'free'`)
+  *   **Subscription Required**: Reserved for subscribers (`access_policy = 'subscription_required'`)
+  *   **Request Required**: Access request required (`access_policy = 'request_required'`)
+  *   **Pay Per Token**: Token-based billing (`access_policy = 'pay_per_token'`)
+  *   **Trial**: Free until date/quota (`access_policy = 'trial'`)
 
 ### Double Activation
-*   **Tech Activation**: Activation technique (`tech_activated_by`, `tech_activated_at`) - Admin/Owner uniquement.
-*   **Eco Activation**: Activation économique (`eco_activated_by`, `eco_activated_at`) - Manager/Owner uniquement.
-*   **Operational**: Ressource opérationnelle (`is_operational = true`) - Requiert les deux activations.
+*   **Tech Activation**: Technical activation (`tech_activated_by`, `tech_activated_at`) - Admin/Owner only.
+*   **Eco Activation**: Economic activation (`eco_activated_by`, `eco_activated_at`) - Manager/Owner only.
+*   **Operational**: Operational resource (`is_operational = true`) - Requires both activations.
 
-**Règle importante** : Même si Owner a les deux rôles (Admin + Manager), il doit faire la double activation explicitement. C'est une règle de gouvernance pour éviter les erreurs.
+**Important rule**: Even if Owner has both roles (Admin + Manager), they must do double activation explicitly. This is a governance rule to avoid errors.
 
 ## 2. Domain Entities (Rust Structs)
 
-Ces structures seront définies dans `inventiv-common`.
+These structures will be defined in `inventiv-common`.
 
 ### A. Core Entities
 
 #### `LlmModel` (Aggregate Root)
-Définit un modèle disponible dans le catalogue.
+Defines a model available in the catalog.
 ```rust
 pub struct LlmModel {
     pub id: Uuid,
@@ -89,7 +89,7 @@ pub struct LlmModel {
 ```
 
 #### `Instance` (Entity)
-Représente une ressource compute provisionnée.
+Represents a provisioned compute resource.
 ```rust
 pub struct Instance {
     pub id: Uuid,
@@ -104,32 +104,35 @@ pub struct Instance {
 ```
 
 #### `InstanceStatus` (Enum/State Machine)
-Cycle de vie rigoureux avec transitions explicites.
+Rigorous lifecycle with explicit transitions.
 
-**États principaux** :
-*   `Provisioning`: Demandé au provider, en attente.
-*   `Booting`: Instance up, mais Worker pas encore prêt.
-*   `Ready`: Worker prêt à recevoir du trafic (Healthcheck OK).
-*   `Draining`: En cours d'arrêt, ne prend plus de nouvelles requêtes.
-*   `Terminating`: En cours de suppression chez le provider.
-*   `Terminated`: Détruite chez le provider.
-*   `Archived`: Archivée (supprimée de la vue active).
+**Main states**:
+*   `Provisioning`: Requested from provider, pending.
+*   `Booting`: Instance being created, not yet started.
+*   `Installing`: Instance up, but Worker being installed.
+*   `Starting`: Instance up and running, but Worker still finalizing (model download, warming, etc.).
+*   `Ready`: Worker ready to receive traffic (Healthcheck OK).
+*   `Draining`: Shutting down, no longer accepting new requests.
+*   `Terminating`: Being deleted at provider.
+*   `Terminated`: Destroyed at provider.
+*   `Archived`: Archived (removed from active view).
 
-**États d'erreur** :
-*   `ProvisioningFailed`: Échec lors de la création de l'instance chez le provider.
-*   `StartupFailed`: Échec lors du démarrage ou de la configuration du worker.
-*   `Failed`: État générique d'échec.
+**Error/recovery states**:
+*   `Unavailable`: Instance inaccessible or unavailable, to reconnect and diagnose to return to Ready or decommission.
+*   `ProvisioningFailed`: Failure during instance creation at provider.
+*   `StartupFailed`: Failure during startup or worker configuration.
+*   `Failed`: Generic failure state.
 
-**Transitions** : Gérées par des fonctions explicites dans `inventiv-orchestrator/src/state_machine.rs`.
+**Transitions**: Managed by explicit functions in `inventiv-orchestrator/src/state_machine.rs`.
 
-> **Voir** : [docs/STATE_MACHINE_AND_PROGRESS.md](STATE_MACHINE_AND_PROGRESS.md) pour les détails complets sur les transitions, l'historique, et le progress tracking.
+> **See**: [docs/STATE_MACHINE_AND_PROGRESS.md](STATE_MACHINE_AND_PROGRESS.md) for complete details on transitions, history, and progress tracking.
 
 ## 3. Storage Strategy
 
-Nous séparons le "Cold Storage" (Configuration/Historique) du "Hot Storage" (Routing Temps Réel).
+We separate "Cold Storage" (Configuration/History) from "Hot Storage" (Real-time Routing).
 
 ### A. PostgreSQL (System of Record - Orchestrator)
-Gestion de la vérité terrain et de l'historique.
+Management of ground truth and history.
 
 ```sql
 -- users (multi-tenant: users first-class)
@@ -141,7 +144,7 @@ CREATE TABLE users (
     role VARCHAR(50) DEFAULT 'admin',  -- User global role (admin|user)
     account_plan TEXT DEFAULT 'free' NOT NULL,  -- Account plan (free|subscriber)
     account_plan_updated_at TIMESTAMPTZ,
-    wallet_balance_eur NUMERIC(10,2) DEFAULT 0 NOT NULL,  -- Wallet personnel
+    wallet_balance_eur NUMERIC(10,2) DEFAULT 0 NOT NULL,  -- Personal wallet
     first_name TEXT,
     last_name TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -156,8 +159,8 @@ CREATE TABLE organizations (
     slug TEXT NOT NULL UNIQUE,
     subscription_plan TEXT DEFAULT 'free' NOT NULL,  -- Subscription plan (free|subscriber)
     subscription_plan_updated_at TIMESTAMPTZ,
-    wallet_balance_eur NUMERIC(10,2) DEFAULT 0 NOT NULL,  -- Wallet organisation
-    sidebar_color TEXT,  -- Couleur sidebar configurable (UX anti-erreur)
+    wallet_balance_eur NUMERIC(10,2) DEFAULT 0 NOT NULL,  -- Organization wallet
+    sidebar_color TEXT,  -- Configurable sidebar color (anti-error UX)
     created_by_user_id UUID REFERENCES users(id),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
@@ -174,7 +177,7 @@ CREATE TABLE organization_memberships (
     CONSTRAINT organization_memberships_role_check CHECK (role IN ('owner', 'admin', 'manager', 'user'))
 );
 
--- user_sessions (multi-sessions avec workspace)
+-- user_sessions (multi-sessions with workspace)
 CREATE TABLE user_sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -235,7 +238,7 @@ CREATE TABLE ssh_keys (
     name VARCHAR(50) NOT NULL,
     public_key TEXT NOT NULL,
     provider_id UUID REFERENCES providers(id),
-    provider_key_id VARCHAR(255), -- ID remote chez le provider
+    provider_key_id VARCHAR(255), -- Remote ID at provider
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -248,15 +251,15 @@ CREATE TABLE models (
     is_active BOOLEAN DEFAULT true
 );
 
--- instances (org-scopées avec double activation)
+-- instances (org-scoped with double activation)
 CREATE TABLE instances (
     id UUID PRIMARY KEY,
     provider_id UUID REFERENCES providers(id),
     zone_id UUID REFERENCES zones(id),
     instance_type_id UUID REFERENCES instance_types(id),
-    organization_id UUID REFERENCES organizations(id) ON DELETE SET NULL,  -- Org-scopé
+    organization_id UUID REFERENCES organizations(id) ON DELETE SET NULL,  -- Org-scoped
     
-    provider_instance_id VARCHAR(255),  -- ID distant
+    provider_instance_id VARCHAR(255),  -- Remote ID
     ip_address INET,
     
     api_key VARCHAR(255), -- Key to call the worker securely
@@ -274,16 +277,16 @@ CREATE TABLE instances (
     
     created_at TIMESTAMPTZ DEFAULT NOW(),
     terminated_at TIMESTAMPTZ,
-    gpu_profile JSONB NOT NULL -- Snapshot des specs
+    gpu_profile JSONB NOT NULL -- Specs snapshot
 );
 
--- models (org-scopés avec double activation)
+-- models (org-scoped with double activation)
 CREATE TABLE models (
     id UUID PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     model_id VARCHAR(255) UNIQUE NOT NULL, -- "llama-3-8b"
     required_vram_gb INT NOT NULL,
-    organization_id UUID REFERENCES organizations(id) ON DELETE SET NULL,  -- Org-scopé (NULL = public)
+    organization_id UUID REFERENCES organizations(id) ON DELETE SET NULL,  -- Org-scoped (NULL = public)
     
     -- Double activation (tech + eco)
     tech_activated_by UUID REFERENCES users(id),
@@ -297,12 +300,12 @@ CREATE TABLE models (
     is_active BOOLEAN DEFAULT true
 );
 
--- organization_models (offerings publiés par orgs)
+-- organization_models (offerings published by orgs)
 CREATE TABLE organization_models (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     model_id UUID NOT NULL REFERENCES models(id) ON DELETE CASCADE,
-    code TEXT NOT NULL,  -- Identifiant org-scopé (ex: "sales-bot")
+    code TEXT NOT NULL,  -- Org-scoped identifier (e.g., "sales-bot")
     visibility TEXT NOT NULL DEFAULT 'private',  -- public|unlisted|private
     access_policy TEXT NOT NULL DEFAULT 'free',  -- free|subscription_required|request_required|pay_per_token|trial
     is_active BOOLEAN DEFAULT true NOT NULL,
@@ -313,7 +316,7 @@ CREATE TABLE organization_models (
     CONSTRAINT organization_models_access_policy_check CHECK (access_policy IN ('free', 'subscription_required', 'request_required', 'pay_per_token', 'trial'))
 );
 
--- organization_model_shares (contrats provider→consumer)
+-- organization_model_shares (provider→consumer contracts)
 CREATE TABLE organization_model_shares (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     provider_organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -343,132 +346,132 @@ CREATE TABLE api_keys (
 ```
 
 ### B. Redis (Real-time Discovery - Router & Orchestrator)
-Le Routeur doit lire ces données en < 1ms sans toucher Postgres.
+The Router must read this data in < 1ms without touching Postgres.
 
 #### Pattern: Set & Hash
-*   **Discovery Set**: Liste des instances actives pour un modèle donné.
+*   **Discovery Set**: List of active instances for a given model.
     *   Key: `catalog:model:{model_id}:instances` (Set)
     *   Value: `{instance_id}`
 
-*   **Instance State**: Détails techniques pour le routing.
+*   **Instance State**: Technical details for routing.
     *   Key: `instance:{instance_id}` (Hash)
     *   Fields:
         *   `ip`: "192.168.1.10"
         *   `port`: "8000"
         *   `status`: "READY"
-        *   `current_load`: "12" (Nombre de requêtes actives - mis à jour par le router/worker)
-        *   `last_heartbeat`: Timestamp (pour expiration automatique)
+        *   `current_load`: "12" (Number of active requests - updated by router/worker)
+        *   `last_heartbeat`: Timestamp (for automatic expiration)
 
 ## 4. CQRS & Event-Driven Architecture (v0.3.2)
-L'architecture a évolué pour séparer strictement les responsabilités (CQRS) et isoler l'Orchestrateur.
+The architecture has evolved to strictly separate responsibilities (CQRS) and isolate the Orchestrator.
 
-### A. Flux de Données
-*   **Frontend**: Ne communique **jamais** avec l'Orchestrateur. Il parle uniquement au Backend (Gateway).
+### A. Data Flow
+*   **Frontend**: Never communicates with the Orchestrator. It only talks to the Backend (Gateway).
 *   **Backend (Product Plane)**:
-    *   **Read Model**: Lit directement la DB (Postgres) pour les requêtes (GET /instances).
-    *   **Write Model**: Valide les requêtes et publie des **Commandes** dans Redis (`orchestrator_events`).
-*   **Orchestrateur (Control Plane)**:
-    *   Agit comme un **Worker**.
-    *   Écoute les événements Redis (`CMD:PROVISION`, `CMD:TERMINATE`).
-    *   Exécute les opérations IaaS (Scaleway, AWS).
-    *   Met à jour la "Vérité Terrain" dans Postgres.
+    *   **Read Model**: Reads directly from DB (Postgres) for queries (GET /instances).
+    *   **Write Model**: Validates requests and publishes **Commands** in Redis (`orchestrator_events`).
+*   **Orchestrator (Control Plane)**:
+    *   Acts as a **Worker**.
+    *   Listens to Redis events (`CMD:PROVISION`, `CMD:TERMINATE`).
+    *   Executes IaaS operations (Scaleway, AWS).
+    *   Updates "Ground Truth" in Postgres.
 
 ### B. API Contracts & Documentation
-Le Backend expose une API documentée via **Swagger/OpenAPI**.
-*   URL Locale: `http://localhost:8003/swagger-ui`
+The Backend exposes a documented API via **Swagger/OpenAPI**.
+*   Local URL: `http://localhost:8003/swagger-ui`
 *   JSON Spec: `http://localhost:8003/api-docs/openapi.json`
 
 ### C. Workflows
 
 #### 4.1. Provisioning (Command)
 1.  **User**: `POST /deployments` (Backend).
-2.  **Backend**: Publie `CMD:PROVISION` dans Redis. Renvoie `200 Accepted`.
-3.  **Orchestrator**: Reçoit `CMD:PROVISION`. Crée l'instance (Scaleway).
+2.  **Backend**: Publishes `CMD:PROVISION` in Redis. Returns `200 Accepted`.
+3.  **Orchestrator**: Receives `CMD:PROVISION`. Creates instance (Scaleway).
 4.  **Orchestrator**: INSERT `instances` (Status: Booting) -> DB.
-5.  **Frontend**: Polling `GET /instances` -> Voit "Booting".
+5.  **Frontend**: Polling `GET /instances` -> Sees "Booting".
 
 #### 4.2. Termination (Command)
 1.  **User**: `DELETE /instances/:id` (Backend).
-2.  **Backend**: Publie `CMD:TERMINATE` dans Redis.
-3.  **Orchestrator**: Reçoit `CMD:TERMINATE`. Supprime l'instance (Scaleway).
+2.  **Backend**: Publishes `CMD:TERMINATE` in Redis.
+3.  **Orchestrator**: Receives `CMD:TERMINATE`. Deletes instance (Scaleway).
 4.  **Orchestrator**: UPDATE `instances` SET status='Terminated' -> DB.
 
 #### 4.3. Monitoring (Query)
 1.  **User**: Dashboard (Frontend).
 2.  **Frontend**: `GET /api/backend/instances`.
-3.  **Backend**: `SELECT * FROM instances WHERE organization_id = $1` (Postgres) - Filtré selon workspace.
+3.  **Backend**: `SELECT * FROM instances WHERE organization_id = $1` (Postgres) - Filtered by workspace.
 
 ---
 
-## 5. Multi-Tenant Data Model (Vision Cible)
+## 5. Multi-Tenant Data Model (Target Vision)
 
 ### 5.1 Workspace Scoping
 
-**Règle fondamentale** : Le **workspace (session) actif** détermine le contexte de toutes les opérations métier.
+**Fundamental rule**: The **active workspace (session)** determines the context of all business operations.
 
-**Exemples** :
-- `GET /instances` → Filtre par `organization_id = current_organization_id` si workspace org
-- `POST /deployments` → Crée instance avec `organization_id = current_organization_id` si workspace org
-- `GET /models` → Filtre par `organization_id = current_organization_id` OU `organization_id IS NULL` (publics)
-- `GET /finops/cost/current` → Filtre par `organization_id = current_organization_id` si workspace org
+**Examples**:
+- `GET /instances` → Filter by `organization_id = current_organization_id` if org workspace
+- `POST /deployments` → Create instance with `organization_id = current_organization_id` if org workspace
+- `GET /models` → Filter by `organization_id = current_organization_id` OR `organization_id IS NULL` (public)
+- `GET /finops/cost/current` → Filter by `organization_id = current_organization_id` if org workspace
 
-### 5.2 Plan & Wallet selon Workspace
+### 5.2 Plan & Wallet by Workspace
 
-**Plan** :
-- Session Personal → `users.account_plan` détermine modèles accessibles
-- Session Org A → `organizations.subscription_plan` (org A) détermine modèles accessibles
-- Session Org B → `organizations.subscription_plan` (org B) détermine modèles accessibles
+**Plan**:
+- Personal Session → `users.account_plan` determines accessible models
+- Org A Session → `organizations.subscription_plan` (org A) determines accessible models
+- Org B Session → `organizations.subscription_plan` (org B) determines accessible models
 
-**Wallet** :
-- Session Personal → Débit depuis `users.wallet_balance_eur`
-- Session Org A → Débit depuis `organizations.wallet_balance_eur` (org A)
-- Session Org B → Débit depuis `organizations.wallet_balance_eur` (org B)
+**Wallet**:
+- Personal Session → Debit from `users.wallet_balance_eur`
+- Org A Session → Debit from `organizations.wallet_balance_eur` (org A)
+- Org B Session → Debit from `organizations.wallet_balance_eur` (org B)
 
-### 5.3 RBAC selon Rôle Organisation
+### 5.3 RBAC by Organization Role
 
-**Permissions par rôle** (voir `docs/RBAC_ANALYSIS.md` pour détails) :
-- **Owner** : Toutes les permissions (mais doit faire double activation explicitement)
-- **Admin** : Gestion technique (instances, models, infrastructure, activation tech)
-- **Manager** : Gestion financière (prix, autorisations, dashboards, activation eco)
-- **User** : Utilisation des ressources (lecture seule sur instances/models)
+**Permissions by role** (see `docs/syntheses/RBAC_ANALYSIS.md` for details):
+- **Owner**: All permissions (but must do double activation explicitly)
+- **Admin**: Technical management (instances, models, infrastructure, tech activation)
+- **Manager**: Financial management (prices, authorizations, dashboards, eco activation)
+- **User**: Resource usage (read-only on instances/models)
 
 ### 5.4 Double Activation (Tech + Eco)
 
-**Règle** : Une ressource (instance, model, API key, etc.) est **opérationnelle** uniquement si :
-- `tech_activated_by IS NOT NULL` (activation technique par Admin/Owner)
-- `eco_activated_by IS NOT NULL` (activation économique par Manager/Owner)
+**Rule**: A resource (instance, model, API key, etc.) is **operational** only if:
+- `tech_activated_by IS NOT NULL` (technical activation by Admin/Owner)
+- `eco_activated_by IS NOT NULL` (economic activation by Manager/Owner)
 
-**Permissions** :
-- Owner peut activer tech + eco (mais doit faire les 2 activations explicitement)
-- Admin peut activer tech uniquement
-- Manager peut activer eco uniquement
-- User ne peut rien activer
+**Permissions**:
+- Owner can activate tech + eco (but must do both activations explicitly)
+- Admin can activate tech only
+- Manager can activate eco only
+- User cannot activate anything
 
-**UX** : Si une ressource n'est pas opérationnelle, afficher état "non opérationnel" + alerte indiquant le flag manquant.
+**UX**: If a resource is not operational, display "non-operational" state + alert indicating missing flag.
 
 ### 5.5 Model Visibility & Access Policy
 
-**Visibility** :
-- `public` : Visible à tous les users (plateforme)
-- `unlisted` : Non listé mais accessible via identifiant direct si autorisé
-- `private` : Visible uniquement aux membres de l'org provider
+**Visibility**:
+- `public`: Visible to all users (platform)
+- `unlisted`: Not listed but accessible via direct identifier if authorized
+- `private`: Visible only to provider org members
 
-**Access Policy** :
-- `free` : Usage gratuit
-- `subscription_required` : Réservé aux abonnés (plan org ou user selon workspace)
-- `request_required` : Demande d'accès + approbation requise
-- `pay_per_token` : Facturation au token (débit depuis wallet selon workspace)
-- `trial` : Gratuit jusqu'à date/quota
+**Access Policy**:
+- `free`: Free usage
+- `subscription_required`: Reserved for subscribers (org or user plan according to workspace)
+- `request_required`: Access request + approval required
+- `pay_per_token`: Token-based billing (debit from wallet according to workspace)
+- `trial`: Free until date/quota
 
-**Résolution** :
-- Modèles accessibles = Union de :
-  - Modèles org (`organization_id = current_organization_id`) si workspace org
-  - Modèles publics (`organization_id IS NULL`) selon plan workspace
-  - Modèles partagés (`organization_model_shares` actifs) si workspace org
+**Resolution**:
+- Accessible models = Union of:
+  - Org models (`organization_id = current_organization_id`) if org workspace
+  - Public models (`organization_id IS NULL`) according to workspace plan
+  - Shared models (`organization_model_shares` active) if org workspace
 
 ### 5.6 Index & Performance
 
-**Index recommandés** :
+**Recommended indexes**:
 ```sql
 -- Performance workspace scoping
 CREATE INDEX idx_instances_org ON instances(organization_id) WHERE organization_id IS NOT NULL;
@@ -488,28 +491,28 @@ CREATE INDEX idx_models_operational ON models(organization_id, is_operational) W
 
 ## 6. Migration Strategy
 
-**Approche** : Modèle propre dès le départ (pas de legacy).
+**Approach**: Clean model from the start (no legacy).
 
-**Migrations SQL** :
-1. Enrichir `users` avec `account_plan`, `wallet_balance_eur`
-2. Enrichir `organizations` avec `subscription_plan`, `wallet_balance_eur`, `sidebar_color`
-3. Ajouter `organization_id` aux tables scopées (`instances`, `models`, `api_keys`, etc.)
-4. Ajouter colonnes double activation (`tech_activated_by`, `eco_activated_by`, `is_operational`)
-5. Créer index de performance
+**SQL Migrations**:
+1. Enrich `users` with `account_plan`, `wallet_balance_eur`
+2. Enrich `organizations` with `subscription_plan`, `wallet_balance_eur`, `sidebar_color`
+3. Add `organization_id` to scoped tables (`instances`, `models`, `api_keys`, etc.)
+4. Add double activation columns (`tech_activated_by`, `eco_activated_by`, `is_operational`)
+5. Create performance indexes
 
-**Données seed** :
-- Default admin user (`account_plan = 'free'` par défaut)
-- Default organisation "Inventiv IT" (`subscription_plan = 'free'` par défaut)
-- Admin user = Owner de "Inventiv IT"
+**Seed data**:
+- Default admin user (`account_plan = 'free'` by default)
+- Default organization "Inventiv IT" (`subscription_plan = 'free'` by default)
+- Admin user = Owner of "Inventiv IT"
 
 ---
 
-## 7. Règles de Cohérence
+## 7. Consistency Rules
 
-1. **Workspace = Scope** : Toutes les opérations métier sont scopées selon le workspace actif
-2. **Plan selon Workspace** : Le plan (user ou org) s'applique selon le workspace actif
-3. **Wallet selon Workspace** : Le wallet (user ou org) s'applique selon le workspace actif
-4. **Double Activation** : Owner doit faire les 2 activations explicitement (même s'il a les 2 rôles)
-5. **Pas de Legacy** : Modèle propre dès le départ, pas de migration de données legacy
-6. **Users First-Class** : Un user sans org reste "first-class" et peut utiliser la plateforme
-7. **Multi-Sessions** : Un user peut avoir plusieurs sessions simultanées avec des workspaces différents
+1. **Workspace = Scope**: All business operations are scoped according to active workspace
+2. **Plan by Workspace**: The plan (user or org) applies according to active workspace
+3. **Wallet by Workspace**: The wallet (user or org) applies according to active workspace
+4. **Double Activation**: Owner must do both activations explicitly (even if they have both roles)
+5. **No Legacy**: Clean model from the start, no legacy data migration
+6. **Users First-Class**: A user without org remains "first-class" and can use the platform
+7. **Multi-Sessions**: A user can have multiple simultaneous sessions with different workspaces

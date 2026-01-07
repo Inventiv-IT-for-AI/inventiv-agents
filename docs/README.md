@@ -11,7 +11,6 @@ These documents are **must-read** and must be kept up-to-date:
 - **[architecture.md](architecture.md)** - Technical architecture overview
 - **[domain_design_and_data_model.md](domain_design_and_data_model.md)** - Domain model and data structures (DDD)
 - **[project_requirements.md](project_requirements.md)** - Project requirements and general specification
-- **[specification.md](specification.md)** - General specification and features (legacy, see project_requirements.md)
 - **[ui_design_system.md](ui_design_system.md)** - UI design system and component conventions
 - **[ia_widgets.md](ia_widgets.md)** - AI UI widgets documentation
 - **[engineering_guidelines.md](engineering_guidelines.md)** - Code quality and best practices
@@ -102,7 +101,8 @@ Temporary documents (dated, can be deleted after session):
 
 ## 📝 Translation Status
 
-- ✅ English: Most core documents
-- ⚠️ French: Some historical documents (archived)
-- 🔄 In progress: Translation of remaining French documents
+- ✅ English: All core documents and main entry points
+- ✅ English: Technical documentation (ACTION_TYPES_FORMAT, API_URL_CONFIGURATION, etc.)
+- ⚠️ French: Some historical documents in archives (can remain)
+- 🔄 In progress: Remaining technical documentation translation (incremental)
 

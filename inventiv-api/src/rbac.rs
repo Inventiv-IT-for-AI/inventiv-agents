@@ -43,12 +43,12 @@ pub enum ActivationFlag {
 }
 
 pub fn can_set_activation_flag(role: OrgRole, flag: ActivationFlag) -> bool {
-    match (role, flag) {
-        (OrgRole::Owner, _) => true,
-        (OrgRole::Admin, ActivationFlag::Tech) => true,
-        (OrgRole::Manager, ActivationFlag::Eco) => true,
-        _ => false,
-    }
+    matches!(
+        (role, flag),
+        (OrgRole::Owner, _)
+            | (OrgRole::Admin, ActivationFlag::Tech)
+            | (OrgRole::Manager, ActivationFlag::Eco)
+    )
 }
 
 /// Role delegation rules (cible):
@@ -68,6 +68,31 @@ pub fn can_assign_role(actor: OrgRole, from: OrgRole, to: OrgRole) -> bool {
         ),
         OrgRole::User => false,
     }
+}
+
+// --- Phase 2: Instance Permissions ---
+
+/// Vérifier si un rôle peut voir les instances
+pub fn can_view_instances(role: &OrgRole) -> bool {
+    matches!(
+        role,
+        OrgRole::Owner | OrgRole::Admin | OrgRole::Manager | OrgRole::User
+    )
+}
+
+/// Vérifier si un rôle peut créer/modifier/terminer instances
+pub fn can_modify_instances(role: &OrgRole) -> bool {
+    matches!(role, OrgRole::Owner | OrgRole::Admin)
+}
+
+/// Vérifier si un rôle peut activer techniquement
+pub fn can_activate_tech(role: &OrgRole) -> bool {
+    matches!(role, OrgRole::Owner | OrgRole::Admin)
+}
+
+/// Vérifier si un rôle peut activer économiquement
+pub fn can_activate_eco(role: &OrgRole) -> bool {
+    matches!(role, OrgRole::Owner | OrgRole::Manager)
 }
 
 #[cfg(test)]
@@ -176,5 +201,32 @@ mod tests {
             OrgRole::User,
             OrgRole::Admin
         ));
+    }
+
+    #[test]
+    fn instance_permissions() {
+        // View: all roles can view
+        assert!(can_view_instances(&OrgRole::Owner));
+        assert!(can_view_instances(&OrgRole::Admin));
+        assert!(can_view_instances(&OrgRole::Manager));
+        assert!(can_view_instances(&OrgRole::User));
+
+        // Modify: only Owner and Admin
+        assert!(can_modify_instances(&OrgRole::Owner));
+        assert!(can_modify_instances(&OrgRole::Admin));
+        assert!(!can_modify_instances(&OrgRole::Manager));
+        assert!(!can_modify_instances(&OrgRole::User));
+
+        // Activate tech: Owner and Admin
+        assert!(can_activate_tech(&OrgRole::Owner));
+        assert!(can_activate_tech(&OrgRole::Admin));
+        assert!(!can_activate_tech(&OrgRole::Manager));
+        assert!(!can_activate_tech(&OrgRole::User));
+
+        // Activate eco: Owner and Manager
+        assert!(can_activate_eco(&OrgRole::Owner));
+        assert!(!can_activate_eco(&OrgRole::Admin));
+        assert!(can_activate_eco(&OrgRole::Manager));
+        assert!(!can_activate_eco(&OrgRole::User));
     }
 }

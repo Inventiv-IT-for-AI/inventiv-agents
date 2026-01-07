@@ -255,9 +255,9 @@ pub async fn calculate_instance_progress(
 
         if has_health_check_success {
             return Ok(95); // Almost ready, waiting for final transition to 'ready'
+        } else {
+            return Ok(90); // Warmup completed, waiting for health checks
         }
-
-        return Ok(90); // Warmup completed, waiting for health checks
     }
 
     // Default: minimal progress
@@ -486,10 +486,10 @@ async fn calculate_booting_progress(
     .await?;
 
     if has_health_check_success {
-        return Ok(95); // Almost ready, waiting for final transition to 'ready'
+        Ok(95) // Almost ready, waiting for final transition to 'ready'
+    } else {
+        Ok(90) // Warmup completed, waiting for health checks
     }
-
-    return Ok(90); // Warmup completed, waiting for health checks
 }
 
 /// Calculate progress for Mock provider instances (simulated based on time elapsed)
@@ -517,7 +517,7 @@ async fn calculate_mock_progress(
             if elapsed_secs < 2 {
                 return Ok(5);
             }
-            return Ok(20); // Quickly move to booting
+            Ok(20) // Quickly move to booting
         }
         "booting" => {
             // Mock booting: simulate progression over time
@@ -540,7 +540,7 @@ async fn calculate_mock_progress(
             if elapsed_secs < 15 {
                 return Ok(90); // WORKER_VLLM_WARMUP
             }
-            return Ok(95); // HEALTH_CHECK success (almost ready)
+            Ok(95) // HEALTH_CHECK success (almost ready)
         }
         _ => Ok(0),
     }

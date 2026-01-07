@@ -1,401 +1,401 @@
-# Roadmap & TODO (état repo + backlog)
+# Roadmap & TODO (repo state + backlog)
 
-Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la suite (priorisée).
+This file reflects the **actual** state of the repo (code + migrations + UI) and what's next (prioritized).
 
 ---
 
-## ✅ Réalisé (livré dans le code)
+## ✅ Completed (delivered in code)
 
 ### Control-plane & provisioning
-- ✅ **Provisioning Scaleway** (orchestrator): création VM avec image uniquement, Block Storage automatique (20GB), agrandissement à 200GB via CLI, poweron, récupération IP, Security Groups, SSH accessible (~20s), transitions d'état. **Validé pour L4-1-24G**.
-- ✅ **Provisioning Mock** (inventiv-providers): gestion automatique des runtimes Docker Compose, récupération IP, transitions d'état.
-- ✅ **Architecture providers modulaire**: package `inventiv-providers` avec trait `CloudProvider`, séparation orchestrator/providers.
+- ✅ **Scaleway Provisioning** (orchestrator): VM creation with image only, automatic Block Storage (20GB), expansion to 200GB via CLI, poweron, IP retrieval, Security Groups, SSH accessible (~20s), state transitions. **Validated for L4-1-24G**.
+- ✅ **Mock Provisioning** (inventiv-providers): automatic Docker Compose runtime management, IP retrieval, state transitions.
+- ✅ **Modular provider architecture**: `inventiv-providers` package with `CloudProvider` trait, orchestrator/providers separation.
 - ✅ **State machine + jobs**: provisioning/health-check/terminator/watch-dog + requeue.
-- ✅ **Auto-install worker**: bootstrap via SSH avec phases `::phase::…`, logs enrichis dans `action_logs.metadata`.
-- ✅ **Sizing stockage par modèle**: taille recommandée depuis la table `models` (fallbacks contrôlés).
+- ✅ **Auto-install worker**: bootstrap via SSH with phases `::phase::…`, enriched logs in `action_logs.metadata`.
+- ✅ **Storage sizing by model**: recommended size from `models` table (controlled fallbacks).
 - ✅ **HF token**: support `WORKER_HF_TOKEN_FILE` (secret file) + alias `HUGGINGFACE_TOKEN`.
-- ✅ **Scaleway Block Storage**: Séquence validée - création automatique avec image (20GB bootable), agrandissement à 200GB avant démarrage, SSH opérationnel après ~20 secondes.
+- ✅ **Scaleway Block Storage**: Validated sequence - automatic creation with image (20GB bootable), expansion to 200GB before startup, SSH operational after ~20 seconds.
 
-### Modèles & readiness
-- **Catalogue `models`**: champs `is_active`, `data_volume_gb`, metadata (seed enrichi).
-- **Sélecteur de modèle obligatoire** côté UI + **enforcement API** (`model_id` requis pour créer une instance).
-- **Readiness industrialisée**: actions `WORKER_VLLM_HTTP_OK`, `WORKER_MODEL_LOADED`, `WORKER_VLLM_WARMUP`.
-- **Modes vLLM**: `mono` (1 vLLM) / `multi` (1 vLLM par GPU derrière HAProxy sticky).
+### Models & readiness
+- **`models` catalog**: fields `is_active`, `data_volume_gb`, metadata (enriched seed).
+- **Mandatory model selector** in UI + **API enforcement** (`model_id` required to create an instance).
+- **Industrialized readiness**: actions `WORKER_VLLM_HTTP_OK`, `WORKER_MODEL_LOADED`, `WORKER_VLLM_WARMUP`.
+- **vLLM modes**: `mono` (1 vLLM) / `multi` (1 vLLM per GPU behind HAProxy sticky).
 
 ### OpenAI-compatible API + API keys
 - **OpenAI proxy** (inventiv-api): `/v1/models`, `/v1/chat/completions` (streaming), `/v1/completions`, `/v1/embeddings`.
-- **API keys (client)**: CRUD + auth `Authorization: Bearer <key>` (séparé des tokens workers).
-- **Live capacity**: `/v1/models` reflète les modèles réellement servis par des workers "fresh" (avec tolérance staleness).
-- ✅ **Résolution modèles HuggingFace**: Correction de la logique pour éviter les faux positifs avec les offering ids (`org_slug/model_code`)
+- **API keys (client)**: CRUD + auth `Authorization: Bearer <key>` (separate from worker tokens).
+- **Live capacity**: `/v1/models` reflects models actually served by "fresh" workers (with staleness tolerance).
+- ✅ **HuggingFace model resolution**: Fixed logic to avoid false positives with offering ids (`org_slug/model_code`)
 
 ### Runtime models dashboard + Workbench
-- **Runtime models**: endpoint + page UI `/models` (instances, GPUs, VRAM, requests, failed).
-- **Workbench**: page UI `/workbench` (base URL, snippets, test chat via API key).
+- **Runtime models**: endpoint + UI page `/models` (instances, GPUs, VRAM, requests, failed).
+- **Workbench**: UI page `/workbench` (base URL, snippets, test chat via API key).
 
-### Temps réel (UI)
-- **SSE**: `GET /events/stream` (topics instances/actions) + hook frontend `useRealtimeEvents` (refresh instances + action logs).
-- **IADataTable persistence**: préférences colonnes persistées (tri/largeur/ordre/visibilité) pour les tables IA (dont la pop-in “Actions de l’instance”).
+### Real-time (UI)
+- **SSE**: `GET /events/stream` (topics instances/actions) + frontend hook `useRealtimeEvents` (refresh instances + action logs).
+- **IADataTable persistence**: persisted column preferences (sort/width/order/visibility) for IA tables (including the "Instance Actions" pop-in).
 
 ### UI / Design system (monorepo)
-- **Packages internes**:
-  - `inventiv-ui/ia-designsys` (primitives UI centralisées)
-  - `inventiv-ui/ia-widgets` (widgets de plus haut niveau, préfixe `IA*`)
-- **Tailwind v4 (CSS-first)**: ajout des `@source` vers les packages workspaces (`ia-widgets`, `ia-designsys`) pour éviter toute purge de classes.
-- **IADataTable**: table virtualisée réutilisable (dans `ia-widgets`) + **resize via séparateurs dédiés** (5px) entre colonnes.
-- **Ergonomie dev**: `make ui-down` et `make ui-local-down` (stop UI Docker / kill UI host).
-- ✅ **Affichage Version**: Badge discret sous le titre de l'application avec popover au hover/click affichant version FE, BE et timestamp du build.
-- ✅ **CI/CD Pipeline**: Pipeline GitHub Actions complet (CI automatique, déploiement staging automatique, déploiement production manuel). Uniformisation axum 0.8 dans tous les projets. Corrections imports non utilisés et erreurs clippy/lint.
+- **Internal packages**:
+  - `inventiv-ui/ia-designsys` (centralized UI primitives)
+  - `inventiv-ui/ia-widgets` (higher-level widgets, `IA*` prefix)
+- **Tailwind v4 (CSS-first)**: added `@source` to workspace packages (`ia-widgets`, `ia-designsys`) to avoid any class purging.
+- **IADataTable**: reusable virtualized table (in `ia-widgets`) + **resize via dedicated separators** (5px) between columns.
+- **Dev ergonomics**: `make ui-down` and `make ui-local-down` (stop UI Docker / kill UI host).
+- ✅ **Version Display**: Discrete badge under application title with popover on hover/click showing FE, BE version and build timestamp.
+- ✅ **CI/CD Pipeline**: Complete GitHub Actions pipeline (automatic CI, automatic staging deployment, manual production deployment). Axum 0.8 standardization across all projects. Fixed unused imports and clippy/lint errors.
 
 ### Dev ergonomics
-- **PORT_OFFSET** (worktrees) + UI-only exposée.
-- **`make api-expose`**: proxy loopback pour tunnels (cloudflared) sans modifier `docker-compose.yml`.
-- **DB/Redis stateful**: `make down` garde volumes, `make nuke` wipe.
+- **PORT_OFFSET** (worktrees) + UI-only exposed.
+- **`make api-expose`**: loopback proxy for tunnels (cloudflared) without modifying `docker-compose.yml`.
+- **DB/Redis stateful**: `make down` keeps volumes, `make nuke` wipes.
 
 ### Multi-tenant (MVP)
-- **Organisations**: création + membership + sélection “organisation courante” (switcher UX).
-- **Pré-câblage DB “model sharing + chargeback tokens”** (non-breaking): tables `organization_models` + `organization_model_shares` + extension `finops.inference_usage`.
+- **Organizations**: creation + membership + "current organization" selection (switcher UX).
+- **DB pre-wiring "model sharing + token chargeback"** (non-breaking): tables `organization_models` + `organization_model_shares` + `finops.inference_usage` extension.
 
 ---
 
-## 🐛 Bugs connus / dettes techniques (à suivre)
+## 🐛 Known bugs / technical debt (to track)
 
-- **SSE**: implémentation actuelle basée sur polling DB (efficace mais pas "event-sourced" → à améliorer via NOTIFY/LISTEN ou Redis streams).
-- **Observabilité**: pas encore de stack métriques/traces end-to-end (Prometheus/Grafana/OTel) + alerting.
-- ✅ **FinOps**: coûts OK + **comptage tokens in/out** implémenté (voir section "FinOps full features").
-- **Docs**: certains documents restent "vision" (router, bare-metal) vs "implémenté".
-- **Mock provider routing**: le test E2E OpenAI proxy override `instances.ip_address` vers `mock-vllm` (hack local). À remplacer par un mécanisme propre (voir backlog).
-- **Docker CLI version**: orchestrator utilise Docker CLI 27.4.0 (compatible API 1.44+). À documenter les prérequis Docker dans la doc.
-- ✅ **Progression "starting"**: Corrigé - les instances "starting" affichent maintenant la progression correcte
-- ✅ **Health checks "starting"**: Corrigé - les instances "starting" sont maintenant vérifiées par le health check job
-- ✅ **Résolution modèles publics**: Corrigé - les modèles HuggingFace publics fonctionnent sans organisation
-- ⚠️ **Volumes non libérés**: Certaines terminaisons d'instances ne libèrent pas correctement les block storage associés (voir section "Fiabilité Workers & Instances").
-- ⚠️ **Warnings clippy restants**: 37 erreurs clippy de style non bloquantes (equality checks, redundant closures, etc.) - à corriger progressivement pour améliorer la qualité du code.
-- ⚠️ **Warnings frontend restants**: 10 warnings ESLint non bloquants - à corriger progressivement pour améliorer la qualité du code.
+- **SSE**: current implementation based on DB polling (efficient but not "event-sourced" → to improve via NOTIFY/LISTEN or Redis streams).
+- **Observability**: no end-to-end metrics/traces stack yet (Prometheus/Grafana/OTel) + alerting.
+- ✅ **FinOps**: costs OK + **token counting in/out** implemented (see "FinOps full features" section).
+- **Docs**: some documents remain "vision" (router, bare-metal) vs "implemented".
+- **Mock provider routing**: E2E test OpenAI proxy overrides `instances.ip_address` to `mock-vllm` (local hack). To replace with proper mechanism (see backlog).
+- **Docker CLI version**: orchestrator uses Docker CLI 27.4.0 (compatible API 1.44+). To document Docker prerequisites in docs.
+- ✅ **"starting" progress**: Fixed - "starting" instances now display correct progress
+- ✅ **"starting" health checks**: Fixed - "starting" instances are now checked by health check job
+- ✅ **Public model resolution**: Fixed - public HuggingFace models work without organization
+- ⚠️ **Unreleased volumes**: Some instance terminations do not properly release associated block storage (see "Worker & Instance Reliability" section).
+- ⚠️ **Remaining clippy warnings**: 37 non-blocking clippy style errors (equality checks, redundant closures, etc.) - to fix progressively to improve code quality.
+- ⚠️ **Remaining frontend warnings**: 10 non-blocking ESLint warnings - to fix progressively to improve code quality.
 
 ---
 
-## 🚧 À faire (backlog)
+## 🚧 To do (backlog)
 
-### Fiabilité Workers & Instances (Priorité)
+### Worker & Instance Reliability (Priority)
 
-#### 1. Détection des Workers Morts
-- [ ] Créer `job-worker-watchdog.rs` pour détecter workers sans heartbeat récent (> 5 min)
-- [ ] Transition automatique `ready` → `worker_dead` si heartbeat > seuil configurable
-- [ ] Option de réinstallation automatique pour les workers morts
-- [ ] Tests unitaires et E2E
+#### 1. Dead Worker Detection
+- [ ] Create `job-worker-watchdog.rs` to detect workers without recent heartbeat (> 5 min)
+- [ ] Automatic transition `ready` → `worker_dead` if heartbeat > configurable threshold
+- [ ] Option for automatic reinstallation for dead workers
+- [ ] Unit and E2E tests
 
-#### 2. Amélioration des Health Checks
-- [ ] Implémenter backoff exponentiel pour health checks échoués
-- [ ] Réduire timeouts par défaut (configurables via env vars)
-- [ ] Ajouter cache des résultats de health checks (< 30s)
-- [ ] Métriques de latence des health checks
+#### 2. Health Check Improvements
+- [ ] Implement exponential backoff for failed health checks
+- [ ] Reduce default timeouts (configurable via env vars)
+- [ ] Add health check result cache (< 30s)
+- [ ] Health check latency metrics
 
-#### 3. Extension du Job Recovery
-- [ ] Détecter `installing` / `starting` bloquées > seuil configurable
-- [ ] Ajouter alertes (logs structurés) pour instances bloquées
-- [ ] Circuit breaker pour instances avec trop d'échecs consécutifs
+#### 3. Job Recovery Extension
+- [ ] Detect `installing` / `starting` stuck > configurable threshold
+- [ ] Add alerts (structured logs) for stuck instances
+- [ ] Circuit breaker for instances with too many consecutive failures
 
-#### 4. Réconciliation des Volumes (EN COURS)
-- [ ] Créer `job-volume-reconciliation.rs` pour détecter volumes orphelins
-- [ ] Détecter volumes dans DB mais pas chez provider (nettoyer DB)
-- [ ] Détecter volumes chez provider mais pas dans DB (tracker et supprimer)
-- [ ] Retry automatique avec backoff pour suppressions échouées
-- [ ] Vérifier volumes marqués `deleted_at` mais qui existent encore chez provider
-- [ ] Tests E2E pour valider la réconciliation
+#### 4. Volume Reconciliation (IN PROGRESS)
+- [ ] Create `job-volume-reconciliation.rs` to detect orphaned volumes
+- [ ] Detect volumes in DB but not at provider (clean DB)
+- [ ] Detect volumes at provider but not in DB (track and delete)
+- [ ] Automatic retry with backoff for failed deletions
+- [ ] Check volumes marked `deleted_at` but still exist at provider
+- [ ] E2E tests to validate reconciliation
 
-#### 5. Métriques et Observabilité
-- [ ] Exposer métriques Prometheus pour tous les jobs (latence, taux d'échec, instances traitées)
-- [ ] Dashboard Grafana (optionnel)
-- [ ] Système d'alertes basé sur métriques (instances bloquées, workers morts, volumes orphelins)
-- [ ] Étendre utilisation de `correlation_id` pour tracing end-to-end
+#### 5. Metrics & Observability
+- [ ] Expose Prometheus metrics for all jobs (latency, failure rate, instances processed)
+- [ ] Grafana dashboard (optional)
+- [ ] Alert system based on metrics (stuck instances, dead workers, orphaned volumes)
+- [ ] Extend `correlation_id` usage for end-to-end tracing
 
-### Scaleway Provider - Implémentation de la séquence validée
-- [ ] **Adapter le code Scaleway Provider** pour utiliser la séquence validée :
-  - Créer instance avec image uniquement (pas de volumes)
-  - Détecter et agrandir le Block Storage créé automatiquement (20GB → 200GB) via CLI
-  - Configurer Security Groups (ports 22, 8000, 8080)
-  - Vérifier SSH accessible avant installation worker
-- [ ] **Mettre à jour la state machine générique** pour supporter les nouvelles étapes :
+### Scaleway Provider - Validated Sequence Implementation
+- [ ] **Adapt Scaleway Provider code** to use validated sequence:
+  - Create instance with image only (no volumes)
+  - Detect and expand automatically created Block Storage (20GB → 200GB) via CLI
+  - Configure Security Groups (ports 22, 8000, 8080)
+  - Verify SSH accessible before worker installation
+- [ ] **Update generic state machine** to support new steps:
   - `PROVIDER_VOLUME_RESIZE` (25%)
   - `PROVIDER_SECURITY_GROUP` (45%)
   - `WORKER_SSH_ACCESSIBLE` (50%)
-- [ ] **Tester avec autres types d'instances** : L40S, H100 (séquence devrait être identique)
-- [ ] **Documentation** : Mettre à jour les guides utilisateur avec la nouvelle séquence
+- [ ] **Test with other instance types**: L40S, H100 (sequence should be identical)
+- [ ] **Documentation**: Update user guides with new sequence
 
-## 🚧 À faire (backlog)
+## 🚧 To do (backlog)
 
-### Déploiement & DNS
-- **Staging**: déploiement sur `studio-stg.inventiv-agents.fr` (routing API + edge + certs).
-- **Production**: déploiement sur `studio-prd.inventiv-agents.fr`.
+### Deployment & DNS
+- **Staging**: deployment on `studio-stg.inventiv-agents.fr` (API + edge routing + certs).
+- **Production**: deployment on `studio-prd.inventiv-agents.fr`.
 
 ### UX / API
-- **System Prompt configurable** (Inventiv-Agents): UI + API + persistence (par modèle / par tenant / par key).
-- **Streaming**: améliorer streaming E2E (Workbench + proxy + UI) + UX (annulation, TTFT, tokens/sec).
+- **Configurable System Prompt** (Inventiv-Agents): UI + API + persistence (per model / per tenant / per key).
+- **Streaming**: improve E2E streaming (Workbench + proxy + UI) + UX (cancellation, TTFT, tokens/sec).
 
 ### Observability / Monitoring
-- ✅ **Metrics**: `/metrics` sur API/orchestrator/worker + dashboards (CPU/Mem/Disk/Net + GPU per-index) + SLOs.
-  - Implémenté: métriques système (CPU/Mem/Disk/Net) et GPU dans dashboard Observability
-  - Implémenté: métriques requêtes et tokens par instance (`GET /instances/:instance_id/metrics`)
-- ✅ **Progress Tracking**: Système de progression 0-100% basé sur les actions complétées
-  - Implémenté: calcul automatique dans `inventiv-api/src/progress.rs`
-  - Implémenté: affichage dans UI avec colonne dédiée
-  - Implémenté: étapes granulaires (SSH install, vLLM HTTP, model loaded, warmup, health check)
-  - ✅ **Séquence Scaleway validée**: Étapes spécifiques ajoutées (PROVIDER_VOLUME_RESIZE 25%, PROVIDER_SECURITY_GROUP 45%, WORKER_SSH_ACCESSIBLE 50%)
-  - ✅ **Statuts "installing" et "starting"**: Ajout des statuts intermédiaires pour tracking granulaire
-  - ✅ **Gestion progression multi-statuts**: Calcul de progression corrigé pour "installing" et "starting"
-  - ✅ **Health checks multi-statuts**: Health check job vérifie maintenant "booting", "installing", et "starting"
-- ✅ **Agent Version Management**: Versioning et checksum SHA256 pour `agent.py`
-  - Implémenté: constantes `AGENT_VERSION` et `AGENT_BUILD_DATE` dans agent.py
-  - Implémenté: endpoint `/info` pour exposer version/checksum
-  - Implémenté: vérification checksum dans script SSH bootstrap
-  - Implémenté: tooling Makefile (`agent-checksum`, `agent-version-bump`, etc.)
-  - Implémenté: CI/CD integration (vérification automatique, workflow de bump)
-  - Implémenté: monitoring dans health checks et heartbeats
-- ✅ **Storage Management**: Gestion automatique du cycle de vie des volumes
-  - Implémenté: découverte automatique des volumes attachés (`list_attached_volumes`)
-  - Implémenté: tracking dans `instance_volumes` avec `delete_on_terminate`
-  - Implémenté: suppression automatique lors de la terminaison
-  - Implémenté: détection des volumes de boot créés automatiquement
-- ✅ **State Machine**: Transitions explicites et historisation
-  - Implémenté: fonctions explicites dans `state_machine.rs`
-  - Implémenté: historique dans `instance_state_history`
-  - Implémenté: logging structuré avec métadonnées
-  - ✅ **Statuts intermédiaires**: Ajout de "installing" et "starting" pour tracking granulaire
-  - ✅ **Transitions multi-statuts**: Support des transitions depuis "booting" ou "installing" vers "starting"
-- ✅ **Worker Event Logging**: Système de logging structuré sur le worker pour diagnostics
-  - Implémenté: fonction `_log_event()` dans `agent.py` avec rotation automatique (10MB, 10k lignes)
-  - Implémenté: endpoint `/logs` pour récupérer les logs via HTTP (`?tail=N&since=ISO8601`)
-  - Implémenté: événements loggés (agent_started, register_start/success/failed, heartbeat_success/failed/exception, vllm_ready/not_ready, etc.)
-  - Implémenté: intégration dans orchestrator (`fetch_worker_logs()`) pour analyser les logs avant de relancer l'install SSH
-  - Implémenté: vérification de l'état des conteneurs via SSH (`check_containers_via_ssh()`) avant retry
-  - Implémenté: logs de diagnostic (`WORKER_CONTAINER_CHECK`, `WORKER_LOG_ERRORS`, `WORKER_LOG_FETCH`) dans l'orchestrator
-- **Tracing**: OTel (optionnel au début) + corrélation `correlation_id` (API ↔ orchestrator ↔ worker ↔ upstream).
-  - Partiellement: `correlation_id` ajouté dans logs API, à étendre aux autres services
-- **Monitoring infra**: GPU util, queue depth, vLLM health, erreurs, saturation, qualité du load-balancing.
-- **E2E test chain (mock)**: étendre le test pour valider aussi le routing OpenAI sans hack DB (voir item "mock provider routing").
+- ✅ **Metrics**: `/metrics` on API/orchestrator/worker + dashboards (CPU/Mem/Disk/Net + GPU per-index) + SLOs.
+  - Implemented: system metrics (CPU/Mem/Disk/Net) and GPU in Observability dashboard
+  - Implemented: request and token metrics per instance (`GET /instances/:instance_id/metrics`)
+- ✅ **Progress Tracking**: 0-100% progress system based on completed actions
+  - Implemented: automatic calculation in `inventiv-api/src/progress.rs`
+  - Implemented: display in UI with dedicated column
+  - Implemented: granular steps (SSH install, vLLM HTTP, model loaded, warmup, health check)
+  - ✅ **Validated Scaleway sequence**: Specific steps added (PROVIDER_VOLUME_RESIZE 25%, PROVIDER_SECURITY_GROUP 45%, WORKER_SSH_ACCESSIBLE 50%)
+  - ✅ **"installing" and "starting" statuses**: Added intermediate statuses for granular tracking
+  - ✅ **Multi-status progress management**: Progress calculation fixed for "installing" and "starting"
+  - ✅ **Multi-status health checks**: Health check job now checks "booting", "installing", and "starting"
+- ✅ **Agent Version Management**: Versioning and SHA256 checksum for `agent.py`
+  - Implemented: `AGENT_VERSION` and `AGENT_BUILD_DATE` constants in agent.py
+  - Implemented: `/info` endpoint to expose version/checksum
+  - Implemented: checksum verification in SSH bootstrap script
+  - Implemented: Makefile tooling (`agent-checksum`, `agent-version-bump`, etc.)
+  - Implemented: CI/CD integration (automatic verification, bump workflow)
+  - Implemented: monitoring in health checks and heartbeats
+- ✅ **Storage Management**: Automatic volume lifecycle management
+  - Implemented: automatic discovery of attached volumes (`list_attached_volumes`)
+  - Implemented: tracking in `instance_volumes` with `delete_on_terminate`
+  - Implemented: automatic deletion on termination
+  - Implemented: detection of automatically created boot volumes
+- ✅ **State Machine**: Explicit transitions and history
+  - Implemented: explicit functions in `state_machine.rs`
+  - Implemented: history in `instance_state_history`
+  - Implemented: structured logging with metadata
+  - ✅ **Intermediate statuses**: Added "installing" and "starting" for granular tracking
+  - ✅ **Multi-status transitions**: Support for transitions from "booting" or "installing" to "starting"
+- ✅ **Worker Event Logging**: Structured logging system on worker for diagnostics
+  - Implemented: `_log_event()` function in `agent.py` with automatic rotation (10MB, 10k lines)
+  - Implemented: `/logs` endpoint to retrieve logs via HTTP (`?tail=N&since=ISO8601`)
+  - Implemented: logged events (agent_started, register_start/success/failed, heartbeat_success/failed/exception, vllm_ready/not_ready, etc.)
+  - Implemented: orchestrator integration (`fetch_worker_logs()`) to analyze logs before retrying SSH install
+  - Implemented: container state verification via SSH (`check_containers_via_ssh()`) before retry
+  - Implemented: diagnostic logs (`WORKER_CONTAINER_CHECK`, `WORKER_LOG_ERRORS`, `WORKER_LOG_FETCH`) in orchestrator
+- **Tracing**: OTel (optional initially) + `correlation_id` correlation (API ↔ orchestrator ↔ worker ↔ upstream).
+  - Partially: `correlation_id` added in API logs, to extend to other services
+- **Infra monitoring**: GPU util, queue depth, vLLM health, errors, saturation, load-balancing quality.
+- **E2E test chain (mock)**: extend test to also validate OpenAI routing without DB hack (see "mock provider routing" item).
 
 ### Mock provider / tests
-- ✅ **Gestion automatique des runtimes Mock**: création/suppression via Docker Compose dans `inventiv-providers/src/mock.rs`.
-- ✅ **Scripts de synchronisation**: `mock_runtime_sync.sh` pour synchroniser les runtimes avec les instances actives.
-- ✅ **Tests E2E multi-instances**: `test_worker_observability_mock_multi.sh` pour valider le provisionnement en série et parallèle.
-- ✅ **Docker CLI/Compose dans orchestrator**: Docker CLI 27.4.0 + Docker Compose plugin v2.27.1 installés dans `Dockerfile.rust`.
-- ✅ **Réseau Docker explicite**: `CONTROLPLANE_NETWORK_NAME` configuré dans `docker-compose.yml` pour éviter les erreurs de réseau.
-- **Routage OpenAI proxy en mock**: rendre l'upstream joignable sans muter `instances.ip_address` (options: IP routable mock, ou param "upstream_base_url" par instance en DB, ou résolution "service name" côté API quand provider=mock).
-- **Tests contractuels**: ajouter des tests (Rust) des payloads `register/heartbeat` (schema/validation) + compat rétro (old heartbeat payload sans `system_samples`).
-- **Documentation Mock provider**: créer `docs/providers.md` avec architecture et guide d'utilisation.
+- ✅ **Automatic Mock runtime management**: creation/deletion via Docker Compose in `inventiv-providers/src/mock.rs`.
+- ✅ **Synchronization scripts**: `mock_runtime_sync.sh` to synchronize runtimes with active instances.
+- ✅ **Multi-instance E2E tests**: `test_worker_observability_mock_multi.sh` to validate serial and parallel provisioning.
+- ✅ **Docker CLI/Compose in orchestrator**: Docker CLI 27.4.0 + Docker Compose plugin v2.27.1 installed in `Dockerfile.rust`.
+- ✅ **Explicit Docker network**: `CONTROLPLANE_NETWORK_NAME` configured in `docker-compose.yml` to avoid network errors.
+- **OpenAI proxy routing in mock**: make upstream reachable without mutating `instances.ip_address` (options: routable mock IP, or "upstream_base_url" param per instance in DB, or "service name" resolution on API side when provider=mock).
+- **Contractual tests**: add tests (Rust) for `register/heartbeat` payloads (schema/validation) + retro compat (old heartbeat payload without `system_samples`).
+- **Mock provider documentation**: create `docs/providers.md` with architecture and usage guide.
 
 ### FinOps "full features"
-- ✅ **Comptage tokens in/out** par Worker / API_KEY / User / Tenant / Model.
-  - Implémenté: extraction tokens depuis réponses streaming/non-streaming, stockage dans `instance_request_metrics` et `finops.inference_usage`
+- ✅ **Token counting in/out** per Worker / API_KEY / User / Tenant / Model.
+  - Implemented: token extraction from streaming/non-streaming responses, storage in `instance_request_metrics` and `finops.inference_usage`
   - Endpoint: `GET /instances/:instance_id/metrics`
-  - Dashboard: métriques affichées dans Observability (`/observability`)
-- **Validation**: consolidation dashboards + exports + séries temporelles.
+  - Dashboard: metrics displayed in Observability (`/observability`)
+- **Validation**: consolidate dashboards + exports + time series.
 
 ### Secrets & credentials
-- **AUTO_SEED_PROVIDER_CREDENTIALS**: documenter clairement le modèle “secrets in /run/secrets → provider_settings chiffré pgcrypto” + rotation/rollback + conventions de clés (`SCALEWAY_PROJECT_ID`, `SCALEWAY_SECRET_KEY_ENC`) + menace (logs/backup).
+- **AUTO_SEED_PROVIDER_CREDENTIALS**: clearly document the model "secrets in /run/secrets → encrypted pgcrypto provider_settings" + rotation/rollback + key conventions (`SCALEWAY_PROJECT_ID`, `SCALEWAY_SECRET_KEY_ENC`) + threat (logs/backup).
 
-### Multi-tenant & sécurité
-- ✅ **Organisations (MVP)**: création + membership + sélection "organisation courante" (switcher UX).
-- ✅ **Pré-câblage DB "model sharing + chargeback"** (non-breaking):
+### Multi-tenant & security
+- ✅ **Organizations (MVP)**: creation + membership + "current organization" selection (switcher UX).
+- ✅ **DB pre-wiring "model sharing + chargeback"** (non-breaking):
   - `organizations` + `organization_memberships` + `users.current_organization_id`
-  - `organization_models` (offering publié par org)
-  - `organization_model_shares` (contrats provider→consumer, `pricing` JSONB)
-  - extension `finops.inference_usage` pour attribuer `provider_organization_id` / `consumer_organization_id` + `unit_price_eur_per_1k_tokens` + `charged_amount_eur`
-- ✅ **RBAC Foundation**: Module RBAC avec rôles Owner/Admin/Manager/User, règles de délégation, double activation (tech/eco).
-- ✅ **Gestion Membres**: Endpoints pour lister/changer rôle/retirer membres avec invariant "dernier owner".
-- ✅ **Bootstrap Default Org**: Création automatique org "Inventiv IT" avec admin comme owner.
-- ✅ **Password Reset Flow**: Intégration SMTP Scaleway TEM, génération de tokens sécurisés, emails de réinitialisation, endpoints API complets.
-- ✅ **Code Reorganization**: Refactoring majeur de `main.rs` (~3500 lignes → ~86 lignes), extraction en modules `config/`, `setup/`, `routes/`, `handlers/` pour meilleure maintenabilité.
-- ✅ **Integration Tests**: Infrastructure de tests d'intégration avec `axum-test`, tests pour auth, deployments, instances (Mock provider uniquement pour éviter coûts cloud).
-- ✅ **Axum 0.8 Upgrade**: Migration vers `axum 0.8` et `axum-test 18.0`, corrections pour `async_trait`, `SwaggerUi`, `FromRequestParts`, compatibilité OpenAPI avec `utoipa 5.4`.
-- ✅ **Architecture Sessions Multi-Org**: Table `user_sessions` créée, migrations appliquées, endpoints GET/POST /auth/sessions implémentés, UI SessionsDialog créée, tests d'intégration ajoutés (voir `docs/SESSION_IMPLEMENTATION_STATUS.md`).
-- ⏳ **Scoping Instances**: Isoler instances par `organization_id` + RBAC.
-- ⏳ **Scoping Models**: Isoler modèles par `organization_id` + visibilité publique/privée.
-- ⏳ **Invitations**: Inviter users par email dans une organisation.
-- ⏳ **Scoping API Keys**: Isoler clés API par `organization_id`.
-- ⏳ **Scoping Users**: Filtrer liste users selon workspace.
-- ⏳ **Scoping FinOps**: Filtrer dashboards financiers selon workspace.
-- ⏳ **Migration Frontend Modules**: Masquer/afficher modules selon workspace + rôle.
-- ⏳ **Double Activation**: Activation technique (Admin) + économique (Manager) par ressource.
-- ⏳ **Model Sharing & Billing**: Partage modèles entre orgs avec facturation au token.
+  - `organization_models` (offering published by org)
+  - `organization_model_shares` (provider→consumer contracts, `pricing` JSONB)
+  - `finops.inference_usage` extension to attribute `provider_organization_id` / `consumer_organization_id` + `unit_price_eur_per_1k_tokens` + `charged_amount_eur`
+- ✅ **RBAC Foundation**: RBAC module with Owner/Admin/Manager/User roles, delegation rules, double activation (tech/eco).
+- ✅ **Member Management**: Endpoints to list/change role/remove members with "last owner" invariant.
+- ✅ **Default Org Bootstrap**: Automatic creation of "Inventiv IT" org with admin as owner.
+- ✅ **Password Reset Flow**: Scaleway TEM SMTP integration, secure token generation, reset emails, complete API endpoints.
+- ✅ **Code Reorganization**: Major refactoring of `main.rs` (~3500 lines → ~86 lines), extraction into `config/`, `setup/`, `routes/`, `handlers/` modules for better maintainability.
+- ✅ **Integration Tests**: Integration test infrastructure with `axum-test`, tests for auth, deployments, instances (Mock provider only to avoid cloud costs).
+- ✅ **Axum 0.8 Upgrade**: Migration to `axum 0.8` and `axum-test 18.0`, fixes for `async_trait`, `SwaggerUi`, `FromRequestParts`, OpenAPI compatibility with `utoipa 5.4`.
+- ✅ **Multi-Org Session Architecture**: `user_sessions` table created, migrations applied, GET/POST /auth/sessions endpoints implemented, SessionsDialog UI created, integration tests added (see `docs/syntheses/archives/SESSION_IMPLEMENTATION_STATUS.md`).
+- ⏳ **Scoping Instances**: Isolate instances by `organization_id` + RBAC.
+- ⏳ **Scoping Models**: Isolate models by `organization_id` + public/private visibility.
+- ⏳ **Invitations**: Invite users by email to an organization.
+- ⏳ **Scoping API Keys**: Isolate API keys by `organization_id`.
+- ⏳ **Scoping Users**: Filter user list by workspace.
+- ⏳ **Scoping FinOps**: Filter financial dashboards by workspace.
+- ⏳ **Frontend Module Migration**: Hide/show modules by workspace + role.
+- ⏳ **Double Activation**: Technical activation (Admin) + economic activation (Manager) per resource.
+- ⏳ **Model Sharing & Billing**: Share models between orgs with token-based billing.
 
-📄 Doc: `docs/MULTI_TENANT_MODEL_SHARING_BILLING.md` (pricing v1 = **€/1k tokens**)
+📄 Doc: `docs/syntheses/MULTI_TENANT_MODEL_SHARING_BILLING.md` (pricing v1 = **€/1k tokens**)
 - **Tenants v1 (Org isolation)**:
-  - Isoler les ressources “métier” par `organization_id` (au minimum: instances, workbench_runs, action_logs, api_keys).
-  - Introduire une notion d’**org courante obligatoire** pour les endpoints métier (401/409 si non sélectionnée).
-  - Clarifier RBAC org: `owner|admin|manager|user` + policy par endpoint.
-  - Règles RBAC:
+  - Isolate "business" resources by `organization_id` (at minimum: instances, workbench_runs, action_logs, api_keys).
+  - Introduce notion of **mandatory current org** for business endpoints (401/409 if not selected).
+  - Clarify org RBAC: `owner|admin|manager|user` + policy per endpoint.
+  - RBAC rules:
     - Invitations: Owner/Admin/Manager
-    - Dernier Owner non révocable
-    - Audit logs immuables (pas de delete)
-  - “Double activation”:
-    - Admin active techniquement (providers/regions/zones/types/models/api_keys/users/plan)
-    - Manager active économiquement (providers/regions/zones/types/models/api_keys/users/plan)
-    - Opérationnel uniquement si les 2 activations sont OK (par ressource)
-    - UX: afficher un état “non opérationnel” + alerte indiquant le flag manquant (tech/eco)
-  - (Plus tard) **RLS PostgreSQL** une fois le modèle stabilisé.
-  - UX anti-erreur: **couleur de sidebar configurable par organisation** (visuel “scope changed”).
+    - Last Owner non-revocable
+    - Immutable audit logs (no delete)
+  - "Double activation":
+    - Admin activates technically (providers/regions/zones/types/models/api_keys/users/plan)
+    - Manager activates economically (providers/regions/zones/types/models/api_keys/users/plan)
+    - Operational only if both activations are OK (per resource)
+    - UX: display "non-operational" state + alert indicating missing flag (tech/eco)
+  - (Later) **PostgreSQL RLS** once model is stabilized.
+  - Anti-error UX: **sidebar color configurable per organization** (visual "scope changed").
 
-📄 Roadmap cible: `docs/MULTI_TENANT_ROADMAP.md` (users first-class + org workspaces + community offerings + entitlements + billing tokens)
+📄 Target roadmap: `docs/syntheses/MULTI_TENANT_ROADMAP.md` (users first-class + org workspaces + community offerings + entitlements + token billing)
 
-- **API keys org-owned (prévu)**:
-  - Activer `api_keys.organization_id` (actuellement nullable) + migration data (si besoin).
-  - Résolution “consumer org” via API key (prioritaire) ou session (org courante).
+- **Org-owned API keys (planned)**:
+  - Activate `api_keys.organization_id` (currently nullable) + data migration (if needed).
+  - "Consumer org" resolution via API key (priority) or session (current org).
 
-- **Partage de modèles inter-org (provider→consumer)**:
+- **Inter-org model sharing (provider→consumer)**:
   - CRUD `organization_models` (publish/unpublish).
   - CRUD `organization_model_shares` (grant/pause/revoke + pricing JSONB).
-  - Convention d’identifiant “virtual model”: `org_slug/model_code` (côté OpenAI proxy).
-  - Clarifier `visibility`: `public | unlisted | private` (private = org-only; unlisted = non listé mais accessible si autorisé).
-  - Ajouter “consumer org discovery prefs” (autoriser/masquer public/payant/payant-with-contract).
+  - "Virtual model" identifier convention: `org_slug/model_code` (OpenAI proxy side).
+  - Clarify `visibility`: `public | unlisted | private` (private = org-only; unlisted = not listed but accessible if authorized).
+  - Add "consumer org discovery prefs" (allow/hide public/paid/paid-with-contract).
 
-- **Chargeback tokens (v1)**:
-  - Ingestion/persistence des events `finops.inference_usage` avec:
+- **Token chargeback (v1)**:
+  - Ingestion/persistence of `finops.inference_usage` events with:
     - `consumer_organization_id`, `provider_organization_id`, `organization_model_id`
-    - pricing v1: `eur_per_1k_tokens`, calcul `charged_amount_eur`
-  - Exposer dashboards/exports “consommation par org / provider / consumer”.
+    - pricing v1: `eur_per_1k_tokens`, calculate `charged_amount_eur`
+  - Expose dashboards/exports "consumption per org / provider / consumer".
 
 ### Data plane / perf
-- **Optimisation load-balancing** (sticky, health scoring, failover, retry policy).
+- **Load-balancing optimization** (sticky, health scoring, failover, retry policy).
 - **Auto scale-up / auto scale-down**.
 - **Support other Cloud Providers** (AWS/GCP/etc).
 - **Support on-prem / private / shared bare metal servers**.
 
 ---
 
-## 🎯 Next steps Multi-Tenant (priorités)
+## 🎯 Next steps Multi-Tenant (priorities)
 
-**Phase Immédiate (Sprint 1)** :
-1) **Architecture Sessions Multi-Org** : Table `user_sessions`, migration `current_organization_id`, enrichir JWT avec `session_id` + `organization_role`  
-2) **Migration PK/FK** : Appliquer migration `20260106000000_add_multi_tenant_primary_keys_and_foreign_keys.sql`
+**Immediate Phase (Sprint 1)**:
+1) **Multi-Org Session Architecture**: `user_sessions` table, `current_organization_id` migration, enrich JWT with `session_id` + `organization_role`  
+2) **PK/FK Migration**: Apply migration `20260106000000_add_multi_tenant_primary_keys_and_foreign_keys.sql`
 
-**Phase Court Terme (Sprint 2-3)** :
-3) **Scoping Instances** : Migration SQL + API + UI + Tests pour isoler instances par `organization_id`  
-4) **Scoping Models** : Migration SQL + API + UI + Tests pour isoler modèles par `organization_id`  
-5) **Invitations** : Migration SQL + API + UI + Tests pour inviter users par email
+**Short Term (Sprint 2-3)**:
+3) **Scoping Instances**: SQL migration + API + UI + Tests to isolate instances by `organization_id`  
+4) **Scoping Models**: SQL migration + API + UI + Tests to isolate models by `organization_id`  
+5) **Invitations**: SQL migration + API + UI + Tests to invite users by email
 
-**Phase Moyen Terme (Sprint 4-6)** :
-6) **Scoping API Keys** : API + UI + Tests  
-7) **Scoping Users** : API + UI + Tests  
-8) **Scoping FinOps** : API + UI + Tests  
-9) **Migration Frontend Modules** : Masquer/afficher selon workspace + rôle
+**Medium Term (Sprint 4-6)**:
+6) **Scoping API Keys**: API + UI + Tests  
+7) **Scoping Users**: API + UI + Tests  
+8) **Scoping FinOps**: API + UI + Tests  
+9) **Frontend Module Migration**: Hide/show by workspace + role
 
-**Phase Long Terme (Sprint 7+)** :
-10) **Double Activation** : Tech (Admin) + Eco (Manager) par ressource  
-11) **Model Sharing & Billing** : Partage modèles entre orgs avec facturation au token
+**Long Term (Sprint 7+)**:
+10) **Double Activation**: Tech (Admin) + Eco (Manager) per resource  
+11) **Model Sharing & Billing**: Share models between orgs with token-based billing
 
-**Autres priorités** :
-- **Deploy Staging + DNS** (`studio-stg.inventiv-agents.fr`) avec routing propre UI/API + certs  
-- **Observability** (metrics + dashboards minimum viable)  
-- **LB hardening** + signaux worker (queue depth / TTFT)  
-- **Autoscaling MVP** (politiques + cooldowns)
+**Other priorities**:
+- **Deploy Staging + DNS** (`studio-stg.inventiv-agents.fr`) with proper UI/API routing + certs  
+- **Observability** (minimum viable metrics + dashboards)  
+- **LB hardening** + worker signals (queue depth / TTFT)  
+- **Autoscaling MVP** (policies + cooldowns)
 
 ---
 
-## 🧪 Tests & Validation (nouvelles fonctionnalités)
+## 🧪 Tests & Validation (new features)
 
 ### Progress Tracking
-- ✅ **Test E2E Scaleway** : Validé avec script `test-scaleway/test_complete_validation.rs` - toutes les étapes fonctionnent
-- [ ] **Test unitaire** : Vérifier le calcul de progression pour chaque étape
-- [ ] **Test E2E Mock** : Valider la progression simulée pour instances Mock
-- [ ] **Test UI** : Vérifier l'affichage de la colonne progress dans la table
-- [ ] **Test SSE** : Vérifier la mise à jour en temps réel du progress
+- ✅ **Scaleway E2E Test**: Validated with script `test-scaleway/test_complete_validation.rs` - all steps work
+- [ ] **Unit test**: Verify progress calculation for each step
+- [ ] **Mock E2E test**: Validate simulated progress for Mock instances
+- [ ] **UI test**: Verify progress column display in table
+- [ ] **SSE test**: Verify real-time progress update
 
 ### Agent Version Management
-- [ ] **Test checksum** : Vérifier que le checksum est calculé correctement
-- [ ] **Test vérification** : Valider que le script bootstrap détecte les checksums invalides
-- [ ] **Test endpoint /info** : Vérifier que `/info` retourne les bonnes informations
-- [ ] **Test heartbeat** : Valider que `agent_info` est inclus dans les heartbeats
-- [ ] **Test health check** : Vérifier que le health check récupère et log les infos agent
-- [ ] **Test CI/CD** : Valider que `make agent-version-check` échoue si version non mise à jour
-- [ ] **Test workflow GitHub** : Valider que le workflow `agent-version-bump` fonctionne
-- [ ] **Test version mismatch** : Simuler une version incorrecte et vérifier la détection
-- [ ] **Test checksum mismatch** : Simuler un checksum invalide et vérifier l'échec du bootstrap
+- [ ] **Checksum test**: Verify checksum is calculated correctly
+- [ ] **Verification test**: Validate bootstrap script detects invalid checksums
+- [ ] **/info endpoint test**: Verify `/info` returns correct information
+- [ ] **Heartbeat test**: Validate `agent_info` is included in heartbeats
+- [ ] **Health check test**: Verify health check retrieves and logs agent info
+- [ ] **CI/CD test**: Validate `make agent-version-check` fails if version not updated
+- [ ] **GitHub workflow test**: Validate `agent-version-bump` workflow works
+- [ ] **Version mismatch test**: Simulate incorrect version and verify detection
+- [ ] **Checksum mismatch test**: Simulate invalid checksum and verify bootstrap failure
 
 ### Storage Management
-- [ ] **Test découverte volumes** : Valider que `list_attached_volumes` découvre tous les volumes
-- [ ] **Test création** : Vérifier que les volumes sont trackés immédiatement après création
-- [ ] **Test terminaison** : Valider que tous les volumes sont supprimés lors de la terminaison
-- [ ] **Test volumes boot** : Vérifier que les volumes de boot créés automatiquement sont trackés
-- [ ] **Test volumes persistants** : Valider que `delete_on_terminate=false` préserve les volumes
-- [ ] **Test erreur suppression** : Simuler une erreur de suppression et vérifier le logging
-- [ ] **Test volumes locaux** : Valider la détection et le rejet des volumes locaux pour L40S/L4
-- [ ] **Test récupération** : Vérifier que les volumes non supprimés peuvent être nettoyés manuellement
+- [ ] **Volume discovery test**: Validate `list_attached_volumes` discovers all volumes
+- [ ] **Creation test**: Verify volumes are tracked immediately after creation
+- [ ] **Termination test**: Validate all volumes are deleted on termination
+- [ ] **Boot volumes test**: Verify automatically created boot volumes are tracked
+- [ ] **Persistent volumes test**: Validate `delete_on_terminate=false` preserves volumes
+- [ ] **Deletion error test**: Simulate deletion error and verify logging
+- [ ] **Local volumes test**: Validate detection and rejection of local volumes for L40S/L4
+- [ ] **Recovery test**: Verify non-deleted volumes can be manually cleaned up
 
 ### State Machine
-- [ ] **Test transitions** : Valider chaque transition d'état (booting→ready, booting→startup_failed, etc.)
-- [ ] **Test idempotence** : Vérifier que les transitions sont idempotentes
-- [ ] **Test historique** : Valider que `instance_state_history` enregistre toutes les transitions
-- [ ] **Test récupération** : Vérifier la récupération automatique (STARTUP_TIMEOUT → booting)
-- [ ] **Test erreurs spécifiques** : Valider les transitions vers `startup_failed` avec codes d'erreur spécifiques
+- [ ] **Transition test**: Validate each state transition (booting→ready, booting→startup_failed, etc.)
+- [ ] **Idempotence test**: Verify transitions are idempotent
+- [ ] **History test**: Validate `instance_state_history` records all transitions
+- [ ] **Recovery test**: Verify automatic recovery (STARTUP_TIMEOUT → booting)
+- [ ] **Specific error test**: Validate transitions to `startup_failed` with specific error codes
 
-### Monitoring & Observabilité
-- [ ] **Test health check agent_info** : Vérifier que le health check récupère `/info`
-- [ ] **Test métadonnées** : Valider que `agent_info` est stocké dans `worker_metadata`
-- [ ] **Test logs** : Vérifier que les métadonnées agent sont incluses dans les logs de health check
-- [ ] **Test détection problèmes** : Simuler des problèmes (version incorrecte, checksum invalide) et vérifier la détection
-- [ ] **Test rate limiting** : Valider le rate limiting des logs de health check (5min succès, 1min échec)
+### Monitoring & Observability
+- [ ] **Health check agent_info test**: Verify health check retrieves `/info`
+- [ ] **Metadata test**: Validate `agent_info` is stored in `worker_metadata`
+- [ ] **Logs test**: Verify agent metadata is included in health check logs
+- [ ] **Problem detection test**: Simulate problems (incorrect version, invalid checksum) and verify detection
+- [ ] **Rate limiting test**: Validate health check log rate limiting (5min success, 1min failure)
 
-### Intégration
-- [ ] **Test complet cycle** : Provisionner une instance Scaleway et valider :
-  - Découverte des volumes
-  - Vérification checksum agent
-  - Progression 0-100%
-  - Health checks avec agent_info
-  - Terminaison et suppression des volumes
-- [ ] **Test Mock provider** : Valider que toutes les fonctionnalités fonctionnent avec Mock
-- [ ] **Test multi-instances** : Valider avec plusieurs instances en parallèle
-- [ ] **Test récupération** : Valider la récupération après erreurs (timeout, checksum mismatch, etc.)
+### Integration
+- [ ] **Complete cycle test**: Provision Scaleway instance and validate:
+  - Volume discovery
+  - Agent checksum verification
+  - 0-100% progress
+  - Health checks with agent_info
+  - Termination and volume deletion
+- [ ] **Mock provider test**: Validate all features work with Mock
+- [ ] **Multi-instance test**: Validate with multiple instances in parallel
+- [ ] **Recovery test**: Validate recovery after errors (timeout, checksum mismatch, etc.)
 
 ### Documentation
-- [ ] **Mise à jour README** : Ajouter références aux nouveaux documents
-- [ ] **Validation docs** : Vérifier que tous les exemples de code fonctionnent
-- [ ] **Guide utilisateur** : Créer un guide pour utiliser les nouvelles fonctionnalités
+- [ ] **README update**: Add references to new documents
+- [ ] **Docs validation**: Verify all code examples work
+- [ ] **User guide**: Create guide for using new features
 
 ---
 
-## 🚀 Plan d’implémentation (step-by-step, testable) — RBAC + scoping org
+## 🚀 Implementation plan (step-by-step, testable) — RBAC + org scoping
 
 ### Phase 1 — RBAC foundation (backend + tests) → commit
 - **DB (migrations)**:
-  - Normaliser `organization_memberships.role` sur: `owner|admin|manager|user`
-  - Backfill: `member` → `user` (si présent)
-  - Contrainte `CHECK` + `DEFAULT 'user'`
+  - Normalize `organization_memberships.role` to: `owner|admin|manager|user`
+  - Backfill: `member` → `user` (if present)
+  - `CHECK` constraint + `DEFAULT 'user'`
 - **Backend (Rust)**:
-  - Module RBAC (enum + helpers): rôle org, règles d’assignation (Owner/Admin/Manager), double activation (tech/eco)
-  - Tests unitaires sur la matrice RBAC (sans DB)
+  - RBAC module (enum + helpers): org role, assignment rules (Owner/Admin/Manager), double activation (tech/eco)
+  - Unit tests on RBAC matrix (without DB)
 - **Tests**:
   - `cargo check -p inventiv-api`
   - `cargo test -p inventiv-api`
 
-### Phase 2 — Roles associés aux users (membership lifecycle) + tests → commit
-- **API (org-scopé)**:
+### Phase 2 — Roles associated with users (membership lifecycle) + tests → commit
+- **API (org-scoped)**:
   - `GET /organizations/members`
-  - `PUT /organizations/members/:user_id/role` (règles: Owner tout; Manager ↔ User; Admin ↔ User)
-  - `DELETE /organizations/members/:user_id` + invariant “dernier Owner non révocable”
-- **Audit logs**: loguer role changes et removals (immutables)
-- **Tests**: dernier owner, escalations interdites, etc.
+  - `PUT /organizations/members/:user_id/role` (rules: Owner all; Manager ↔ User; Admin ↔ User)
+  - `DELETE /organizations/members/:user_id` + "last Owner non-revocable" invariant
+- **Audit logs**: log role changes and removals (immutable)
+- **Tests**: last owner, forbidden escalations, etc.
 
 ### Phase 3 — Invitations + Users management + tests → commit
 - **DB**: `organization_invitations` (email, token, expiry, role, invited_by, accepted_at)
 - **API**:
   - `POST /organizations/invitations`
   - `GET /organizations/invitations`
-  - `POST /organizations/invitations/:token/accept` (user existant ou création)
-- **UI**: inviter, voir pending, accepter (flow)
+  - `POST /organizations/invitations/:token/accept` (existing user or creation)
+- **UI**: invite, view pending, accept (flow)
 
-### Phase 4 — Settings org-scopés + double activation + tests → commit(s)
-- Providers/regions/zones/types/models/settings scoppés org
-- Double activation **par ressource**:
+### Phase 4 — Org-scoped settings + double activation + tests → commit(s)
+- Providers/regions/zones/types/models/settings scoped to org
+- Double activation **per resource**:
   - Admin = tech only, Manager = eco only, Owner = both
-  - UI: état “non opérationnel” + alerte flag manquant
+  - UI: "non-operational" state + missing flag alert
 
-### Phase 5 — Instances org-scopées + RBAC + tests → commit(s)
+### Phase 5 — Org-scoped instances + RBAC + tests → commit(s)
 - Admin/Owner: ops (provision/terminate/reinstall/scheduling/scaling)
 - Manager: finance gating + dashboards
-- User: usage / lecture selon politique
+- User: usage / read-only per policy
 
 ### Phase 6 — Models/Offerings + RBAC + tests → commit(s)
-- Admin: config technique + publication
-- Manager: pricing + activation économique + partage
-- Owner: tout
+- Admin: technical config + publication
+- Manager: pricing + economic activation + sharing
+- Owner: all

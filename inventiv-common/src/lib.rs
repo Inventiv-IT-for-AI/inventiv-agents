@@ -12,12 +12,15 @@ pub mod worker_target;
 #[sqlx(type_name = "instance_status", rename_all = "snake_case")]
 pub enum InstanceStatus {
     Provisioning, // Request sent to provider
-    Booting,      // Instance is up, installing/loading
-    Ready,        // Healthy and serving traffic
-    Draining,     // Stopping, finishing current requests
-    Terminating,  // Termination requested, waiting provider deletion
-    Terminated,   // Destroyed
-    Archived,     // Archived (hidden from active list)
+    Booting,      // Instance en cours de création, pas encore démarrée
+    Installing,   // Instance up, mais Worker en cours d'installation
+    Starting, // Instance up et running, mais Worker encore en finalisation (download de model, warming, etc.)
+    Ready,    // Healthy and serving traffic
+    Draining, // Stopping, finishing current requests
+    Terminating, // Termination requested, waiting provider deletion
+    Terminated, // Destroyed
+    Archived, // Archived (hidden from active list)
+    Unavailable, // Instance inaccessible ou indisponible, à reconnecter et diagnostiquer pour repasser en Ready ou à décommissioner
     ProvisioningFailed,
     StartupFailed,
     Failed, // Error state

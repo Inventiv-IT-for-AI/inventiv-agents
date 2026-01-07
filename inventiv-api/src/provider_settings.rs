@@ -57,7 +57,7 @@ pub struct UpdateProviderParamsRequest {
 
 fn validate_timeout_s(v: i64) -> bool {
     // Keep sane bounds: 30s .. 24h
-    v >= 30 && v <= 86_400
+    (30..=86_400).contains(&v)
 }
 
 #[utoipa::path(
@@ -271,17 +271,17 @@ pub async fn update_provider_params(
         }
     }
     if let Some(v) = req.worker_health_port {
-        if v < 1 || v > 65535 {
+        if !(1..=65535).contains(&v) {
             return StatusCode::BAD_REQUEST;
         }
     }
     if let Some(v) = req.worker_vllm_port {
-        if v < 1 || v > 65535 {
+        if !(1..=65535).contains(&v) {
             return StatusCode::BAD_REQUEST;
         }
     }
     if let Some(v) = req.worker_data_volume_gb_default {
-        if v < 50 || v > 5000 {
+        if !(50..=5000).contains(&v) {
             return StatusCode::BAD_REQUEST;
         }
     }

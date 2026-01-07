@@ -721,12 +721,18 @@ pub async fn remove_current_organization_member(
     let allowed = if is_self {
         true
     } else {
-        match (actor_role, target_role) {
-            (rbac::OrgRole::Owner, _) => true,
-            (rbac::OrgRole::Admin, rbac::OrgRole::Admin | rbac::OrgRole::User) => true,
-            (rbac::OrgRole::Manager, rbac::OrgRole::Manager | rbac::OrgRole::User) => true,
-            _ => false,
-        }
+        matches!(
+            (actor_role, target_role),
+            (rbac::OrgRole::Owner, _)
+                | (
+                    rbac::OrgRole::Admin,
+                    rbac::OrgRole::Admin | rbac::OrgRole::User
+                )
+                | (
+                    rbac::OrgRole::Manager,
+                    rbac::OrgRole::Manager | rbac::OrgRole::User
+                )
+        )
     };
 
     if !allowed {
@@ -833,6 +839,66 @@ pub async fn leave_current_organization(
     .await
 }
 
+// --- Phase 2 Helpers: Resolve Plan & Wallet selon Workspace ---
+
+/// Résoudre le plan actif selon le workspace (session)
+/// - Session Personal → users.account_plan
+/// - Session Org → organizations.subscription_plan
+pub async fn resolve_active_plan(
+    db: &Pool<Postgres>,
+    user_id: uuid::Uuid,
+    current_organization_id: Option<uuid::Uuid>,
+) -> anyhow::Result<String> {
+    if let Some(org_id) = current_organization_id {
+        // Workspace org → plan org
+        let plan: Option<String> =
+            sqlx::query_scalar("SELECT subscription_plan FROM organizations WHERE id = $1")
+                .bind(org_id)
+                .fetch_optional(db)
+                .await?;
+        Ok(plan.unwrap_or_else(|| "free".to_string()))
+    } else {
+        // Workspace personal → plan user
+        let plan: Option<String> =
+            sqlx::query_scalar("SELECT account_plan FROM users WHERE id = $1")
+                .bind(user_id)
+                .fetch_optional(db)
+                .await?;
+        Ok(plan.unwrap_or_else(|| "free".to_string()))
+    }
+}
+
+/// Résoudre le wallet actif selon le workspace (session)
+/// - Session Personal → users.wallet_balance_eur
+/// - Session Org → organizations.wallet_balance_eur
+///
+/// Retourne le solde en EUR (f64 pour compatibilité avec le reste du code)
+pub async fn resolve_active_wallet(
+    db: &Pool<Postgres>,
+    user_id: uuid::Uuid,
+    current_organization_id: Option<uuid::Uuid>,
+) -> anyhow::Result<Option<f64>> {
+    if let Some(org_id) = current_organization_id {
+        // Workspace org → wallet org
+        let balance: Option<f64> = sqlx::query_scalar(
+            "SELECT CAST(wallet_balance_eur AS float8) FROM organizations WHERE id = $1",
+        )
+        .bind(org_id)
+        .fetch_optional(db)
+        .await?;
+        Ok(balance)
+    } else {
+        // Workspace personal → wallet user
+        let balance: Option<f64> = sqlx::query_scalar(
+            "SELECT CAST(wallet_balance_eur AS float8) FROM users WHERE id = $1",
+        )
+        .bind(user_id)
+        .fetch_optional(db)
+        .await?;
+        Ok(balance)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -862,6 +928,135 @@ mod tests {
         // Ensure schema/migrations exist (safe to re-run in dev DB; in CI prefer a dedicated DB).
         let _ = sqlx::migrate!("../sqlx-migrations").run(&pool).await;
         Some(pool)
+    }
+
+    #[tokio::test]
+    async fn test_resolve_active_plan() {
+        let Some(pool) = setup_pool().await else {
+            return;
+        };
+
+        // Create a test user
+        let user_id = uuid::Uuid::new_v4();
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO users (id, email, password_hash, username, account_plan)
+            VALUES ($1, 'test@example.com', 'hash', 'testuser', 'subscriber')
+            ON CONFLICT (id) DO UPDATE SET account_plan = 'subscriber'
+            "#,
+        )
+        .bind(user_id)
+        .execute(&pool)
+        .await;
+
+        // Test 1: Personal workspace → user account_plan
+        let plan = resolve_active_plan(&pool, user_id, None).await.unwrap();
+        assert_eq!(plan, "subscriber");
+
+        // Test 2: User with free plan
+        let _ = sqlx::query("UPDATE users SET account_plan = 'free' WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await;
+        let plan = resolve_active_plan(&pool, user_id, None).await.unwrap();
+        assert_eq!(plan, "free");
+
+        // Test 3: Organization workspace → org subscription_plan
+        let org_id = uuid::Uuid::new_v4();
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO organizations (id, name, slug, created_by_user_id, subscription_plan)
+            VALUES ($1, 'Test Org', 'test-org', $2, 'subscriber')
+            ON CONFLICT (id) DO UPDATE SET subscription_plan = 'subscriber'
+            "#,
+        )
+        .bind(org_id)
+        .bind(user_id)
+        .execute(&pool)
+        .await;
+
+        let plan = resolve_active_plan(&pool, user_id, Some(org_id)).await.unwrap();
+        assert_eq!(plan, "subscriber");
+
+        // Test 4: Org with free plan
+        let _ = sqlx::query("UPDATE organizations SET subscription_plan = 'free' WHERE id = $1")
+            .bind(org_id)
+            .execute(&pool)
+            .await;
+        let plan = resolve_active_plan(&pool, user_id, Some(org_id)).await.unwrap();
+        assert_eq!(plan, "free");
+
+        // Test 5: Default fallback to 'free' if plan is NULL
+        let _ = sqlx::query("UPDATE organizations SET subscription_plan = NULL WHERE id = $1")
+            .bind(org_id)
+            .execute(&pool)
+            .await;
+        let plan = resolve_active_plan(&pool, user_id, Some(org_id)).await.unwrap();
+        assert_eq!(plan, "free");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_active_wallet() {
+        let Some(pool) = setup_pool().await else {
+            return;
+        };
+
+        // Create a test user
+        let user_id = uuid::Uuid::new_v4();
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO users (id, email, password_hash, username, wallet_balance_eur)
+            VALUES ($1, 'test@example.com', 'hash', 'testuser', 100.50)
+            ON CONFLICT (id) DO UPDATE SET wallet_balance_eur = 100.50
+            "#,
+        )
+        .bind(user_id)
+        .execute(&pool)
+        .await;
+
+        // Test 1: Personal workspace → user wallet
+        let wallet = resolve_active_wallet(&pool, user_id, None).await.unwrap();
+        assert_eq!(wallet, Some(100.50));
+
+        // Test 2: User with zero balance
+        let _ = sqlx::query("UPDATE users SET wallet_balance_eur = 0 WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await;
+        let wallet = resolve_active_wallet(&pool, user_id, None).await.unwrap();
+        assert_eq!(wallet, Some(0.0));
+
+        // Test 3: Organization workspace → org wallet
+        let org_id = uuid::Uuid::new_v4();
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO organizations (id, name, slug, created_by_user_id, wallet_balance_eur)
+            VALUES ($1, 'Test Org', 'test-org', $2, 250.75)
+            ON CONFLICT (id) DO UPDATE SET wallet_balance_eur = 250.75
+            "#,
+        )
+        .bind(org_id)
+        .bind(user_id)
+        .execute(&pool)
+        .await;
+
+        let wallet = resolve_active_wallet(&pool, user_id, Some(org_id)).await.unwrap();
+        assert_eq!(wallet, Some(250.75));
+
+        // Test 4: Org with zero balance
+        let _ = sqlx::query("UPDATE organizations SET wallet_balance_eur = 0 WHERE id = $1")
+            .bind(org_id)
+            .execute(&pool)
+            .await;
+        let wallet = resolve_active_wallet(&pool, user_id, Some(org_id)).await.unwrap();
+        assert_eq!(wallet, Some(0.0));
+
+        // Test 5: Non-existent org → None
+        let non_existent_org = uuid::Uuid::new_v4();
+        let wallet = resolve_active_wallet(&pool, user_id, Some(non_existent_org))
+            .await
+            .unwrap();
+        assert_eq!(wallet, None);
     }
 
     #[tokio::test]

@@ -7,7 +7,7 @@ pub async fn run_inline_migrations(pool: &Pool<Postgres>) {
     // Minimal Schema for Orchestrator to work (Instances Table)
     let schema_sql = r#"
         CREATE TYPE instance_status AS ENUM (
-            'provisioning', 'booting', 'ready', 'draining', 'terminated', 'failed'
+            'provisioning', 'booting', 'installing', 'starting', 'unavailable', 'ready', 'draining', 'terminated', 'failed', 'startup_failed', 'terminating', 'provisioning_failed', 'archived'
         );
         CREATE TABLE IF NOT EXISTS providers (
             id UUID PRIMARY KEY,

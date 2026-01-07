@@ -34,6 +34,9 @@ BEGIN
         CREATE TYPE public.instance_status AS ENUM (
             'provisioning',
             'booting',
+            'installing',
+            'starting',
+            'unavailable',
             'ready',
             'draining',
             'terminated',

@@ -729,7 +729,7 @@ async fn worker_heartbeat(
     let validate_temp = |v: Option<f64>| {
         v.and_then(|x| {
             // Accept temperatures between -50°C and 150°C (reasonable range for GPUs)
-            if x >= -50.0 && x <= 150.0 {
+            if (-50.0..=150.0).contains(&x) {
                 Some(x)
             } else {
                 eprintln!(
