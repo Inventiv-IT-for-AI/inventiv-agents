@@ -82,7 +82,6 @@ export function OrganizationMembersDialog({ open, onOpenChange, actorUserId, act
   useEffect(() => {
     if (!open) return;
     void fetchMembers();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const setRole = async (memberUserId: string, toRole: OrgRole) => {
