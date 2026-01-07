@@ -59,8 +59,8 @@ export function OrganizationInvitationsDialog({
   const { listInvitations, createInvitation, loading, error } = useOrganizationInvitations();
 
   const [invitations, setInvitations] = useState<OrganizationInvitation[]>([]);
+  const [invitationTokens, setInvitationTokens] = useState<Map<string, string>>(new Map()); // Map<invitationId, token>
   const [filter, setFilter] = useState<"all" | "pending" | "accepted" | "expired">("all");
-  const [showCreateForm, setShowCreateForm] = useState(false);
   const [createForm, setCreateForm] = useState({
     email: "",
     role: "user" as OrgRole,

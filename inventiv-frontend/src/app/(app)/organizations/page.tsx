@@ -11,8 +11,9 @@ import { Label } from "@/components/ui/label";
 import { IADataTable, type DataTableSortState, type IADataTableColumn, type LoadRangeResult } from "ia-widgets";
 import { IAAlert, IAAlertDescription, IAAlertTitle } from "ia-designsys";
 import { useSnackbar } from "ia-widgets";
-import { Building2, Users, CheckCircle2 } from "lucide-react";
+import { Building2, Users, CheckCircle2, Mail } from "lucide-react";
 import { OrganizationMembersDialog } from "@/components/organizations/OrganizationMembersDialog";
+import { OrganizationInvitationsDialog } from "@/components/organizations/OrganizationInvitationsDialog";
 
 type OrganizationWithActions = Organization & {
   canManage?: boolean; // owner, admin, or manager
@@ -28,6 +29,7 @@ export default function OrganizationsPage() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [membersOpen, setMembersOpen] = useState(false);
+  const [invitationsOpen, setInvitationsOpen] = useState(false);
   const [selectedOrg, setSelectedOrg] = useState<Organization | null>(null);
   const [currentOrgId, setCurrentOrgId] = useState<string | null>(null);
 
@@ -132,6 +134,11 @@ export default function OrganizationsPage() {
   const openMembers = useCallback((org: Organization) => {
     setSelectedOrg(org);
     setMembersOpen(true);
+  }, []);
+
+  const openInvitations = useCallback((org: Organization) => {
+    setSelectedOrg(org);
+    setInvitationsOpen(true);
   }, []);
 
   const createOrganization = async () => {
@@ -359,19 +366,34 @@ export default function OrganizationsPage() {
 
       {/* Members dialog */}
       {selectedOrg && (
-        <OrganizationMembersDialog
-          open={membersOpen}
-          onOpenChange={(open) => {
-            setMembersOpen(open);
-            if (!open) {
-              setSelectedOrg(null);
-              setRefreshTick((v) => v + 1);
-            }
-          }}
-          organizationId={selectedOrg.id}
-          organizationName={selectedOrg.name}
-          actorOrgRole={selectedOrg.role}
-        />
+        <>
+          <OrganizationMembersDialog
+            open={membersOpen}
+            onOpenChange={(open) => {
+              setMembersOpen(open);
+              if (!open) {
+                setSelectedOrg(null);
+                setRefreshTick((v) => v + 1);
+              }
+            }}
+            organizationId={selectedOrg.id}
+            organizationName={selectedOrg.name}
+            actorOrgRole={selectedOrg.role}
+          />
+          <OrganizationInvitationsDialog
+            open={invitationsOpen}
+            onOpenChange={(open) => {
+              setInvitationsOpen(open);
+              if (!open) {
+                setSelectedOrg(null);
+                setRefreshTick((v) => v + 1);
+              }
+            }}
+            organizationId={selectedOrg.id}
+            organizationName={selectedOrg.name}
+            actorOrgRole={selectedOrg.role}
+          />
+        </>
       )}
     </div>
   );

@@ -8,6 +8,14 @@ export type CreateInvitationParams = {
   expires_in_days?: number;
 };
 
+export type CreateInvitationResponse = {
+  id: string;
+  token: string;
+  email: string;
+  role: string;
+  expires_at: string;
+};
+
 export function useOrganizationInvitations() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,7 +50,7 @@ export function useOrganizationInvitations() {
   }, []);
 
   const createInvitation = useCallback(
-    async (params: CreateInvitationParams): Promise<OrganizationInvitation> => {
+    async (params: CreateInvitationParams): Promise<CreateInvitationResponse> => {
       setError(null);
       setLoading(true);
       try {
@@ -76,7 +84,7 @@ export function useOrganizationInvitations() {
           setError(msg);
           throw new Error(msg);
         }
-        const data = (await res.json()) as OrganizationInvitation;
+        const data = (await res.json()) as CreateInvitationResponse;
         return data;
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Erreur réseau";

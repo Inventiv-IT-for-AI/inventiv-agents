@@ -171,6 +171,10 @@ pub fn create_protected_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             put(provider_settings::update_provider_params),
         )
         .route(
+            "/providers/config-status",
+            get(provider_settings::list_provider_config_status),
+        )
+        .route(
             "/regions",
             get(settings::list_regions).post(settings::create_region),
         )

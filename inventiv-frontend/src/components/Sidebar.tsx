@@ -9,6 +9,8 @@ import { useState, useEffect } from "react";
 import type { Me } from "@/components/account/AccountSection";
 import { AccountSection } from "@/components/account/AccountSection";
 import { FRONTEND_VERSION, getBackendVersion, type BackendVersionInfo } from "@/lib/version";
+import { useInstanceAccess } from "@/hooks/useInstanceAccess";
+import { useAdminDashboardAccess } from "@/hooks/useAdminDashboardAccess";
 
 interface SidebarLinkProps {
     href: string;
@@ -41,6 +43,8 @@ export function Sidebar() {
     const [backendVersion, setBackendVersion] = useState<BackendVersionInfo | null>(null);
     const [showVersionDetails, setShowVersionDetails] = useState(false);
     const isAdmin = meRole === "admin";
+    const instanceAccess = useInstanceAccess();
+    const adminDashboardAccess = useAdminDashboardAccess();
 
     useEffect(() => {
         // Fetch backend version on mount
@@ -100,15 +104,20 @@ export function Sidebar() {
                         </div>
                     </div>
                     <div className="space-y-1">
-                        <SidebarLink href="/" icon={LayoutDashboard} label="Dashboard" />
+                        <SidebarLink href="/my-dashboard" icon={LayoutDashboard} label="My Dashboard" />
                         <SidebarLink href="/chat" icon={MessageSquare} label="Chat" />
-                        <SidebarLink href="/instances" icon={Server} label="Instances" />
+                        {!instanceAccess.loading && instanceAccess.canAccess && (
+                            <SidebarLink href="/instances" icon={Server} label="Instances" />
+                        )}
                         <SidebarLink href="/models" icon={Activity} label="Models" />
                         <SidebarLink href="/observability" icon={Cpu} label="Observability" />
                         <SidebarLink href="/workbench" icon={Terminal} label="Workbench" />
                         <SidebarLink href="/monitoring" icon={BarChart3} label="Monitoring" />
                         <SidebarLink href="/api-keys" icon={KeyRound} label="API Keys" />
                         <SidebarLink href="/organizations" icon={Building2} label="Organizations" />
+                        {!adminDashboardAccess.loading && adminDashboardAccess.canAccess && (
+                            <SidebarLink href="/admin-dashboard" icon={LayoutDashboard} label="Admin Dashboard" />
+                        )}
                         {isAdmin ? <SidebarLink href="/users" icon={Users} label="Users" /> : null}
                         {isAdmin ? <SidebarLink href="/settings" icon={Settings} label="Settings" /> : null}
                     </div>

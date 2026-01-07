@@ -270,25 +270,101 @@ pub async fn create_deployment(
             .into_response();
     }
 
-    // Zone must be active AND belong to the provider via its region
-    let zone_row: Option<(uuid::Uuid, bool, bool)> = sqlx::query_as(
+    // Zone must be active AND belong to the provider.
+    // After schema hardening, zones.code is UNIQUE per provider (zones.provider_id, zones.code).
+    // If the catalog is inconsistent, we fail loudly (no ambiguous fallback).
+    let zone_rows: Vec<(uuid::Uuid, bool, bool)> = sqlx::query_as(
         r#"SELECT z.id
                 , z.is_active
                 , r.is_active
            FROM zones z
            JOIN regions r ON r.id = z.region_id
            WHERE z.code = $1
-             AND r.provider_id = $2"#,
+             AND z.provider_id = $2"#,
     )
     .bind(payload.zone.trim())
     .bind(provider_id)
-    .fetch_optional(&state.db)
+    .fetch_all(&state.db)
     .await
-    .unwrap_or(None);
+    .unwrap_or_default();
 
-    let zone_id = match zone_row {
-        Some((zid, zact, ract)) if zact && ract => zid,
-        _ => {
+    let zone_id = match zone_rows.as_slice() {
+        &[_, _, ..] => {
+            let msg = "Catalog inconsistency: duplicate zone code for provider (expected unique zones.provider_id+code)";
+            let _ = sqlx::query(
+                "UPDATE instances SET status='provisioning_failed', error_code=$2, error_message=$3, failed_at=NOW()
+                 WHERE id=$1"
+            )
+            .bind(instance_id_uuid)
+            .bind("CATALOG_INCONSISTENT")
+            .bind(msg)
+            .execute(&state.db)
+            .await;
+            if let Some(id) = log_id {
+                let duration = start.elapsed().as_millis() as i32;
+                simple_logger::log_action_complete_with_metadata(
+                    &state.db,
+                    id,
+                    "failed",
+                    duration,
+                    Some(msg),
+                    Some(serde_json::json!({"error_code": "CATALOG_INCONSISTENT"})),
+                )
+                .await
+                .ok();
+            }
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(DeploymentResponse {
+                    status: "failed".to_string(),
+                    instance_id,
+                    message: Some(msg.to_string()),
+                }),
+            )
+                .into_response();
+        }
+        [(zid, zact, ract)] => {
+            let (zid, zact, ract) = (*zid, *zact, *ract);
+            if zact && ract {
+                zid
+            } else {
+                let msg = "Invalid zone (not found, inactive, or does not belong to provider)";
+                let _ = sqlx::query(
+                    "UPDATE instances SET status='provisioning_failed', error_code=$2, error_message=$3, failed_at=NOW()
+                     WHERE id=$1"
+                )
+                .bind(instance_id_uuid)
+                .bind("INVALID_ZONE")
+                .bind(msg)
+                .execute(&state.db)
+                .await;
+
+                if let Some(id) = log_id {
+                    let duration = start.elapsed().as_millis() as i32;
+                    simple_logger::log_action_complete_with_metadata(
+                        &state.db,
+                        id,
+                        "failed",
+                        duration,
+                        Some(msg),
+                        Some(serde_json::json!({"error_code": "INVALID_ZONE"})),
+                    )
+                    .await
+                    .ok();
+                }
+
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(DeploymentResponse {
+                        status: "failed".to_string(),
+                        instance_id,
+                        message: Some(msg.to_string()),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+        [] => {
             let msg = "Invalid zone (not found, inactive, or does not belong to provider)";
             let _ = sqlx::query(
                 "UPDATE instances SET status='provisioning_failed', error_code=$2, error_message=$3, failed_at=NOW()
@@ -326,13 +402,14 @@ pub async fn create_deployment(
         }
     };
 
-    // Instance type must exist, be active, and belong to the zone
+    // Instance type must exist, be active, and be available in the zone
     let instance_type_row: Option<(uuid::Uuid, bool)> = sqlx::query_as(
         r#"SELECT it.id, it.is_active
            FROM instance_types it
            JOIN instance_type_zones itz ON itz.instance_type_id = it.id
            WHERE it.code = $1
-             AND itz.zone_id = $2"#,
+             AND itz.zone_id = $2
+             AND itz.is_available = true"#,
     )
     .bind(payload.instance_type.trim())
     .bind(zone_id)

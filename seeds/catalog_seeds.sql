@@ -23,7 +23,7 @@ WHERE NOT EXISTS (SELECT 1 FROM regions WHERE provider_id = (SELECT id FROM prov
 UPDATE regions SET is_active = true, name = 'Local' WHERE provider_id = (SELECT id FROM providers WHERE code='mock' LIMIT 1) AND code = 'local';
 
 -- Mock Provider Zones
-INSERT INTO zones (id, region_id, name, code, is_active) 
+INSERT INTO zones (id, region_id, provider_id, name, code, is_active) 
 SELECT gen_random_uuid(), (SELECT id FROM regions WHERE code='local' AND provider_id = (SELECT id FROM providers WHERE code='mock' LIMIT 1) LIMIT 1), 'Local', 'local', true
 WHERE NOT EXISTS (SELECT 1 FROM zones WHERE region_id = (SELECT id FROM regions WHERE code='local' AND provider_id = (SELECT id FROM providers WHERE code='mock' LIMIT 1) LIMIT 1) AND code = 'local');
 UPDATE zones SET is_active = true, name = 'Local' WHERE region_id = (SELECT id FROM regions WHERE code='local' AND provider_id = (SELECT id FROM providers WHERE code='mock' LIMIT 1) LIMIT 1) AND code = 'local';
@@ -61,27 +61,80 @@ INSERT INTO instance_type_zones (instance_type_id, zone_id, is_available)
 INSERT INTO providers (id, name, code, description, is_active) 
 SELECT gen_random_uuid(), 'Scaleway', 'scaleway', 'Scaleway Cloud Provider', true
 WHERE NOT EXISTS (SELECT 1 FROM providers WHERE code = 'scaleway');
+
+-- Important: deactivate legacy/unknown Scaleway regions/zones (idempotent).
+-- We only keep the "official" region codes used by this project.
+UPDATE regions
+SET is_active = false
+WHERE provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1)
+  AND code NOT IN ('fr-par', 'nl-ams', 'pl-waw');
+UPDATE zones
+SET is_active = false
+WHERE region_id IN (
+    SELECT id FROM regions
+    WHERE provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1)
+      AND code NOT IN ('fr-par', 'nl-ams', 'pl-waw')
+);
 -- Regions
 INSERT INTO regions (id, provider_id, name, code, is_active) 
 SELECT gen_random_uuid(), (SELECT id FROM providers WHERE code='scaleway' LIMIT 1), 'Paris', 'fr-par', true
 WHERE NOT EXISTS (SELECT 1 FROM regions WHERE provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1) AND code = 'fr-par');
+UPDATE regions SET is_active = true, name = 'Paris'
+WHERE provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1) AND code = 'fr-par';
 INSERT INTO regions (id, provider_id, name, code, is_active) 
 SELECT gen_random_uuid(), (SELECT id FROM providers WHERE code='scaleway' LIMIT 1), 'Amsterdam', 'nl-ams', true
 WHERE NOT EXISTS (SELECT 1 FROM regions WHERE provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1) AND code = 'nl-ams');
+UPDATE regions SET is_active = true, name = 'Amsterdam'
+WHERE provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1) AND code = 'nl-ams';
 INSERT INTO regions (id, provider_id, name, code, is_active) 
 SELECT gen_random_uuid(), (SELECT id FROM providers WHERE code='scaleway' LIMIT 1), 'Warsaw', 'pl-waw', false
 WHERE NOT EXISTS (SELECT 1 FROM regions WHERE provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1) AND code = 'pl-waw');
+UPDATE regions SET is_active = false, name = 'Warsaw'
+WHERE provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1) AND code = 'pl-waw';
 
 -- Zones (Assuming IDs from select or hardcoding conceptually, here using subqueries is safer)
-INSERT INTO zones (id, region_id, name, code, is_active) 
-SELECT gen_random_uuid(), (SELECT id FROM regions WHERE code='fr-par' LIMIT 1), 'Paris 1', 'fr-par-1', true
-WHERE NOT EXISTS (SELECT 1 FROM zones WHERE region_id = (SELECT id FROM regions WHERE code='fr-par' LIMIT 1) AND code = 'fr-par-1');
-INSERT INTO zones (id, region_id, name, code, is_active) 
-SELECT gen_random_uuid(), (SELECT id FROM regions WHERE code='fr-par' LIMIT 1), 'Paris 2', 'fr-par-2', true
-WHERE NOT EXISTS (SELECT 1 FROM zones WHERE region_id = (SELECT id FROM regions WHERE code='fr-par' LIMIT 1) AND code = 'fr-par-2');
-INSERT INTO zones (id, region_id, name, code, is_active) 
-SELECT gen_random_uuid(), (SELECT id FROM regions WHERE code='nl-ams' LIMIT 1), 'Amsterdam 1', 'nl-ams-1', true
-WHERE NOT EXISTS (SELECT 1 FROM zones WHERE region_id = (SELECT id FROM regions WHERE code='nl-ams' LIMIT 1) AND code = 'nl-ams-1');
+INSERT INTO zones (id, region_id, provider_id, name, code, is_active) 
+SELECT gen_random_uuid(),
+       (SELECT r.id FROM regions r WHERE r.code='fr-par' AND r.provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1) LIMIT 1),
+       (SELECT id FROM providers WHERE code='scaleway' LIMIT 1),
+       'Paris 1', 'fr-par-1', true
+WHERE NOT EXISTS (
+  SELECT 1 FROM zones z
+  WHERE z.region_id = (SELECT r.id FROM regions r WHERE r.code='fr-par' AND r.provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1) LIMIT 1)
+    AND z.code = 'fr-par-1'
+);
+UPDATE zones z
+SET is_active = true, name = 'Paris 1'
+WHERE z.code = 'fr-par-1'
+  AND z.region_id = (SELECT r.id FROM regions r WHERE r.code='fr-par' AND r.provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1) LIMIT 1);
+INSERT INTO zones (id, region_id, provider_id, name, code, is_active) 
+SELECT gen_random_uuid(),
+       (SELECT r.id FROM regions r WHERE r.code='fr-par' AND r.provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1) LIMIT 1),
+       (SELECT id FROM providers WHERE code='scaleway' LIMIT 1),
+       'Paris 2', 'fr-par-2', true
+WHERE NOT EXISTS (
+  SELECT 1 FROM zones z
+  WHERE z.region_id = (SELECT r.id FROM regions r WHERE r.code='fr-par' AND r.provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1) LIMIT 1)
+    AND z.code = 'fr-par-2'
+);
+UPDATE zones z
+SET is_active = true, name = 'Paris 2'
+WHERE z.code = 'fr-par-2'
+  AND z.region_id = (SELECT r.id FROM regions r WHERE r.code='fr-par' AND r.provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1) LIMIT 1);
+INSERT INTO zones (id, region_id, provider_id, name, code, is_active) 
+SELECT gen_random_uuid(),
+       (SELECT r.id FROM regions r WHERE r.code='nl-ams' AND r.provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1) LIMIT 1),
+       (SELECT id FROM providers WHERE code='scaleway' LIMIT 1),
+       'Amsterdam 1', 'nl-ams-1', true
+WHERE NOT EXISTS (
+  SELECT 1 FROM zones z
+  WHERE z.region_id = (SELECT r.id FROM regions r WHERE r.code='nl-ams' AND r.provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1) LIMIT 1)
+    AND z.code = 'nl-ams-1'
+);
+UPDATE zones z
+SET is_active = true, name = 'Amsterdam 1'
+WHERE z.code = 'nl-ams-1'
+  AND z.region_id = (SELECT r.id FROM regions r WHERE r.code='nl-ams' AND r.provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1) LIMIT 1);
 
 -- Instance Types (Scaleway)
 -- Note: Using individual INSERT statements with WHERE NOT EXISTS for idempotency
@@ -135,6 +188,8 @@ WHERE NOT EXISTS (SELECT 1 FROM instance_types WHERE provider_id = (SELECT id FR
 INSERT INTO instance_type_zones (instance_type_id, zone_id, is_available)
     SELECT it.id, z.id, true FROM instance_types it
     JOIN zones z ON z.code = 'fr-par-2'
+    JOIN regions r ON r.id = z.region_id AND r.code = 'fr-par'
+    JOIN providers p ON p.id = r.provider_id AND p.code = 'scaleway'
     WHERE it.provider_id = (SELECT id FROM providers WHERE code='scaleway' LIMIT 1)
       AND NOT EXISTS (SELECT 1 FROM instance_type_zones WHERE instance_type_id = it.id AND zone_id = z.id);
 

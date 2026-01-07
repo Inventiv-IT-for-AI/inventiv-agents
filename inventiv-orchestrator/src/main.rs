@@ -727,16 +727,16 @@ async fn worker_heartbeat(
     // Helper function to validate and clamp GPU metrics.
     let validate_gpu_util = |v: Option<f64>| v.map(|x| x.clamp(0.0, 100.0));
     let validate_temp = |v: Option<f64>| {
-        v.and_then(|x| {
+        v.map(|x| {
             // Accept temperatures between -50°C and 150°C (reasonable range for GPUs)
             if (-50.0..=150.0).contains(&x) {
-                Some(x)
+                x
             } else {
                 eprintln!(
                     "⚠️ Invalid GPU temperature for instance {}: {}°C (clamping to valid range)",
                     payload.instance_id, x
                 );
-                Some(x.clamp(-50.0, 150.0))
+                x.clamp(-50.0, 150.0)
             }
         })
     };
