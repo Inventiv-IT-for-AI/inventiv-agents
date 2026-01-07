@@ -104,13 +104,18 @@ impl MockProvider {
 
     /// Start a mock runtime Docker compose stack for the given instance.
     async fn start_runtime(&self, instance_id: uuid::Uuid, _server_id: &str) -> Result<String> {
-        let id12 = instance_id.to_string().replace('-', "").chars().take(12).collect::<String>();
+        let id12 = instance_id
+            .to_string()
+            .replace('-', "")
+            .chars()
+            .take(12)
+            .collect::<String>();
         let project_name = format!("mockrt-{}", id12);
         let network_name = self.get_controlplane_network_name().await?;
         // Mock provider always uses mock-echo-model for synthetic mock vLLM
         let model_id = "mock-echo-model".to_string();
         let project_root = self.get_project_root();
-        
+
         // Mock Provider uses synthetic mock vLLM (echo responses) for local testing
         // This validates the complete chain: provisioning, monitoring, decommissioning
         // Real vLLM will be used with real providers (Scaleway, etc.) in staging/prod
@@ -135,19 +140,24 @@ impl MockProvider {
         cmd.env("CONTROLPLANE_NETWORK_NAME", &network_name);
         cmd.env("INSTANCE_ID", instance_id.to_string());
         cmd.env("MOCK_VLLM_MODEL_ID", &model_id);
-        cmd.env("WORKER_SIMULATE_GPU_COUNT", std::env::var("WORKER_SIMULATE_GPU_COUNT").unwrap_or_else(|_| "1".to_string()));
-        cmd.env("WORKER_SIMULATE_GPU_VRAM_MB", std::env::var("WORKER_SIMULATE_GPU_VRAM_MB").unwrap_or_else(|_| "24576".to_string()));
-        cmd.env("WORKER_AUTH_TOKEN", std::env::var("WORKER_AUTH_TOKEN").unwrap_or_else(|_| "dev-worker-token".to_string()));
-        
+        cmd.env(
+            "WORKER_SIMULATE_GPU_COUNT",
+            std::env::var("WORKER_SIMULATE_GPU_COUNT").unwrap_or_else(|_| "1".to_string()),
+        );
+        cmd.env(
+            "WORKER_SIMULATE_GPU_VRAM_MB",
+            std::env::var("WORKER_SIMULATE_GPU_VRAM_MB").unwrap_or_else(|_| "24576".to_string()),
+        );
+        cmd.env(
+            "WORKER_AUTH_TOKEN",
+            std::env::var("WORKER_AUTH_TOKEN").unwrap_or_else(|_| "dev-worker-token".to_string()),
+        );
+
         // Mock vLLM doesn't need model configuration (it just echoes requests)
 
         // Execute with timeout (30 seconds max for docker compose up)
         // Use spawn + select to allow killing the process on timeout
-        let mut child = match cmd
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
+        let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
             Ok(c) => c,
             Err(e) => {
                 return Err(anyhow::anyhow!(
@@ -205,7 +215,7 @@ impl MockProvider {
                 &container_name,
             ]);
             ip_cmd.stdout(Stdio::piped()).stderr(Stdio::null());
-            
+
             match ip_cmd.spawn() {
                 Ok(mut child) => {
                     // Get child ID before select! since wait_with_output() takes ownership
@@ -235,7 +245,7 @@ impl MockProvider {
                             None
                         }
                     };
-                    
+
                     if let Some(ip_str) = ip_result {
                         ip = Some(ip_str);
                         break;
@@ -250,7 +260,7 @@ impl MockProvider {
                 }
             }
         }
-        
+
         if let Some(ip_str) = ip {
             return Ok(ip_str);
         }
@@ -263,15 +273,18 @@ impl MockProvider {
 
     /// Stop a mock runtime Docker compose stack.
     async fn stop_runtime(&self, instance_id: uuid::Uuid) -> Result<()> {
-        let id12 = instance_id.to_string().replace('-', "").chars().take(12).collect::<String>();
+        let id12 = instance_id
+            .to_string()
+            .replace('-', "")
+            .chars()
+            .take(12)
+            .collect::<String>();
         let project_name = format!("mockrt-{}", id12);
         let network_name = self.get_controlplane_network_name().await?;
         let project_root = self.get_project_root();
-        
+
         // Mock Provider only uses synthetic mock vLLM
-        let compose_files = vec![
-            format!("{}/docker-compose.mock-runtime.yml", project_root),
-        ];
+        let compose_files = vec![format!("{}/docker-compose.mock-runtime.yml", project_root)];
 
         // Try stopping with each compose file (best-effort, don't fail if one doesn't exist)
         for compose_file in compose_files {
@@ -290,11 +303,7 @@ impl MockProvider {
             cmd.env("CONTROLPLANE_NETWORK_NAME", &network_name);
 
             // Execute with timeout (10 seconds max for docker compose down)
-            let mut child = match cmd
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
-                .spawn()
-            {
+            let mut child = match cmd.stdout(Stdio::null()).stderr(Stdio::piped()).spawn() {
                 Ok(c) => c,
                 Err(_) => {
                     // Skip if spawn fails (file might not exist)
@@ -329,7 +338,10 @@ impl MockProvider {
                 // Don't fail if runtime doesn't exist (idempotent)
                 if !stderr.contains("No such project") && !stderr.contains("not found") {
                     // Best-effort: log but don't fail termination
-                    eprintln!("⚠️ docker-compose down failed for {} ({}): {}", project_name, compose_file, stderr);
+                    eprintln!(
+                        "⚠️ docker-compose down failed for {} ({}): {}",
+                        project_name, compose_file, stderr
+                    );
                 }
             }
         }
@@ -539,7 +551,12 @@ impl CloudProvider for MockProvider {
 
         // Fallback: try to get IP from running Docker container
         if let Some(instance_id) = self.resolve_instance_id(server_id).await? {
-            let id12 = instance_id.to_string().replace('-', "").chars().take(12).collect::<String>();
+            let id12 = instance_id
+                .to_string()
+                .replace('-', "")
+                .chars()
+                .take(12)
+                .collect::<String>();
             let project_name = format!("mockrt-{}", id12);
             let container_name = format!("{}-mock-vllm-1", project_name);
 
@@ -609,14 +626,16 @@ impl CloudProvider for MockProvider {
 
         Ok(rows
             .into_iter()
-            .map(|(pid, status, ip, created_at)| inventory::DiscoveredInstance {
-                provider_id: pid.clone(),
-                name: pid,
-                zone: zone.to_string(),
-                status,
-                ip_address: ip,
-                created_at,
-            })
+            .map(
+                |(pid, status, ip, created_at)| inventory::DiscoveredInstance {
+                    provider_id: pid.clone(),
+                    name: pid,
+                    zone: zone.to_string(),
+                    status,
+                    ip_address: ip,
+                    created_at,
+                },
+            )
             .collect())
     }
 
@@ -642,5 +661,3 @@ impl CloudProvider for MockProvider {
         Ok(false)
     }
 }
-
-

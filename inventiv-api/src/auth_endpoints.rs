@@ -117,7 +117,7 @@ pub async fn login(
         )
             .into_response();
     };
-    
+
     tracing::debug!("Login successful for user_id={}, email={}", u.id, u.email);
 
     // 1. Get user's last used organization (or None for Personal mode)
@@ -188,15 +188,25 @@ pub async fn login(
     .await
     {
         Ok(_) => {
-            tracing::debug!("Session created successfully: session_id={}, user_id={}", session_id, u.id);
+            tracing::debug!(
+                "Session created successfully: session_id={}, user_id={}",
+                session_id,
+                u.id
+            );
         }
         Err(e) => {
             tracing::error!("Failed to create session: {}", e);
-            tracing::error!("Session creation failed for user_id={}, session_id={}, org_id={:?}", 
-                u.id, session_id, default_org_id);
+            tracing::error!(
+                "Session creation failed for user_id={}, session_id={}, org_id={:?}",
+                u.id,
+                session_id,
+                default_org_id
+            );
             // Continue login even if session creation fails
             // The session will be created on next request if needed, or user can retry login
-            tracing::warn!("Continuing login despite session creation failure - user can still authenticate");
+            tracing::warn!(
+                "Continuing login despite session creation failure - user can still authenticate"
+            );
         }
     }
 
@@ -222,7 +232,7 @@ pub async fn logout(
     if let Ok(session_id) = uuid::Uuid::parse_str(&user.session_id) {
         auth::revoke_session(&state.db, session_id).await.ok();
     }
-    
+
     let cookie = auth::clear_session_cookie_value();
     let mut resp = Json(json!({"status":"ok"})).into_response();
     resp.headers_mut().insert(header::SET_COOKIE, cookie);
@@ -281,8 +291,9 @@ pub async fn me(
         .await
         .ok()
         .flatten();
-        
-        org_row.map(|(name, slug)| (Some(name), Some(slug)))
+
+        org_row
+            .map(|(name, slug)| (Some(name), Some(slug)))
             .unwrap_or((None, None))
     } else {
         (None, None)
@@ -414,8 +425,9 @@ pub async fn update_me(
                 .await
                 .ok()
                 .flatten();
-                
-                org_row.map(|(name, slug)| (Some(name), Some(slug)))
+
+                org_row
+                    .map(|(name, slug)| (Some(name), Some(slug)))
                     .unwrap_or((None, None))
             } else {
                 (None, None)

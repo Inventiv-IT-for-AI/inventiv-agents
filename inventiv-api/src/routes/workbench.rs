@@ -1,9 +1,9 @@
 // Workbench routes (auth = cookie/JWT OR API key)
-use axum::middleware;
-use axum::routing::{get, post, put, delete};
-use axum::Router;
 use crate::app::AppState;
 use crate::auth;
+use axum::middleware;
+use axum::routing::{delete, get, post, put};
+use axum::Router;
 use std::sync::Arc;
 
 use crate::workbench;
@@ -41,4 +41,3 @@ pub fn create_workbench_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             auth::require_user_or_api_key,
         ))
 }
-

@@ -3,9 +3,9 @@ use uuid::Uuid;
 
 use crate::finops_events;
 use crate::logger;
-use inventiv_providers::CloudProvider;
 use crate::provider_manager::ProviderManager;
 use crate::state_machine;
+use inventiv_providers::CloudProvider;
 
 async fn delete_instance_volumes_best_effort(
     pool: &Pool<Postgres>,
@@ -14,7 +14,7 @@ async fn delete_instance_volumes_best_effort(
 ) -> bool {
     // Returns true if there are no remaining deletable volumes (all deleted or none configured).
     // We only delete volumes marked delete_on_terminate=true.
-    
+
     // First, get instance info to discover volumes that might not be in instance_volumes table
     let instance_info: Option<(String, String)> = sqlx::query_as(
         r#"
@@ -30,11 +30,14 @@ async fn delete_instance_volumes_best_effort(
     .await
     .ok()
     .flatten();
-    
+
     // Discover volumes attached to the instance (even if not in instance_volumes table)
     // This handles cases where Scaleway creates volumes automatically (e.g., local boot volumes)
     if let Some((provider_instance_id, zone)) = instance_info {
-        if let Ok(attached_volumes) = provider.list_attached_volumes(&zone, &provider_instance_id).await {
+        if let Ok(attached_volumes) = provider
+            .list_attached_volumes(&zone, &provider_instance_id)
+            .await
+        {
             for av in attached_volumes {
                 // Check if this volume is already tracked in instance_volumes
                 let exists: bool = sqlx::query_scalar(
@@ -45,24 +48,23 @@ async fn delete_instance_volumes_best_effort(
                 .fetch_one(pool)
                 .await
                 .unwrap_or(false);
-                
+
                 if !exists {
                     // Volume exists at provider but not in our DB - track it so we can delete it
                     eprintln!(
                         "🔍 [job-terminator] Discovered untracked volume {} for instance {} - adding to deletion queue",
                         av.provider_volume_id, instance_id
                     );
-                    
+
                     let row_id = Uuid::new_v4();
-                    let provider_id: Option<Uuid> = sqlx::query_scalar(
-                        "SELECT provider_id FROM instances WHERE id = $1"
-                    )
-                    .bind(instance_id)
-                    .fetch_optional(pool)
-                    .await
-                    .ok()
-                    .flatten();
-                    
+                    let provider_id: Option<Uuid> =
+                        sqlx::query_scalar("SELECT provider_id FROM instances WHERE id = $1")
+                            .bind(instance_id)
+                            .fetch_optional(pool)
+                            .await
+                            .ok()
+                            .flatten();
+
                     if let Some(pid) = provider_id {
                         let _ = sqlx::query(
                             r#"
@@ -88,7 +90,7 @@ async fn delete_instance_volumes_best_effort(
             }
         }
     }
-    
+
     // Now delete all volumes marked delete_on_terminate=true
     let vols: Vec<(Uuid, String, String, bool)> = sqlx::query_as(
         r#"
@@ -214,7 +216,7 @@ pub async fn terminator_terminating_instances(
     )
     .fetch_all(pool)
     .await?;
-    
+
     if !claimed.is_empty() {
         eprintln!(
             "🔵 [job-terminator] Claimed {} instance(s) for termination processing",
@@ -261,7 +263,8 @@ pub async fn terminator_terminating_instances(
                     .await
                     .unwrap_or(None)
                     .unwrap_or_else(|| ProviderManager::current_provider_name());
-            if let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()).await {
+            if let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()).await
+            {
                 let _ =
                     delete_instance_volumes_best_effort(pool, provider.as_ref(), instance_id).await;
             }
@@ -408,11 +411,16 @@ pub async fn terminator_terminating_instances(
                     Ok(true) => {
                         // Even if terminate_instance returns Ok(true), the instance may still be stopping
                         // Check instance state to determine if this is a retry or truly completed
-                        let instance_state = provider.get_server_state(&zone, &provider_instance_id).await.ok().flatten();
-                        let is_still_stopping = instance_state.as_deref()
+                        let instance_state = provider
+                            .get_server_state(&zone, &provider_instance_id)
+                            .await
+                            .ok()
+                            .flatten();
+                        let is_still_stopping = instance_state
+                            .as_deref()
                             .map(|s| matches!(s, "stopping" | "stopped" | "stopped_in_place"))
                             .unwrap_or(false);
-                        
+
                         if let Some(lid) = log_id {
                             let duration = start.elapsed().as_millis() as i32;
                             if is_still_stopping {
@@ -423,7 +431,10 @@ pub async fn terminator_terminating_instances(
                                     lid,
                                     "retry",
                                     duration,
-                                    Some(&format!("Instance is {} - retrying termination", state_str)),
+                                    Some(&format!(
+                                        "Instance is {} - retrying termination",
+                                        state_str
+                                    )),
                                 )
                                 .await
                                 .ok();
@@ -446,11 +457,16 @@ pub async fn terminator_terminating_instances(
                     Ok(false) => {
                         // Provider returned non-success - this might be normal if instance is still stopping
                         // Check instance state to determine if this is a retry or a real failure
-                        let instance_state = provider.get_server_state(&zone, &provider_instance_id).await.ok().flatten();
-                        let is_stopping = instance_state.as_deref()
+                        let instance_state = provider
+                            .get_server_state(&zone, &provider_instance_id)
+                            .await
+                            .ok()
+                            .flatten();
+                        let is_stopping = instance_state
+                            .as_deref()
                             .map(|s| matches!(s, "stopping" | "stopped" | "stopped_in_place"))
                             .unwrap_or(false);
-                        
+
                         if let Some(lid) = log_id {
                             let duration = start.elapsed().as_millis() as i32;
                             if is_stopping {
@@ -461,7 +477,10 @@ pub async fn terminator_terminating_instances(
                                     lid,
                                     "retry",
                                     duration,
-                                    Some(&format!("Instance is {} - retrying termination", state_str)),
+                                    Some(&format!(
+                                        "Instance is {} - retrying termination",
+                                        state_str
+                                    )),
                                 )
                                 .await
                                 .ok();
@@ -492,32 +511,50 @@ pub async fn terminator_terminating_instances(
                     Err(e) => {
                         let msg = e.to_string();
                         // Check if error indicates instance is stopping (normal retry scenario)
-                        let is_stopping_retry = msg.contains("current state: stopping") 
+                        let is_stopping_retry = msg.contains("current state: stopping")
                             || msg.contains("current state: stopped")
                             || msg.contains("failed to stop");
-                        
+
                         if let Some(lid) = log_id {
                             let duration = start.elapsed().as_millis() as i32;
                             if is_stopping_retry {
                                 // Extract state from error message if available
                                 let state_msg = if msg.contains("current state:") {
-                                    msg.split("current state: ").nth(1)
+                                    msg.split("current state: ")
+                                        .nth(1)
                                         .and_then(|s| s.split_whitespace().next())
-                                        .map(|s| format!("Instance is {} - retrying termination", s))
-                                        .unwrap_or_else(|| "Instance is stopping - retrying termination".to_string())
+                                        .map(|s| {
+                                            format!("Instance is {} - retrying termination", s)
+                                        })
+                                        .unwrap_or_else(|| {
+                                            "Instance is stopping - retrying termination"
+                                                .to_string()
+                                        })
                                 } else {
                                     "Instance is stopping - retrying termination".to_string()
                                 };
-                                
+
                                 // This is a normal retry, not a failure
-                                logger::log_event_complete(pool, lid, "retry", duration, Some(&state_msg))
-                                    .await
-                                    .ok();
+                                logger::log_event_complete(
+                                    pool,
+                                    lid,
+                                    "retry",
+                                    duration,
+                                    Some(&state_msg),
+                                )
+                                .await
+                                .ok();
                             } else {
                                 // Real error - log as failed
-                                logger::log_event_complete(pool, lid, "failed", duration, Some(&msg))
-                                    .await
-                                    .ok();
+                                logger::log_event_complete(
+                                    pool,
+                                    lid,
+                                    "failed",
+                                    duration,
+                                    Some(&msg),
+                                )
+                                .await
+                                .ok();
                                 let _ = sqlx::query(
                                     "UPDATE instances
                                      SET last_reconciliation = NULL,
@@ -574,11 +611,16 @@ pub async fn terminator_terminating_instances(
                         }
                         Ok(false) => {
                             // Check if instance is stopping (normal retry scenario)
-                            let instance_state = provider.get_server_state(&zone, &provider_instance_id).await.ok().flatten();
-                            let is_stopping = instance_state.as_deref()
+                            let instance_state = provider
+                                .get_server_state(&zone, &provider_instance_id)
+                                .await
+                                .ok()
+                                .flatten();
+                            let is_stopping = instance_state
+                                .as_deref()
                                 .map(|s| matches!(s, "stopping" | "stopped" | "stopped_in_place"))
                                 .unwrap_or(false);
-                            
+
                             if is_stopping {
                                 let state_str = instance_state.as_deref().unwrap_or("stopping");
                                 logger::log_event_complete(
@@ -605,10 +647,10 @@ pub async fn terminator_terminating_instances(
                         Err(e2) => {
                             let err_msg = e2.to_string();
                             // Check if error indicates instance is stopping (normal retry scenario)
-                            let is_stopping_retry = err_msg.contains("current state: stopping") 
+                            let is_stopping_retry = err_msg.contains("current state: stopping")
                                 || err_msg.contains("current state: stopped")
                                 || err_msg.contains("failed to stop");
-                            
+
                             if is_stopping_retry {
                                 let state_msg = if err_msg.contains("current state:") {
                                     err_msg.split("current state: ").nth(1)
@@ -618,7 +660,7 @@ pub async fn terminator_terminating_instances(
                                 } else {
                                     "Instance is stopping - retrying termination (after check failure)".to_string()
                                 };
-                                
+
                                 logger::log_event_complete(
                                     pool,
                                     lid,

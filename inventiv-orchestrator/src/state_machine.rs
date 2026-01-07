@@ -30,17 +30,19 @@ pub async fn booting_to_ready(
     reason: &str,
 ) -> Result<bool, sqlx::Error> {
     // Get current status BEFORE update for logging
-    let prev_status: Option<String> = sqlx::query_scalar(
-        "SELECT status::text FROM instances WHERE id = $1"
-    )
-    .bind(instance_id)
-    .fetch_optional(db)
-    .await
-    .ok()
-    .flatten();
-    
-    eprintln!("🔄 [state_machine] booting_to_ready: instance {}, current_status={:?}", instance_id, prev_status);
-    
+    let prev_status: Option<String> =
+        sqlx::query_scalar("SELECT status::text FROM instances WHERE id = $1")
+            .bind(instance_id)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
+
+    eprintln!(
+        "🔄 [state_machine] booting_to_ready: instance {}, current_status={:?}",
+        instance_id, prev_status
+    );
+
     let res = sqlx::query(
         "UPDATE instances
          SET status = 'ready',
@@ -54,7 +56,7 @@ pub async fn booting_to_ready(
 
     if res.rows_affected() > 0 {
         eprintln!("✅ [state_machine] booting_to_ready: Successfully updated instance {} to ready (rows_affected={})", instance_id, res.rows_affected());
-        
+
         let log_id = logger::log_event_with_metadata(
             db,
             "INSTANCE_READY",
@@ -112,19 +114,21 @@ pub async fn installing_to_starting(
     reason: &str,
 ) -> Result<bool, sqlx::Error> {
     // Get current status BEFORE update for logging
-    let current_status: Option<String> = sqlx::query_scalar(
-        "SELECT status::text FROM instances WHERE id = $1"
-    )
-    .bind(instance_id)
-    .fetch_optional(db)
-    .await
-    .ok()
-    .flatten();
-    
+    let current_status: Option<String> =
+        sqlx::query_scalar("SELECT status::text FROM instances WHERE id = $1")
+            .bind(instance_id)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
+
     let from_status = current_status.as_deref().unwrap_or("unknown");
-    
-    eprintln!("🔄 [state_machine] installing_to_starting: instance {}, current_status={:?}", instance_id, current_status);
-    
+
+    eprintln!(
+        "🔄 [state_machine] installing_to_starting: instance {}, current_status={:?}",
+        instance_id, current_status
+    );
+
     let res = sqlx::query(
         "UPDATE instances
          SET status = 'starting'
@@ -168,15 +172,14 @@ pub async fn booting_to_startup_failed(
     .ok();
 
     // Get current status for logging
-    let current_status: Option<String> = sqlx::query_scalar(
-        "SELECT status::text FROM instances WHERE id = $1"
-    )
-    .bind(instance_id)
-    .fetch_optional(db)
-    .await
-    .ok()
-    .flatten();
-    
+    let current_status: Option<String> =
+        sqlx::query_scalar("SELECT status::text FROM instances WHERE id = $1")
+            .bind(instance_id)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
+
     let res = sqlx::query(
         "UPDATE instances
          SET status = 'startup_failed',
@@ -199,7 +202,14 @@ pub async fn booting_to_startup_failed(
 
     if res.rows_affected() > 0 {
         let from_status = current_status.as_deref().unwrap_or("booting");
-        log_state_transition(db, instance_id, from_status, "startup_failed", error_message).await;
+        log_state_transition(
+            db,
+            instance_id,
+            from_status,
+            "startup_failed",
+            error_message,
+        )
+        .await;
         Ok(true)
     } else {
         Ok(false)

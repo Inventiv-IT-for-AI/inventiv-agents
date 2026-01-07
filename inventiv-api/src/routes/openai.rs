@@ -1,9 +1,9 @@
 // OpenAI-compatible proxy routes (auth = cookie/JWT OR API key)
+use crate::app::AppState;
+use crate::auth;
 use axum::middleware;
 use axum::routing::{get, post};
 use axum::Router;
-use crate::app::AppState;
-use crate::auth;
 use std::sync::Arc;
 
 use crate::handlers::openai::openai_list_models;
@@ -23,4 +23,3 @@ pub fn create_openai_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             auth::require_user_or_api_key,
         ))
 }
-

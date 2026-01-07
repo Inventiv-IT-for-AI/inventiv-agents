@@ -389,12 +389,13 @@ pub async fn create_deployment(
 
     // Model must exist and be active
     let model_id = payload.model_id.unwrap();
-    let model_active: bool = sqlx::query_scalar("SELECT COALESCE(is_active, false) FROM models WHERE id = $1")
-        .bind(model_id)
-        .fetch_optional(&state.db)
-        .await
-        .unwrap_or(None)
-        .unwrap_or(false);
+    let model_active: bool =
+        sqlx::query_scalar("SELECT COALESCE(is_active, false) FROM models WHERE id = $1")
+            .bind(model_id)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None)
+            .unwrap_or(false);
 
     if !model_active {
         let msg = "Invalid model (not found or inactive)";
@@ -626,4 +627,3 @@ pub async fn create_deployment(
         }
     }
 }
-

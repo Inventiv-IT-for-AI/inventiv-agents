@@ -19,7 +19,9 @@ use crate::app::AppState;
         (status = 500, description = "Failed to trigger reconciliation", body = serde_json::Value)
     )
 )]
-pub async fn manual_reconcile_trigger(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+pub async fn manual_reconcile_trigger(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
     println!("🔍 Manual reconciliation triggered via API");
 
     // Publish Redis event for orchestrator
@@ -176,7 +178,9 @@ pub struct ActionTypeResponse {
         (status = 200, description = "List of action types", body = Vec<ActionTypeResponse>)
     )
 )]
-pub async fn list_action_types(State(state): State<Arc<AppState>>) -> Json<Vec<ActionTypeResponse>> {
+pub async fn list_action_types(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<ActionTypeResponse>> {
     let rows = sqlx::query_as::<Postgres, ActionTypeResponse>(
         "SELECT code, label, icon, color_class, category, is_active
          FROM action_types
@@ -189,4 +193,3 @@ pub async fn list_action_types(State(state): State<Arc<AppState>>) -> Json<Vec<A
 
     Json(rows)
 }
-

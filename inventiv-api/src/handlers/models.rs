@@ -120,13 +120,13 @@ pub async fn list_compatible_models(
         WHERE m.is_active = true
           AND check_model_instance_compatibility(m.id, $1) = true
         ORDER BY m.name
-        "#
+        "#,
     )
     .bind(instance_type_id)
     .fetch_all(&state.db)
     .await
     .unwrap_or(vec![]);
-    
+
     Json(models)
 }
 
@@ -274,7 +274,7 @@ pub async fn get_recommended_data_volume(
     let Ok(uid) = uuid::Uuid::parse_str(&id) else {
         return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_id"}))).into_response();
     };
-    
+
     // Get model from DB
     let model: Option<LlmModel> = sqlx::query_as(
         r#"SELECT id, name, model_id, required_vram_gb, context_length, is_active, data_volume_gb, metadata, created_at, updated_at
@@ -284,11 +284,11 @@ pub async fn get_recommended_data_volume(
     .fetch_optional(&state.db)
     .await
     .unwrap_or(None);
-    
+
     let Some(model) = model else {
         return (StatusCode::NOT_FOUND, Json(json!({"error":"not_found"}))).into_response();
     };
-    
+
     // Get default_gb from provider settings or env
     let default_gb: i64 = if let Some(provider_id_str) = params.get("provider_id") {
         if let Ok(provider_id) = uuid::Uuid::parse_str(provider_id_str) {
@@ -319,11 +319,12 @@ pub async fn get_recommended_data_volume(
             .filter(|gb| *gb > 0)
             .unwrap_or(200)
     };
-    
+
     // Calculate recommended size using centralized logic
-    let recommended_gb = inventiv_common::worker_storage::recommended_data_volume_gb(&model.model_id, default_gb)
-        .unwrap_or(default_gb);
-    
+    let recommended_gb =
+        inventiv_common::worker_storage::recommended_data_volume_gb(&model.model_id, default_gb)
+            .unwrap_or(default_gb);
+
     let response = RecommendedDataVolumeResponse {
         model_id: model.model_id.clone(),
         model_name: model.name.clone(),
@@ -331,7 +332,7 @@ pub async fn get_recommended_data_volume(
         default_gb,
         stored_data_volume_gb: model.data_volume_gb,
     };
-    
+
     (StatusCode::OK, Json(response)).into_response()
 }
 
@@ -368,4 +369,3 @@ pub async fn delete_model(
         }
     }
 }
-

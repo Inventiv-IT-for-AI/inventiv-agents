@@ -7,4 +7,3 @@ pub async fn create_pool(database_url: &str) -> Result<Pool<Postgres>, sqlx::Err
         .connect(database_url)
         .await
 }
-

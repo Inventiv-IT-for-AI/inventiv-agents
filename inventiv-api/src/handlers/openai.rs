@@ -9,7 +9,9 @@ use crate::app::AppState;
 use crate::auth;
 use crate::openai_proxy;
 
-pub async fn openai_list_models(State(state): State<Arc<AppState>>) -> impl axum::response::IntoResponse {
+pub async fn openai_list_models(
+    State(state): State<Arc<AppState>>,
+) -> impl axum::response::IntoResponse {
     // Return *live* models based on worker heartbeats:
     // - if at least 1 READY worker serves model_id and heartbeat is recent -> exposed in /v1/models
     // - if no workers for a model for a while -> disappears (staleness window)
@@ -131,4 +133,3 @@ fn openai_worker_stale_seconds_env() -> i64 {
         .and_then(|s| s.parse().ok())
         .unwrap_or(300)
 }
-

@@ -1,10 +1,10 @@
 // Common test utilities and fixtures
 use axum::Router;
 use inventiv_api::app::AppState;
-use inventiv_api::config::{database::create_pool, redis::create_client};
-use inventiv_api::routes::{create_router, public, worker, openai, workbench, protected};
-use inventiv_api::setup::{run_migrations, maybe_seed_catalog, maybe_seed_provider_credentials};
 use inventiv_api::bootstrap_admin;
+use inventiv_api::config::{database::create_pool, redis::create_client};
+use inventiv_api::routes::{create_router, openai, protected, public, workbench, worker};
+use inventiv_api::setup::{maybe_seed_catalog, maybe_seed_provider_credentials, run_migrations};
 use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 use tokio::sync::OnceCell;
@@ -20,26 +20,27 @@ static TEST_REDIS_CLIENT: OnceCell<redis::Client> = OnceCell::const_new();
 pub async fn get_test_db_pool() -> Pool<Postgres> {
     TEST_DB_POOL
         .get_or_init(|| async {
-            let database_url = std::env::var("TEST_DATABASE_URL")
-                .unwrap_or_else(|_| "postgresql://postgres:postgres@localhost:5432/inventiv_test".to_string());
-            
+            let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
+                "postgresql://postgres:postgres@localhost:5432/inventiv_test".to_string()
+            });
+
             let pool = create_pool(&database_url)
                 .await
                 .expect("Failed to create test database pool");
-            
+
             // Run migrations
             run_migrations(&pool)
                 .await
                 .expect("Failed to run migrations on test database");
-            
+
             // Seed catalog (includes Mock provider)
             maybe_seed_catalog(&pool).await;
             maybe_seed_provider_credentials(&pool).await;
-            
+
             // Bootstrap admin and default organization
             bootstrap_admin::ensure_default_admin(&pool).await;
             bootstrap_admin::ensure_default_organization(&pool).await;
-            
+
             pool
         })
         .await
@@ -52,9 +53,8 @@ pub async fn get_test_redis_client() -> redis::Client {
         .get_or_init(|| async {
             let redis_url = std::env::var("TEST_REDIS_URL")
                 .unwrap_or_else(|_| "redis://localhost:6379/1".to_string());
-            
-            create_client(&redis_url)
-                .expect("Failed to create test Redis client")
+
+            create_client(&redis_url).expect("Failed to create test Redis client")
         })
         .await
         .clone()
@@ -79,7 +79,7 @@ pub async fn create_test_app_service() -> Router {
     let db_pool = get_test_db_pool().await;
     let redis_client = get_test_redis_client().await;
     let state = AppState::new(redis_client, db_pool);
-    
+
     // Create router without state first
     let app = Router::new()
         .merge(public::create_public_routes())
@@ -87,12 +87,11 @@ pub async fn create_test_app_service() -> Router {
         .merge(openai::create_openai_routes(state.clone()))
         .merge(workbench::create_workbench_routes(state.clone()))
         .merge(protected::create_protected_routes(state.clone()));
-    
+
     // Apply CORS
     let cors = inventiv_api::app::create_cors();
     app.layer(cors).with_state(state)
 }
-
 
 /// Clean up test data (optional, can be called between tests)
 pub async fn cleanup_test_data(pool: &Pool<Postgres>) {
@@ -101,19 +100,19 @@ pub async fn cleanup_test_data(pool: &Pool<Postgres>) {
         .execute(pool)
         .await
         .ok();
-    
+
     // Clean up test users (except admin)
     sqlx::query("DELETE FROM users WHERE email LIKE 'test_%@test.com'")
         .execute(pool)
         .await
         .ok();
-    
+
     // Clean up test organizations (except default)
     sqlx::query("DELETE FROM organizations WHERE slug LIKE 'test-%' AND slug != 'inventiv-it'")
         .execute(pool)
         .await
         .ok();
-    
+
     // Clean up test API keys
     sqlx::query("DELETE FROM api_keys WHERE name LIKE 'test-%'")
         .execute(pool)
@@ -127,12 +126,12 @@ pub async fn ensure_mock_provider(pool: &Pool<Postgres>) -> uuid::Uuid {
         "INSERT INTO providers (id, name, code, description, is_active)
          VALUES (gen_random_uuid(), 'Mock', 'mock', 'Mock provider for testing', true)
          ON CONFLICT (code) DO UPDATE SET is_active = true
-         RETURNING id"
+         RETURNING id",
     )
     .fetch_one(pool)
     .await
     .expect("Failed to ensure Mock provider");
-    
+
     provider_id
 }
 
@@ -152,7 +151,7 @@ pub async fn get_mock_zone_id(pool: &Pool<Postgres>) -> Option<uuid::Uuid> {
          JOIN regions r ON r.id = z.region_id
          JOIN providers p ON p.id = r.provider_id
          WHERE p.code = 'mock' AND z.code = 'local' AND z.is_active = true
-         LIMIT 1"
+         LIMIT 1",
     )
     .fetch_optional(pool)
     .await
@@ -166,7 +165,7 @@ pub async fn get_mock_instance_type_id(pool: &Pool<Postgres>) -> Option<uuid::Uu
         "SELECT it.id FROM instance_types it
          JOIN providers p ON p.id = it.provider_id
          WHERE p.code = 'mock' AND it.code = 'mock-local-instance' AND it.is_active = true
-         LIMIT 1"
+         LIMIT 1",
     )
     .fetch_optional(pool)
     .await
@@ -175,27 +174,22 @@ pub async fn get_mock_instance_type_id(pool: &Pool<Postgres>) -> Option<uuid::Uu
 }
 
 /// Create a test user and return user ID and password hash
-pub async fn create_test_user(
-    pool: &Pool<Postgres>,
-    email: &str,
-    password: &str,
-) -> uuid::Uuid {
+pub async fn create_test_user(pool: &Pool<Postgres>, email: &str, password: &str) -> uuid::Uuid {
     use bcrypt::{hash, DEFAULT_COST};
-    
-    let password_hash = hash(password, DEFAULT_COST)
-        .expect("Failed to hash test password");
-    
+
+    let password_hash = hash(password, DEFAULT_COST).expect("Failed to hash test password");
+
     let user_id: uuid::Uuid = sqlx::query_scalar(
         "INSERT INTO users (id, email, password_hash, is_active, created_at)
          VALUES (gen_random_uuid(), $1, $2, true, NOW())
-         RETURNING id"
+         RETURNING id",
     )
     .bind(email)
     .bind(password_hash)
     .fetch_one(pool)
     .await
     .expect("Failed to create test user");
-    
+
     user_id
 }
 
@@ -206,14 +200,14 @@ pub async fn create_test_session(
     organization_id: Option<uuid::Uuid>,
     role: Option<&str>,
 ) -> String {
-    use sha2::{Sha256, Digest};
-    use base64::{Engine as _, engine::general_purpose};
-    
+    use base64::{engine::general_purpose, Engine as _};
+    use sha2::{Digest, Sha256};
+
     let session_token = format!("test_session_{}", uuid::Uuid::new_v4());
     let mut hasher = Sha256::new();
     hasher.update(session_token.as_bytes());
     let token_hash = general_purpose::STANDARD.encode(hasher.finalize());
-    
+
     sqlx::query(
         "INSERT INTO user_sessions (id, user_id, current_organization_id, organization_role, session_token_hash, ip_address, user_agent, created_at, last_used_at, expires_at)
          VALUES (gen_random_uuid(), $1, $2, $3, $4, '127.0.0.1', 'test', NOW(), NOW(), NOW() + INTERVAL '24 hours')
@@ -226,7 +220,7 @@ pub async fn create_test_session(
     .fetch_one(pool)
     .await
     .expect("Failed to create test session");
-    
+
     session_token
 }
 
@@ -240,26 +234,26 @@ pub async fn create_test_organization(
     let org_id: uuid::Uuid = sqlx::query_scalar(
         "INSERT INTO organizations (id, name, slug, created_at)
          VALUES (gen_random_uuid(), $1, $2, NOW())
-         RETURNING id"
+         RETURNING id",
     )
     .bind(name)
     .bind(slug)
     .fetch_one(pool)
     .await
     .expect("Failed to create test organization");
-    
+
     // Add owner membership
     sqlx::query(
         "INSERT INTO organization_memberships (id, organization_id, user_id, role, created_at)
          VALUES (gen_random_uuid(), $1, $2, 'owner', NOW())
-         ON CONFLICT (organization_id, user_id) DO UPDATE SET role = 'owner'"
+         ON CONFLICT (organization_id, user_id) DO UPDATE SET role = 'owner'",
     )
     .bind(org_id)
     .bind(owner_id)
     .execute(pool)
     .await
     .expect("Failed to add owner to organization");
-    
+
     org_id
 }
 
@@ -267,13 +261,11 @@ pub async fn create_test_organization(
 /// This prevents accidental provisioning of real cloud resources
 pub async fn enforce_mock_only_provider(pool: &Pool<Postgres>) {
     // Deactivate all providers except Mock
-    sqlx::query(
-        "UPDATE providers SET is_active = false WHERE code != 'mock'"
-    )
-    .execute(pool)
-    .await
-    .expect("Failed to deactivate non-Mock providers");
-    
+    sqlx::query("UPDATE providers SET is_active = false WHERE code != 'mock'")
+        .execute(pool)
+        .await
+        .expect("Failed to deactivate non-Mock providers");
+
     // Ensure Mock provider is active
     ensure_mock_provider(pool).await;
 }
@@ -287,7 +279,7 @@ pub fn assert_mock_provider_only(request: &serde_json::Value) {
             provider_code
         );
     }
-    
+
     // If provider_id is specified, verify it's Mock
     if let Some(provider_id) = request.get("provider_id").and_then(|v| v.as_str()) {
         // We can't verify UUID without DB lookup, but we can log a warning
@@ -295,4 +287,3 @@ pub fn assert_mock_provider_only(request: &serde_json::Value) {
         eprintln!("WARNING: Test uses provider_id instead of provider_code. Ensure it's Mock provider UUID.");
     }
 }
-

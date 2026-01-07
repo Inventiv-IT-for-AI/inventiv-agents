@@ -9,7 +9,7 @@ use axum::{
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use sqlx::{Pool, Postgres};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -18,9 +18,9 @@ pub struct AuthUser {
     pub user_id: uuid::Uuid,
     pub email: String,
     pub role: String,
-    pub session_id: String,  // UUID of the session in user_sessions table
+    pub session_id: String, // UUID of the session in user_sessions table
     pub current_organization_id: Option<uuid::Uuid>,
-    pub current_organization_role: Option<String>,  // owner|admin|manager|user
+    pub current_organization_role: Option<String>, // owner|admin|manager|user
 }
 
 #[derive(Clone, Debug)]
@@ -38,10 +38,10 @@ struct Claims {
     email: String,
     role: String,
     // Session context
-    session_id: String,  // UUID of the session in user_sessions table
+    session_id: String, // UUID of the session in user_sessions table
     current_organization_id: Option<String>,
-    current_organization_role: Option<String>,  // owner|admin|manager|user
-    jti: String,  // JWT ID (for revocation/rotation)
+    current_organization_role: Option<String>, // owner|admin|manager|user
+    jti: String,                               // JWT ID (for revocation/rotation)
     iat: usize,
     exp: usize,
 }
@@ -344,7 +344,10 @@ pub async fn require_user_or_api_key(
             // Verify session in DB
             if let Ok(session_id) = uuid::Uuid::parse_str(&user.session_id) {
                 let token_hash = hash_session_token(&tok);
-                if verify_session_db(&db, session_id, &token_hash).await.unwrap_or(false) {
+                if verify_session_db(&db, session_id, &token_hash)
+                    .await
+                    .unwrap_or(false)
+                {
                     update_session_last_used(&db, session_id).await.ok();
                     req.extensions_mut().insert(user);
                     return next.run(req).await;
@@ -367,7 +370,10 @@ pub async fn require_user_or_api_key(
             // Verify session in DB
             if let Ok(session_id) = uuid::Uuid::parse_str(&user.session_id) {
                 let token_hash = hash_session_token(&tok);
-                if verify_session_db(&db, session_id, &token_hash).await.unwrap_or(false) {
+                if verify_session_db(&db, session_id, &token_hash)
+                    .await
+                    .unwrap_or(false)
+                {
                     update_session_last_used(&db, session_id).await.ok();
                     req.extensions_mut().insert(user);
                     return next.run(req).await;
@@ -409,7 +415,7 @@ struct SessionRow {
     current_organization_id: Option<uuid::Uuid>,
     organization_role: Option<String>,
     session_token_hash: String,
-    ip_address: Option<String>,  // IP as string from DB
+    ip_address: Option<String>, // IP as string from DB
     user_agent: Option<String>,
     created_at: chrono::DateTime<chrono::Utc>,
     last_used_at: chrono::DateTime<chrono::Utc>,
@@ -424,12 +430,12 @@ pub async fn create_session(
     user_id: uuid::Uuid,
     current_organization_id: Option<uuid::Uuid>,
     organization_role: Option<String>,
-    ip_address: Option<String>,  // IP as string (e.g., "192.168.1.1")
+    ip_address: Option<String>, // IP as string (e.g., "192.168.1.1")
     user_agent: Option<String>,
     token_hash: String,
 ) -> anyhow::Result<()> {
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(jwt_ttl_seconds() as i64);
-    
+
     sqlx::query(
         r#"
         INSERT INTO user_sessions (
@@ -450,7 +456,7 @@ pub async fn create_session(
     .bind(expires_at)
     .execute(db)
     .await?;
-    
+
     Ok(())
 }
 
@@ -477,7 +483,7 @@ pub async fn verify_session_db(
     .bind(token_hash)
     .fetch_optional(db)
     .await?;
-    
+
     Ok(row.is_some())
 }
 
@@ -486,13 +492,11 @@ pub async fn update_session_last_used(
     db: &Pool<Postgres>,
     session_id: uuid::Uuid,
 ) -> anyhow::Result<()> {
-    sqlx::query(
-        "UPDATE user_sessions SET last_used_at = NOW() WHERE id = $1",
-    )
-    .bind(session_id)
-    .execute(db)
-    .await?;
-    
+    sqlx::query("UPDATE user_sessions SET last_used_at = NOW() WHERE id = $1")
+        .bind(session_id)
+        .execute(db)
+        .await?;
+
     Ok(())
 }
 
@@ -517,7 +521,7 @@ pub async fn update_session_org(
     .bind(organization_role)
     .execute(db)
     .await?;
-    
+
     Ok(())
 }
 
@@ -534,22 +538,17 @@ pub async fn update_session_token_hash(
     .bind(token_hash)
     .execute(db)
     .await?;
-    
+
     Ok(())
 }
 
 /// Revoke a session (soft delete)
-pub async fn revoke_session(
-    db: &Pool<Postgres>,
-    session_id: uuid::Uuid,
-) -> anyhow::Result<()> {
-    sqlx::query(
-        "UPDATE user_sessions SET revoked_at = NOW() WHERE id = $1",
-    )
-    .bind(session_id)
-    .execute(db)
-    .await?;
-    
+pub async fn revoke_session(db: &Pool<Postgres>, session_id: uuid::Uuid) -> anyhow::Result<()> {
+    sqlx::query("UPDATE user_sessions SET revoked_at = NOW() WHERE id = $1")
+        .bind(session_id)
+        .execute(db)
+        .await?;
+
     Ok(())
 }
 
@@ -572,7 +571,7 @@ pub async fn get_user_last_org(
     .bind(user_id)
     .fetch_optional(db)
     .await?;
-    
+
     Ok(row.and_then(|r| r.0))
 }
 
@@ -587,14 +586,14 @@ pub fn extract_ip_address(headers: &HeaderMap) -> Option<String> {
             }
         }
     }
-    
+
     // Try X-Real-IP
     if let Some(real_ip) = headers.get("x-real-ip") {
         if let Ok(real_ip_str) = real_ip.to_str() {
             return Some(real_ip_str.trim().to_string());
         }
     }
-    
+
     // Fallback: try to parse from Remote-Addr (if available)
     // Note: In most cases, this won't be available in headers
     None

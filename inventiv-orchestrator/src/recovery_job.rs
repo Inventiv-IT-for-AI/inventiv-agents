@@ -6,7 +6,7 @@ use crate::services;
 use crate::state_machine;
 
 /// job-recovery: handles stuck instances in various states.
-/// 
+///
 /// This job provides resilience by:
 /// 1. Recovering TERMINATING instances that didn't get processed (similar to provisioning_job)
 /// 2. Detecting and recovering from state machine deadlocks
@@ -68,7 +68,7 @@ async fn recover_stuck_instances(
                     "🔄 [job-recovery] Recovering stuck TERMINATING instance {} (provider_instance_id={}, zone={})",
                     instance_id, provider_instance_id, zone
                 );
-                
+
                 let db_for_log = pool.clone();
                 let log_id = logger::log_event_with_metadata(
                     &db_for_log,
@@ -99,9 +99,15 @@ async fn recover_stuck_instances(
                     .await;
 
                     if let Some(lid) = log_id {
-                        logger::log_event_complete(&db_for_complete, lid, "success", 0, Some("Recovery triggered"))
-                            .await
-                            .ok();
+                        logger::log_event_complete(
+                            &db_for_complete,
+                            lid,
+                            "success",
+                            0,
+                            Some("Recovery triggered"),
+                        )
+                        .await
+                        .ok();
                     }
                 });
                 recovered += 1;
@@ -130,7 +136,7 @@ async fn recover_stuck_instances(
             "⚠️ [job-recovery] Instance {} stuck in BOOTING for {}s - marking as startup_failed",
             instance_id, age_seconds
         );
-        
+
         let _ = logger::log_event_with_metadata(
             pool,
             "RECOVERY_STARTUP_FAILED",
@@ -156,4 +162,3 @@ async fn recover_stuck_instances(
 
     Ok(recovered)
 }
-

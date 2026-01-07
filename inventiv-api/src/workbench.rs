@@ -266,7 +266,11 @@ async fn fetch_run(db: &Pool<Postgres>, run_id: uuid::Uuid) -> Option<WorkbenchR
     .flatten()
 }
 
-async fn actor_can_access_project(db: &Pool<Postgres>, user: &auth::AuthUser, project_id: uuid::Uuid) -> bool {
+async fn actor_can_access_project(
+    db: &Pool<Postgres>,
+    user: &auth::AuthUser,
+    project_id: uuid::Uuid,
+) -> bool {
     let ok: bool = sqlx::query_scalar(
         r#"
         SELECT EXISTS(
@@ -369,7 +373,13 @@ pub async fn create_workbench_run(
         .title
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .map(|s| if s.len() > 200 { s[..200].to_string() } else { s });
+        .map(|s| {
+            if s.len() > 200 {
+                s[..200].to_string()
+            } else {
+                s
+            }
+        });
     let shared_with_org = req.shared_with_org.unwrap_or(false);
 
     let (org_id, user_for_checks) = match &actor {
@@ -531,7 +541,11 @@ pub async fn update_workbench_run(
     };
 
     if !actor_can_access_run(&state.db, &Actor::User(u.clone()), id).await {
-        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"not_found"}))).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error":"not_found"})),
+        )
+            .into_response();
     }
 
     if let Some(pid) = req.project_id {
@@ -546,12 +560,14 @@ pub async fn update_workbench_run(
 
     // Share toggle is only allowed if run is org-scoped and user is member of that org.
     // We keep it simple: shared_with_org can only be true when run.organization_id is set.
-    let run_org: Option<uuid::Uuid> = sqlx::query_scalar("SELECT organization_id FROM workbench_runs WHERE id=$1 AND deleted_at IS NULL")
-        .bind(id)
-        .fetch_optional(&state.db)
-        .await
-        .ok()
-        .flatten();
+    let run_org: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT organization_id FROM workbench_runs WHERE id=$1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
 
     let mut shared_with_org = req.shared_with_org;
     if let Some(true) = shared_with_org {
@@ -565,7 +581,7 @@ pub async fn update_workbench_run(
         if org_id.is_nil() {
             // org-less run cannot be shared
         } else {
-        let is_member: bool = sqlx::query_scalar(
+            let is_member: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM organization_memberships WHERE user_id=$1 AND organization_id=$2)",
         )
         .bind(u.user_id)
@@ -573,13 +589,13 @@ pub async fn update_workbench_run(
         .fetch_one(&state.db)
         .await
         .unwrap_or(false);
-        if !is_member {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({"error":"forbidden","message":"not_a_member"})),
-            )
-                .into_response();
-        }
+            if !is_member {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({"error":"forbidden","message":"not_a_member"})),
+                )
+                    .into_response();
+            }
         }
     }
 
@@ -588,7 +604,13 @@ pub async fn update_workbench_run(
         .map(|s| s.trim().to_string())
         .map(|s| if s.is_empty() { None } else { Some(s) })
         .unwrap_or(None)
-        .map(|s| if s.len() > 200 { s[..200].to_string() } else { s });
+        .map(|s| {
+            if s.len() > 200 {
+                s[..200].to_string()
+            } else {
+                s
+            }
+        });
 
     let _ = sqlx::query(
         r#"
@@ -607,7 +629,11 @@ pub async fn update_workbench_run(
     .await;
 
     let Some(run) = fetch_run(&state.db, id).await else {
-        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"not_found"}))).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error":"not_found"})),
+        )
+            .into_response();
     };
     Json(run).into_response()
 }
@@ -650,13 +676,19 @@ pub async fn delete_workbench_run(
     .await
     .unwrap_or(false);
     if !ok {
-        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"not_found"}))).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error":"not_found"})),
+        )
+            .into_response();
     }
 
-    let _ = sqlx::query("UPDATE workbench_runs SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL")
-        .bind(id)
-        .execute(&state.db)
-        .await;
+    let _ = sqlx::query(
+        "UPDATE workbench_runs SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await;
 
     // Return last visible snapshot (best-effort)
     let run: Option<WorkbenchRunRow> = sqlx::query_as::<Postgres, WorkbenchRunRow>(
@@ -680,7 +712,11 @@ pub async fn delete_workbench_run(
 
     match run {
         Some(r) => Json(r).into_response(),
-        None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"not_found"}))).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error":"not_found"})),
+        )
+            .into_response(),
     }
 }
 
@@ -748,7 +784,11 @@ pub async fn create_workbench_project(
         )
             .into_response();
     }
-    let name = if name.len() > 120 { name[..120].to_string() } else { name };
+    let name = if name.len() > 120 {
+        name[..120].to_string()
+    } else {
+        name
+    };
 
     let org_id = u.current_organization_id;
     let shared = req.shared_with_org.unwrap_or(false) && org_id.is_some();
@@ -809,22 +849,33 @@ pub async fn update_workbench_project(
     .await
     .unwrap_or(false);
     if !owned {
-        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"not_found"}))).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error":"not_found"})),
+        )
+            .into_response();
     }
 
     let name = req
         .name
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .map(|s| if s.len() > 120 { s[..120].to_string() } else { s });
+        .map(|s| {
+            if s.len() > 120 {
+                s[..120].to_string()
+            } else {
+                s
+            }
+        });
 
     // shared_with_org only if org_id is set
-    let org_id: Option<uuid::Uuid> = sqlx::query_scalar("SELECT organization_id FROM workbench_projects WHERE id=$1")
-        .bind(id)
-        .fetch_optional(&state.db)
-        .await
-        .ok()
-        .flatten();
+    let org_id: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT organization_id FROM workbench_projects WHERE id=$1")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
     let shared = req.shared_with_org.map(|b| b && org_id.is_some());
 
     let _ = sqlx::query(
@@ -857,7 +908,11 @@ pub async fn update_workbench_project(
 
     match row {
         Some(p) => (StatusCode::OK, Json(p)).into_response(),
-        None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"not_found"}))).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error":"not_found"})),
+        )
+            .into_response(),
     }
 }
 
@@ -888,7 +943,11 @@ pub async fn delete_workbench_project(
     .await
     .unwrap_or(false);
     if !owned {
-        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"not_found"}))).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error":"not_found"})),
+        )
+            .into_response();
     }
 
     let _ = sqlx::query("UPDATE workbench_projects SET deleted_at = NOW(), updated_at = NOW() WHERE id=$1 AND deleted_at IS NULL")
@@ -917,7 +976,11 @@ pub async fn delete_workbench_project(
 
     match row {
         Some(p) => (StatusCode::OK, Json(p)).into_response(),
-        None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"not_found"}))).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error":"not_found"})),
+        )
+            .into_response(),
     }
 }
 
@@ -960,7 +1023,11 @@ pub async fn get_workbench_run(
     .await
     .unwrap_or_default();
 
-    Json(WorkbenchRunWithMessages { run, messages: msgs }).into_response()
+    Json(WorkbenchRunWithMessages {
+        run,
+        messages: msgs,
+    })
+    .into_response()
 }
 
 #[utoipa::path(
@@ -1106,5 +1173,3 @@ pub async fn complete_workbench_run(
 
     Json(run).into_response()
 }
-
-

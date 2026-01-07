@@ -33,12 +33,23 @@ pub async fn update_instance_request_metrics(
 }
 
 /// Extract token usage from OpenAI API response JSON
-pub fn extract_token_usage(response_json: &serde_json::Value) -> (Option<i32>, Option<i32>, Option<i32>) {
+pub fn extract_token_usage(
+    response_json: &serde_json::Value,
+) -> (Option<i32>, Option<i32>, Option<i32>) {
     let usage = response_json.get("usage");
     if let Some(usage_obj) = usage.and_then(|u| u.as_object()) {
-        let prompt_tokens = usage_obj.get("prompt_tokens").and_then(|v| v.as_i64()).map(|v| v as i32);
-        let completion_tokens = usage_obj.get("completion_tokens").and_then(|v| v.as_i64()).map(|v| v as i32);
-        let total_tokens = usage_obj.get("total_tokens").and_then(|v| v.as_i64()).map(|v| v as i32);
+        let prompt_tokens = usage_obj
+            .get("prompt_tokens")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32);
+        let completion_tokens = usage_obj
+            .get("completion_tokens")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32);
+        let total_tokens = usage_obj
+            .get("total_tokens")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32);
         (prompt_tokens, completion_tokens, total_tokens)
     } else {
         (None, None, None)
@@ -48,7 +59,7 @@ pub fn extract_token_usage(response_json: &serde_json::Value) -> (Option<i32>, O
 /// Resolve model UUID from model_id string
 pub async fn resolve_model_uuid(db: &Pool<Postgres>, model_id: &str) -> Option<Uuid> {
     sqlx::query_scalar::<Postgres, Uuid>(
-        "SELECT id FROM models WHERE model_id = $1 AND is_active = true LIMIT 1"
+        "SELECT id FROM models WHERE model_id = $1 AND is_active = true LIMIT 1",
     )
     .bind(model_id)
     .fetch_optional(db)
@@ -74,7 +85,7 @@ pub async fn store_inference_usage(
     }
 
     let consumer_org_id = user.and_then(|u| u.current_organization_id);
-    
+
     let _ = sqlx::query(
         r#"
         INSERT INTO finops.inference_usage (
@@ -106,50 +117,77 @@ pub fn parse_tokens_from_sse_stream(stream_text: &str) -> (Option<i32>, Option<i
     let mut input_tokens = None;
     let mut output_tokens = None;
     let mut total_tokens = None;
-    
-    eprintln!("[METRICS] parse_tokens_from_sse_stream: input_length={}", stream_text.len());
-    
+
+    eprintln!(
+        "[METRICS] parse_tokens_from_sse_stream: input_length={}",
+        stream_text.len()
+    );
+
     // Parse SSE stream backwards to find the last chunk with usage
     // OpenAI sends usage in a separate data chunk before [DONE]
     let lines: Vec<&str> = stream_text.lines().collect();
-    eprintln!("[METRICS] parse_tokens_from_sse_stream: total_lines={}", lines.len());
-    
+    eprintln!(
+        "[METRICS] parse_tokens_from_sse_stream: total_lines={}",
+        lines.len()
+    );
+
     for (idx, line) in lines.iter().rev().enumerate() {
         if line.starts_with("data: ") {
             let payload = line.strip_prefix("data: ").unwrap_or("").trim();
             if payload == "[DONE]" {
-                eprintln!("[METRICS] parse_tokens_from_sse_stream: found [DONE] at line {}", idx);
+                eprintln!(
+                    "[METRICS] parse_tokens_from_sse_stream: found [DONE] at line {}",
+                    idx
+                );
                 continue;
             }
             if let Ok(chunk_json) = serde_json::from_str::<serde_json::Value>(payload) {
                 if let Some(usage_obj) = chunk_json.get("usage").and_then(|u| u.as_object()) {
-                    input_tokens = usage_obj.get("prompt_tokens").and_then(|v| v.as_i64()).map(|v| v as i32);
-                    output_tokens = usage_obj.get("completion_tokens").and_then(|v| v.as_i64()).map(|v| v as i32);
-                    total_tokens = usage_obj.get("total_tokens").and_then(|v| v.as_i64()).map(|v| v as i32);
+                    input_tokens = usage_obj
+                        .get("prompt_tokens")
+                        .and_then(|v| v.as_i64())
+                        .map(|v| v as i32);
+                    output_tokens = usage_obj
+                        .get("completion_tokens")
+                        .and_then(|v| v.as_i64())
+                        .map(|v| v as i32);
+                    total_tokens = usage_obj
+                        .get("total_tokens")
+                        .and_then(|v| v.as_i64())
+                        .map(|v| v as i32);
                     eprintln!("[METRICS] parse_tokens_from_sse_stream: found usage at line {}: input={:?}, output={:?}, total={:?}", 
                         idx, input_tokens, output_tokens, total_tokens);
                     break; // Found usage, stop parsing
                 } else {
-                    eprintln!("[METRICS] parse_tokens_from_sse_stream: line {} has no usage field", idx);
+                    eprintln!(
+                        "[METRICS] parse_tokens_from_sse_stream: line {} has no usage field",
+                        idx
+                    );
                 }
             } else {
-                eprintln!("[METRICS] parse_tokens_from_sse_stream: failed to parse JSON at line {}: {}", idx, payload.chars().take(100).collect::<String>());
+                eprintln!(
+                    "[METRICS] parse_tokens_from_sse_stream: failed to parse JSON at line {}: {}",
+                    idx,
+                    payload.chars().take(100).collect::<String>()
+                );
             }
         }
     }
-    
+
     if input_tokens.is_none() && output_tokens.is_none() && total_tokens.is_none() {
         eprintln!("[METRICS] parse_tokens_from_sse_stream: no usage found, showing last 10 lines:");
         for line in lines.iter().rev().take(10) {
-            eprintln!("[METRICS] parse_tokens_from_sse_stream: {}", line.chars().take(200).collect::<String>());
+            eprintln!(
+                "[METRICS] parse_tokens_from_sse_stream: {}",
+                line.chars().take(200).collect::<String>()
+            );
         }
     }
-    
+
     (input_tokens, output_tokens, total_tokens)
 }
 
-#[derive(Serialize, Deserialize, sqlx::FromRow)]
-#[derive(utoipa::ToSchema)]
+#[derive(Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct InstanceRequestMetrics {
     pub instance_id: Uuid,
     pub total_requests: i64,
@@ -191,12 +229,12 @@ pub async fn get_instance_metrics(
             last_request_at
         FROM instance_request_metrics
         WHERE instance_id = $1
-        "#
+        "#,
     )
     .bind(instance_id)
     .fetch_optional(&state.db)
     .await;
-    
+
     match row {
         Ok(Some(metrics)) => Json(metrics).into_response(),
         Ok(None) => (
@@ -212,4 +250,3 @@ pub async fn get_instance_metrics(
         }
     }
 }
-

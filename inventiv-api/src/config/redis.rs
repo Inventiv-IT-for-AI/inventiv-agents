@@ -4,4 +4,3 @@ use redis::Client;
 pub fn create_client(redis_url: &str) -> Result<Client, redis::RedisError> {
     Client::open(redis_url)
 }
-

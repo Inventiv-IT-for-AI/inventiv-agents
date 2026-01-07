@@ -218,7 +218,7 @@ export function SessionsDialog({ open, onOpenChange }: SessionsDialogProps) {
         <DialogHeader>
           <DialogTitle>Sessions actives</DialogTitle>
           <DialogDescription>
-            Gérez vos sessions actives. Vous pouvez révoquer les sessions sur d'autres appareils.
+            Gérez vos sessions actives. Vous pouvez révoquer les sessions sur d&apos;autres appareils.
           </DialogDescription>
         </DialogHeader>
 

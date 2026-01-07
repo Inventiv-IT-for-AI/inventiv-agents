@@ -3,16 +3,16 @@ use crate::health_check_flow;
 use crate::logger;
 use crate::provider_manager::ProviderManager;
 use crate::state_machine;
-use inventiv_common::worker_storage;
 use bigdecimal::FromPrimitive;
+use inventiv_common::worker_storage;
 use serde_json::json;
 use sqlx::{Pool, Postgres};
 use std::fs;
+use std::net::TcpStream;
+use std::time::Duration as StdDuration;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use uuid::Uuid;
-use std::net::TcpStream;
-use std::time::Duration as StdDuration;
 
 fn gb_to_bytes(gb: i64) -> i64 {
     // Scaleway APIs use bytes; use decimal GB.
@@ -71,11 +71,13 @@ async fn is_normal_retry(
     // Check error message for common retry indicators
     if let Some(msg) = error_msg {
         // Check for stopping/stopped states in error messages (termination retries)
-        if msg.contains("current state: stopping") 
+        if msg.contains("current state: stopping")
             || msg.contains("current state: stopped")
-            || msg.contains("failed to stop") {
+            || msg.contains("failed to stop")
+        {
             let state_msg = if msg.contains("current state:") {
-                msg.split("current state: ").nth(1)
+                msg.split("current state: ")
+                    .nth(1)
                     .and_then(|s| s.split_whitespace().next())
                     .map(|s| format!("Instance is {} - retrying", s))
                     .unwrap_or_else(|| "Instance is stopping - retrying".to_string())
@@ -84,20 +86,24 @@ async fn is_normal_retry(
             };
             return (true, Some(state_msg));
         }
-        
+
         // Check for starting/starting states in error messages
-        if msg.contains("current state: starting") 
+        if msg.contains("current state: starting")
             || msg.contains("current state: booting")
-            || msg.contains("instance is starting") {
+            || msg.contains("instance is starting")
+        {
             return (true, Some("Instance is starting - retrying".to_string()));
         }
     }
-    
+
     // Check actual instance state via provider API
     if let Ok(Some(state)) = provider.get_server_state(zone, provider_instance_id).await {
         let state_lower = state.to_ascii_lowercase();
         // Transitional states that indicate normal retry scenarios
-        if matches!(state_lower.as_str(), "starting" | "booting" | "stopping" | "stopped" | "stopped_in_place") {
+        if matches!(
+            state_lower.as_str(),
+            "starting" | "booting" | "stopping" | "stopped" | "stopped_in_place"
+        ) {
             let retry_msg = match state_lower.as_str() {
                 "starting" | "booting" => "Instance is starting - retrying",
                 "stopping" => "Instance is stopping - retrying",
@@ -107,7 +113,7 @@ async fn is_normal_retry(
             return (true, Some(retry_msg.to_string()));
         }
     }
-    
+
     // Not a retry scenario - real error
     (false, None)
 }
@@ -218,14 +224,14 @@ pub async fn process_termination(
                 zone,
                 current_status
             );
-            
+
             // Ensure instance is in terminating status (idempotent transition)
             let _ = sqlx::query(
                 "UPDATE instances 
                  SET status = 'terminating'
                  WHERE id = $1 
                    AND status NOT IN ('terminated', 'archived')
-                   AND status != 'terminating'"
+                   AND status != 'terminating'",
             )
             .bind(id_uuid)
             .execute(&pool)
@@ -243,23 +249,27 @@ pub async fn process_termination(
                 .unwrap_or(None)
                 .unwrap_or_else(|| ProviderManager::current_provider_name());
 
-                let provider_res = ProviderManager::get_provider(&provider_code, pool.clone()).await;
+                let provider_res =
+                    ProviderManager::get_provider(&provider_code, pool.clone()).await;
                 match provider_res {
                     Ok(provider) => {
                         eprintln!(
                             "🔵 [process_termination] Got provider '{}' for instance {}",
                             provider_code, id_uuid
                         );
-                    // STEP 1: Discover volumes attached to instance (best effort - don't fail if this errors)
-                    eprintln!("🔵 [process_termination] Step 1: Discovering volumes attached to instance {}", provider_instance_id);
-                    
-                    // Discover volumes attached to the instance (even if not in instance_volumes table)
-                    // Use best-effort: if this fails, we'll still try to delete volumes from DB
-                    match provider.list_attached_volumes(&zone, &provider_instance_id).await {
-                        Ok(attached_volumes) => {
-                            for av in attached_volumes {
-                                // Check if this volume is already tracked in instance_volumes
-                                let exists: bool = sqlx::query_scalar(
+                        // STEP 1: Discover volumes attached to instance (best effort - don't fail if this errors)
+                        eprintln!("🔵 [process_termination] Step 1: Discovering volumes attached to instance {}", provider_instance_id);
+
+                        // Discover volumes attached to the instance (even if not in instance_volumes table)
+                        // Use best-effort: if this fails, we'll still try to delete volumes from DB
+                        match provider
+                            .list_attached_volumes(&zone, &provider_instance_id)
+                            .await
+                        {
+                            Ok(attached_volumes) => {
+                                for av in attached_volumes {
+                                    // Check if this volume is already tracked in instance_volumes
+                                    let exists: bool = sqlx::query_scalar(
                                     "SELECT EXISTS(SELECT 1 FROM instance_volumes WHERE instance_id=$1 AND provider_volume_id=$2 AND deleted_at IS NULL)",
                                 )
                                 .bind(id_uuid)
@@ -267,26 +277,26 @@ pub async fn process_termination(
                                 .fetch_one(&pool)
                                 .await
                                 .unwrap_or(false);
-                                
-                                if !exists {
-                                    // Volume exists at provider but not in our DB - track it so we can delete it
-                                    eprintln!(
+
+                                    if !exists {
+                                        // Volume exists at provider but not in our DB - track it so we can delete it
+                                        eprintln!(
                                         "🔍 [process_termination] Discovered untracked volume {} for instance {} - adding to deletion queue",
                                         av.provider_volume_id, id_uuid
                                     );
-                                    
-                                    let row_id = Uuid::new_v4();
-                                    let provider_id: Option<Uuid> = sqlx::query_scalar(
-                                        "SELECT provider_id FROM instances WHERE id = $1"
-                                    )
-                                    .bind(id_uuid)
-                                    .fetch_optional(&pool)
-                                    .await
-                                    .ok()
-                                    .flatten();
-                                    
-                                    if let Some(pid) = provider_id {
-                                        let _ = sqlx::query(
+
+                                        let row_id = Uuid::new_v4();
+                                        let provider_id: Option<Uuid> = sqlx::query_scalar(
+                                            "SELECT provider_id FROM instances WHERE id = $1",
+                                        )
+                                        .bind(id_uuid)
+                                        .fetch_optional(&pool)
+                                        .await
+                                        .ok()
+                                        .flatten();
+
+                                        if let Some(pid) = provider_id {
+                                            let _ = sqlx::query(
                                             r#"
                                             INSERT INTO instance_volumes 
                                             (id, instance_id, provider_id, zone_code, provider_volume_id, provider_volume_name, volume_type, size_bytes, delete_on_terminate, status, attached_at, is_boot)
@@ -305,24 +315,24 @@ pub async fn process_termination(
                                         .bind(av.boot)
                                         .execute(&pool)
                                         .await;
+                                        }
                                     }
                                 }
                             }
+                            Err(e) => {
+                                eprintln!("⚠️ [process_termination] Failed to list attached volumes (continuing anyway): {}", e);
+                                // Continue - we'll delete volumes from DB anyway
+                            }
                         }
-                        Err(e) => {
-                            eprintln!("⚠️ [process_termination] Failed to list attached volumes (continuing anyway): {}", e);
-                            // Continue - we'll delete volumes from DB anyway
-                        }
-                    }
-                    
-                    // Note: We don't try to detach volumes before termination because:
-                    // 1. Scaleway will detach volumes automatically when instance is deleted
-                    // 2. Detaching volumes while instance is running can cause issues
-                    // 3. If instance deletion fails, we'll delete volumes anyway in Step 3
 
-                    // LOG 2: PROVIDER_TERMINATE (API call to provider)
-                    let api_start = Instant::now();
-                    let log_id_provider = logger::log_event_with_metadata(
+                        // Note: We don't try to detach volumes before termination because:
+                        // 1. Scaleway will detach volumes automatically when instance is deleted
+                        // 2. Detaching volumes while instance is running can cause issues
+                        // 3. If instance deletion fails, we'll delete volumes anyway in Step 3
+
+                        // LOG 2: PROVIDER_TERMINATE (API call to provider)
+                        let api_start = Instant::now();
+                        let log_id_provider = logger::log_event_with_metadata(
                         &pool,
                         "PROVIDER_TERMINATE",
                         "in_progress",
@@ -333,54 +343,18 @@ pub async fn process_termination(
                     .await
                     .ok();
 
-                    // Call terminate_instance with timeout to avoid indefinite blocking
-                    // Note: terminate_instance may need to stop the instance first (up to 60s), then delete it
-                    // So we use a longer timeout (90s) to account for stop + delete operations
-                    eprintln!("🔵 [process_termination] Step 2: Terminating instance {} on provider (timeout: 90s)", provider_instance_id);
-                    let terminate_future = provider.terminate_instance(&zone, &provider_instance_id);
-                    let result = tokio::time::timeout(Duration::from_secs(90), terminate_future).await;
-                    
-                    let termination_ok: bool = match result {
-                        Ok(Ok(true)) => {
-                            println!("✅ Successfully terminated instance on Provider");
-                            if let Some(log_id) = log_id_provider {
-                                let api_duration = api_start.elapsed().as_millis() as i32;
-                                logger::log_event_complete(
-                                    &pool,
-                                    log_id,
-                                    "success",
-                                    api_duration,
-                                    None,
-                                )
-                                .await
-                                .ok();
-                            }
-                            true
-                        }
-                        Ok(Ok(false)) => {
-                            let err_msg = "Provider termination call returned non-success status";
-                            println!("⚠️ {}", err_msg);
+                        // Call terminate_instance with timeout to avoid indefinite blocking
+                        // Note: terminate_instance may need to stop the instance first (up to 60s), then delete it
+                        // So we use a longer timeout (90s) to account for stop + delete operations
+                        eprintln!("🔵 [process_termination] Step 2: Terminating instance {} on provider (timeout: 90s)", provider_instance_id);
+                        let terminate_future =
+                            provider.terminate_instance(&zone, &provider_instance_id);
+                        let result =
+                            tokio::time::timeout(Duration::from_secs(90), terminate_future).await;
 
-                            if let Some(log_id) = log_id_provider {
-                                let api_duration = api_start.elapsed().as_millis() as i32;
-                                logger::log_event_complete(
-                                    &pool,
-                                    log_id,
-                                    "failed",
-                                    api_duration,
-                                    Some(err_msg),
-                                )
-                                .await
-                                .ok();
-                            }
-                            // Don't return here - continue to delete volumes even if instance termination failed
-                            false
-                        }
-                        Ok(Err(e)) => {
-                            let err_msg = e.to_string();
-                            if err_msg.contains("404") || err_msg.contains("not found") {
-                                println!("⚠️ Instance not found on Provider (already deleted)");
-                                // Still log as success since the end result is the same
+                        let termination_ok: bool = match result {
+                            Ok(Ok(true)) => {
+                                println!("✅ Successfully terminated instance on Provider");
                                 if let Some(log_id) = log_id_provider {
                                     let api_duration = api_start.elapsed().as_millis() as i32;
                                     logger::log_event_complete(
@@ -388,14 +362,18 @@ pub async fn process_termination(
                                         log_id,
                                         "success",
                                         api_duration,
-                                        Some("Instance already deleted"),
+                                        None,
                                     )
                                     .await
                                     .ok();
                                 }
                                 true
-                            } else {
-                                println!("⚠️ Error terminating on Provider: {:?}", e);
+                            }
+                            Ok(Ok(false)) => {
+                                let err_msg =
+                                    "Provider termination call returned non-success status";
+                                println!("⚠️ {}", err_msg);
+
                                 if let Some(log_id) = log_id_provider {
                                     let api_duration = api_start.elapsed().as_millis() as i32;
                                     logger::log_event_complete(
@@ -403,7 +381,7 @@ pub async fn process_termination(
                                         log_id,
                                         "failed",
                                         api_duration,
-                                        Some(&err_msg),
+                                        Some(err_msg),
                                     )
                                     .await
                                     .ok();
@@ -411,54 +389,92 @@ pub async fn process_termination(
                                 // Don't return here - continue to delete volumes even if instance termination failed
                                 false
                             }
-                        }
-                        Err(_timeout) => {
-                            let err_msg = "Instance termination timed out after 90s";
-                            eprintln!("❌ [process_termination] {}", err_msg);
-                            if let Some(log_id) = log_id_provider {
-                                let api_duration = api_start.elapsed().as_millis() as i32;
-                                logger::log_event_complete(
-                                    &pool,
-                                    log_id,
-                                    "failed",
-                                    api_duration,
-                                    Some(err_msg),
-                                )
-                                .await
-                                .ok();
+                            Ok(Err(e)) => {
+                                let err_msg = e.to_string();
+                                if err_msg.contains("404") || err_msg.contains("not found") {
+                                    println!("⚠️ Instance not found on Provider (already deleted)");
+                                    // Still log as success since the end result is the same
+                                    if let Some(log_id) = log_id_provider {
+                                        let api_duration = api_start.elapsed().as_millis() as i32;
+                                        logger::log_event_complete(
+                                            &pool,
+                                            log_id,
+                                            "success",
+                                            api_duration,
+                                            Some("Instance already deleted"),
+                                        )
+                                        .await
+                                        .ok();
+                                    }
+                                    true
+                                } else {
+                                    println!("⚠️ Error terminating on Provider: {:?}", e);
+                                    if let Some(log_id) = log_id_provider {
+                                        let api_duration = api_start.elapsed().as_millis() as i32;
+                                        logger::log_event_complete(
+                                            &pool,
+                                            log_id,
+                                            "failed",
+                                            api_duration,
+                                            Some(&err_msg),
+                                        )
+                                        .await
+                                        .ok();
+                                    }
+                                    // Don't return here - continue to delete volumes even if instance termination failed
+                                    false
+                                }
                             }
-                            // Don't return here - continue to delete volumes even if instance termination timed out
-                            false
-                        }
-                    };
+                            Err(_timeout) => {
+                                let err_msg = "Instance termination timed out after 90s";
+                                eprintln!("❌ [process_termination] {}", err_msg);
+                                if let Some(log_id) = log_id_provider {
+                                    let api_duration = api_start.elapsed().as_millis() as i32;
+                                    logger::log_event_complete(
+                                        &pool,
+                                        log_id,
+                                        "failed",
+                                        api_duration,
+                                        Some(err_msg),
+                                    )
+                                    .await
+                                    .ok();
+                                }
+                                // Don't return here - continue to delete volumes even if instance termination timed out
+                                false
+                            }
+                        };
 
-                    // STEP 3: Delete volumes (ALWAYS, even if instance termination failed)
-                    // This ensures we don't leak resources even if instance deletion fails
-                    eprintln!("🔵 [process_termination] Step 3: Deleting volumes (instance termination: {})", if termination_ok { "success" } else { "failed" });
-                    
-                    // Get volumes to delete (refresh list in case volumes were discovered)
-                    let volumes: Vec<(Uuid, String, bool)> = sqlx::query_as(
-                        r#"
+                        // STEP 3: Delete volumes (ALWAYS, even if instance termination failed)
+                        // This ensures we don't leak resources even if instance deletion fails
+                        eprintln!("🔵 [process_termination] Step 3: Deleting volumes (instance termination: {})", if termination_ok { "success" } else { "failed" });
+
+                        // Get volumes to delete (refresh list in case volumes were discovered)
+                        let volumes: Vec<(Uuid, String, bool)> = sqlx::query_as(
+                            r#"
                         SELECT id, provider_volume_id, delete_on_terminate
                         FROM instance_volumes
                         WHERE instance_id = $1
                           AND deleted_at IS NULL
                         "#,
-                    )
-                    .bind(id_uuid)
-                    .fetch_all(&pool)
-                    .await
-                    .unwrap_or_default();
+                        )
+                        .bind(id_uuid)
+                        .fetch_all(&pool)
+                        .await
+                        .unwrap_or_default();
 
-                    for (vol_row_id, provider_volume_id, delete_on_terminate) in volumes {
-                        if !delete_on_terminate {
-                            eprintln!("⏭️ [process_termination] Skipping volume {} (delete_on_terminate=false)", provider_volume_id);
-                            continue;
-                        }
-                        
-                        eprintln!("🔵 [process_termination] Deleting volume {}", provider_volume_id);
-                        
-                        let log_id_vol = logger::log_event_with_metadata(
+                        for (vol_row_id, provider_volume_id, delete_on_terminate) in volumes {
+                            if !delete_on_terminate {
+                                eprintln!("⏭️ [process_termination] Skipping volume {} (delete_on_terminate=false)", provider_volume_id);
+                                continue;
+                            }
+
+                            eprintln!(
+                                "🔵 [process_termination] Deleting volume {}",
+                                provider_volume_id
+                            );
+
+                            let log_id_vol = logger::log_event_with_metadata(
                             &pool,
                             "PROVIDER_DELETE_VOLUME",
                             "in_progress",
@@ -468,117 +484,118 @@ pub async fn process_termination(
                         )
                         .await
                         .ok();
-                        let vol_start = Instant::now();
-                        let del_res = provider.delete_volume(&zone, &provider_volume_id).await;
-                        if let Some(lid) = log_id_vol {
-                            let dur = vol_start.elapsed().as_millis() as i32;
-                            match &del_res {
-                                Ok(true) => {
-                                    eprintln!("✅ [process_termination] Successfully deleted volume {}", provider_volume_id);
-                                    logger::log_event_complete(&pool, lid, "success", dur, None)
+                            let vol_start = Instant::now();
+                            let del_res = provider.delete_volume(&zone, &provider_volume_id).await;
+                            if let Some(lid) = log_id_vol {
+                                let dur = vol_start.elapsed().as_millis() as i32;
+                                match &del_res {
+                                    Ok(true) => {
+                                        eprintln!("✅ [process_termination] Successfully deleted volume {}", provider_volume_id);
+                                        logger::log_event_complete(&pool, lid, "success", dur, None)
+                                            .await
+                                            .ok()
+                                    }
+                                    Ok(false) => {
+                                        eprintln!("⚠️ [process_termination] Volume deletion returned false for {}", provider_volume_id);
+                                        logger::log_event_complete(
+                                            &pool,
+                                            lid,
+                                            "failed",
+                                            dur,
+                                            Some("Provider returned false"),
+                                        )
                                         .await
                                         .ok()
-                                }
-                                Ok(false) => {
-                                    eprintln!("⚠️ [process_termination] Volume deletion returned false for {}", provider_volume_id);
-                                    logger::log_event_complete(
-                                        &pool,
-                                        lid,
-                                        "failed",
-                                        dur,
-                                        Some("Provider returned false"),
-                                    )
-                                    .await
-                                    .ok()
-                                }
-                                Err(e) => {
-                                    eprintln!("❌ [process_termination] Failed to delete volume {}: {}", provider_volume_id, e);
-                                    logger::log_event_complete(
-                                        &pool,
-                                        lid,
-                                        "failed",
-                                        dur,
-                                        Some(&e.to_string()),
-                                    )
-                                    .await
-                                    .ok()
-                                }
-                            };
-                        }
-                        if del_res.unwrap_or(false) {
-                            let _ = sqlx::query(
-                                "UPDATE instance_volumes SET status='deleted', deleted_at=NOW() WHERE id=$1"
-                            )
-                            .bind(vol_row_id)
-                            .execute(&pool)
-                            .await;
-                        } else {
-                            // Even if deletion failed, mark as deleted in DB to avoid retry loops
-                            // The volume might be deleted by Scaleway when instance is deleted
-                            eprintln!("⚠️ [process_termination] Marking volume {} as deleted in DB despite deletion failure", provider_volume_id);
-                            let _ = sqlx::query(
-                                "UPDATE instance_volumes SET status='deleted', deleted_at=NOW() WHERE id=$1"
-                            )
-                            .bind(vol_row_id)
-                            .execute(&pool)
-                            .await;
-                        }
-                    }
-                    
-                    // If instance termination failed, log error but don't return - volumes are cleaned up
-                    if !termination_ok {
-                        let err_msg = "Instance termination failed, but volumes have been cleaned up";
-                        if let Some(log_id) = log_id_execute {
-                            let duration = start.elapsed().as_millis() as i32;
-                            logger::log_event_complete(
-                                &pool,
-                                log_id,
-                                "failed",
-                                duration,
-                                Some(err_msg),
-                            )
-                            .await
-                            .ok();
-                        }
-                        return;
-                    }
-
-                    // STEP 4: Verify instance deletion (only if termination was successful)
-                    // Note: Volumes have already been deleted in Step 3, so we only verify instance deletion here
-                    if termination_ok {
-                        // 2.5 Verify deletion (avoid marking terminated while still running)
-                        // Scaleway termination is async; we poll for a short, bounded period.
-                        eprintln!("🔵 [process_termination] Step 4: Verifying instance deletion (timeout: 60s)");
-                        let verify_start = Instant::now();
-                        let mut deleted = false;
-                        while verify_start.elapsed() < Duration::from_secs(60) {
-                            match provider
-                                .check_instance_exists(&zone, &provider_instance_id)
-                                .await
-                            {
-                                Ok(false) => {
-                                    deleted = true;
-                                    eprintln!("✅ [process_termination] Instance {} confirmed deleted on provider", provider_instance_id);
-                                    break;
-                                }
-                                Ok(true) => {
-                                    if verify_start.elapsed().as_secs() % 10 == 0 {
-                                        eprintln!("⏳ [process_termination] Instance {} still exists, waiting... ({:.0}s elapsed)", provider_instance_id, verify_start.elapsed().as_secs());
                                     }
-                                    sleep(Duration::from_secs(5)).await;
-                                }
-                                Err(e) => {
-                                    eprintln!("⚠️ [process_termination] Error checking deletion status on provider: {:?}", e);
-                                    // Keep waiting a bit; reconciliation watchdog will retry later if needed.
-                                    sleep(Duration::from_secs(5)).await;
-                                }
+                                    Err(e) => {
+                                        eprintln!("❌ [process_termination] Failed to delete volume {}: {}", provider_volume_id, e);
+                                        logger::log_event_complete(
+                                            &pool,
+                                            lid,
+                                            "failed",
+                                            dur,
+                                            Some(&e.to_string()),
+                                        )
+                                        .await
+                                        .ok()
+                                    }
+                                };
+                            }
+                            if del_res.unwrap_or(false) {
+                                let _ = sqlx::query(
+                                "UPDATE instance_volumes SET status='deleted', deleted_at=NOW() WHERE id=$1"
+                            )
+                            .bind(vol_row_id)
+                            .execute(&pool)
+                            .await;
+                            } else {
+                                // Even if deletion failed, mark as deleted in DB to avoid retry loops
+                                // The volume might be deleted by Scaleway when instance is deleted
+                                eprintln!("⚠️ [process_termination] Marking volume {} as deleted in DB despite deletion failure", provider_volume_id);
+                                let _ = sqlx::query(
+                                "UPDATE instance_volumes SET status='deleted', deleted_at=NOW() WHERE id=$1"
+                            )
+                            .bind(vol_row_id)
+                            .execute(&pool)
+                            .await;
                             }
                         }
 
-                        if !deleted {
-                            eprintln!("⚠️ [process_termination] Instance {} still exists after 60s - marking as terminating (reconciliation will retry)", provider_instance_id);
-                            // Don't mark terminated in DB yet; keep 'terminating' until reconciliation confirms deletion.
-                            let log_id_pending = logger::log_event_with_metadata(
+                        // If instance termination failed, log error but don't return - volumes are cleaned up
+                        if !termination_ok {
+                            let err_msg =
+                                "Instance termination failed, but volumes have been cleaned up";
+                            if let Some(log_id) = log_id_execute {
+                                let duration = start.elapsed().as_millis() as i32;
+                                logger::log_event_complete(
+                                    &pool,
+                                    log_id,
+                                    "failed",
+                                    duration,
+                                    Some(err_msg),
+                                )
+                                .await
+                                .ok();
+                            }
+                            return;
+                        }
+
+                        // STEP 4: Verify instance deletion (only if termination was successful)
+                        // Note: Volumes have already been deleted in Step 3, so we only verify instance deletion here
+                        if termination_ok {
+                            // 2.5 Verify deletion (avoid marking terminated while still running)
+                            // Scaleway termination is async; we poll for a short, bounded period.
+                            eprintln!("🔵 [process_termination] Step 4: Verifying instance deletion (timeout: 60s)");
+                            let verify_start = Instant::now();
+                            let mut deleted = false;
+                            while verify_start.elapsed() < Duration::from_secs(60) {
+                                match provider
+                                    .check_instance_exists(&zone, &provider_instance_id)
+                                    .await
+                                {
+                                    Ok(false) => {
+                                        deleted = true;
+                                        eprintln!("✅ [process_termination] Instance {} confirmed deleted on provider", provider_instance_id);
+                                        break;
+                                    }
+                                    Ok(true) => {
+                                        if verify_start.elapsed().as_secs() % 10 == 0 {
+                                            eprintln!("⏳ [process_termination] Instance {} still exists, waiting... ({:.0}s elapsed)", provider_instance_id, verify_start.elapsed().as_secs());
+                                        }
+                                        sleep(Duration::from_secs(5)).await;
+                                    }
+                                    Err(e) => {
+                                        eprintln!("⚠️ [process_termination] Error checking deletion status on provider: {:?}", e);
+                                        // Keep waiting a bit; reconciliation watchdog will retry later if needed.
+                                        sleep(Duration::from_secs(5)).await;
+                                    }
+                                }
+                            }
+
+                            if !deleted {
+                                eprintln!("⚠️ [process_termination] Instance {} still exists after 60s - marking as terminating (reconciliation will retry)", provider_instance_id);
+                                // Don't mark terminated in DB yet; keep 'terminating' until reconciliation confirms deletion.
+                                let log_id_pending = logger::log_event_with_metadata(
                                 &pool,
                                 "TERMINATION_PENDING",
                                 "in_progress",
@@ -587,17 +604,19 @@ pub async fn process_termination(
                             Some(json!({"zone": zone, "provider_instance_id": provider_instance_id, "waited_ms": verify_start.elapsed().as_millis(), "correlation_id": correlation_id_meta})),
                             ).await.ok();
 
-                            if let Some(log_id) = log_id_pending {
-                                let duration = verify_start.elapsed().as_millis() as i32;
-                                logger::log_event_complete(&pool, log_id, "success", duration, None)
+                                if let Some(log_id) = log_id_pending {
+                                    let duration = verify_start.elapsed().as_millis() as i32;
+                                    logger::log_event_complete(
+                                        &pool, log_id, "success", duration, None,
+                                    )
                                     .await
                                     .ok();
-                            }
+                                }
 
-                            // Complete EXECUTE_TERMINATE even if instance is not yet deleted
-                            if let Some(log_id) = log_id_execute {
-                                let duration = start.elapsed().as_millis() as i32;
-                                logger::log_event_complete(
+                                // Complete EXECUTE_TERMINATE even if instance is not yet deleted
+                                if let Some(log_id) = log_id_execute {
+                                    let duration = start.elapsed().as_millis() as i32;
+                                    logger::log_event_complete(
                                     &pool,
                                     log_id,
                                     "success",
@@ -606,18 +625,18 @@ pub async fn process_termination(
                                 )
                                 .await
                                 .ok();
+                                }
+                                // Return early - instance will be cleaned up by reconciliation
+                                return;
                             }
-                            // Return early - instance will be cleaned up by reconciliation
-                            return;
-                        }
-                        // Instance confirmed deleted - continue to mark as terminated in DB
-                        eprintln!("✅ [process_termination] Instance {} successfully terminated and verified deleted", provider_instance_id);
-                    } else {
-                        // Instance termination failed - volumes are already cleaned up, complete EXECUTE_TERMINATE
-                        eprintln!("⚠️ [process_termination] Instance termination failed, but volumes have been cleaned up");
-                        if let Some(log_id) = log_id_execute {
-                            let duration = start.elapsed().as_millis() as i32;
-                            logger::log_event_complete(
+                            // Instance confirmed deleted - continue to mark as terminated in DB
+                            eprintln!("✅ [process_termination] Instance {} successfully terminated and verified deleted", provider_instance_id);
+                        } else {
+                            // Instance termination failed - volumes are already cleaned up, complete EXECUTE_TERMINATE
+                            eprintln!("⚠️ [process_termination] Instance termination failed, but volumes have been cleaned up");
+                            if let Some(log_id) = log_id_execute {
+                                let duration = start.elapsed().as_millis() as i32;
+                                logger::log_event_complete(
                                 &pool,
                                 log_id,
                                 "failed",
@@ -626,14 +645,14 @@ pub async fn process_termination(
                             )
                             .await
                             .ok();
+                            }
+                            // Don't mark as terminated in DB if termination failed
+                            return;
                         }
-                        // Don't mark as terminated in DB if termination failed
-                        return;
+
+                        // If we reach here, instance was successfully terminated and verified deleted
+                        // Continue to mark as terminated in DB (code below)
                     }
-                    
-                    // If we reach here, instance was successfully terminated and verified deleted
-                    // Continue to mark as terminated in DB (code below)
-                }
                     Err(e) => {
                         let err_msg = format!("Provider '{}' not available: {}", provider_code, e);
                         eprintln!("❌ [process_termination] {}", err_msg);
@@ -893,7 +912,7 @@ pub async fn process_provisioning(
         .await
         .unwrap_or(None)
         .unwrap_or_else(|| ProviderManager::current_provider_name());
-    
+
     eprintln!(
         "🔵 [process_provisioning] Resolved provider '{}' (provider_id={}) for instance {}",
         provider_name, provider_id, instance_uuid
@@ -927,29 +946,41 @@ pub async fn process_provisioning(
 
     eprintln!(
         "🔵 [process_provisioning] Catalog lookup: zone='{}' (found={}), type='{}' (found={})",
-        zone, zone_id.is_some(), instance_type, type_id.is_some()
+        zone,
+        zone_id.is_some(),
+        instance_type,
+        type_id.is_some()
     );
-    
+
     if zone_id.is_none() || type_id.is_none() {
         let msg = format!(
             "Catalog lookup failed: Zone='{}' (found={}) Type='{}' (found={})",
-            zone, zone_id.is_some(), instance_type, type_id.is_some()
+            zone,
+            zone_id.is_some(),
+            instance_type,
+            type_id.is_some()
         );
-        eprintln!("❌ [process_provisioning] {} for instance {}", msg, instance_uuid);
+        eprintln!(
+            "❌ [process_provisioning] {} for instance {}",
+            msg, instance_uuid
+        );
         sqlx::query(
             "UPDATE instances 
              SET status = 'failed',
                  error_code = COALESCE(error_code, 'CATALOG_LOOKUP_FAILED'),
                  error_message = COALESCE($2, error_message),
                  failed_at = COALESCE(failed_at, NOW())
-             WHERE id = $1"
+             WHERE id = $1",
         )
         .bind(instance_uuid)
         .bind(&msg)
         .execute(&pool)
         .await
         .ok();
-        eprintln!("❌ [process_provisioning] Failed to update instance {} status to failed", instance_uuid);
+        eprintln!(
+            "❌ [process_provisioning] Failed to update instance {} status to failed",
+            instance_uuid
+        );
         return;
     }
     let zone_id = zone_id.unwrap();
@@ -1193,20 +1224,20 @@ pub async fn process_provisioning(
 
     // Provider-specific image override (e.g. GPU-optimized images).
     // Expected: instance_types.allocation_params = {provider_code: {"image_id":"<uuid>"}}.
-        let override_image: Option<String> = sqlx::query_scalar(
-            r#"
+    let override_image: Option<String> = sqlx::query_scalar(
+        r#"
         SELECT NULLIF(TRIM(it.allocation_params->($2::text)->>'image_id'), '')
             FROM instance_types it
             WHERE it.id = $1
             "#,
-        )
-        .bind(type_id)
+    )
+    .bind(type_id)
     .bind(&provider_name)
-        .fetch_optional(&pool)
-        .await
-        .unwrap_or(None);
-        if let Some(img) = override_image {
-            image_id = img;
+    .fetch_optional(&pool)
+    .await
+    .unwrap_or(None);
+    if let Some(img) = override_image {
+        image_id = img;
     }
 
     // Check if provider requires diskless boot for this instance type
@@ -1261,21 +1292,15 @@ pub async fn process_provisioning(
                     .bind(&image_id)
                     .execute(&pool)
                     .await;
-                },
+                }
                 Ok(None) => {
                     let msg = format!("Provider requires a diskless/compatible boot image for this instance type. Auto-discovery did not find a suitable image. Configure instance_types.allocation_params.{}.boot_image_id for this type.", provider_name);
                     eprintln!("❌ {}", msg);
                     if let Some(log_id) = log_id_execute {
                         let duration = start.elapsed().as_millis() as i32;
-                        logger::log_event_complete(
-                            &pool,
-                            log_id,
-                            "failed",
-                            duration,
-                            Some(&msg),
-                        )
-                        .await
-                        .ok();
+                        logger::log_event_complete(&pool, log_id, "failed", duration, Some(&msg))
+                            .await
+                            .ok();
                     }
                     let _ = sqlx::query(
                         "UPDATE instances
@@ -1290,21 +1315,15 @@ pub async fn process_provisioning(
                     .execute(&pool)
                     .await;
                     return;
-                },
+                }
                 Err(e) => {
                     let msg = format!("Provider diskless boot image auto-discovery failed: {}", e);
                     eprintln!("❌ {}", msg);
                     if let Some(log_id) = log_id_execute {
                         let duration = start.elapsed().as_millis() as i32;
-                        logger::log_event_complete(
-                            &pool,
-                            log_id,
-                            "failed",
-                            duration,
-                            Some(&msg),
-                        )
-                        .await
-                        .ok();
+                        logger::log_event_complete(&pool, log_id, "failed", duration, Some(&msg))
+                            .await
+                            .ok();
                     }
                     let _ = sqlx::query(
                         "UPDATE instances
@@ -1319,7 +1338,7 @@ pub async fn process_provisioning(
                     .execute(&pool)
                     .await;
                     return;
-                },
+                }
             }
         }
     }
@@ -1366,26 +1385,26 @@ pub async fn process_provisioning(
 
     // Build cloud-init for worker auto-install (provider-agnostic)
     let cloud_init_for_create: Option<String> = if auto_install && is_worker_target {
-            if cp_url.is_empty() {
-                eprintln!("⚠️ WORKER_AUTO_INSTALL=1 but WORKER_CONTROL_PLANE_URL is empty; creating server without worker bootstrap");
-                if ssh_pub.trim().is_empty() {
-                    None
-                } else {
-                    Some(build_ssh_key_cloud_init(&ssh_pub))
-                }
+        if cp_url.is_empty() {
+            eprintln!("⚠️ WORKER_AUTO_INSTALL=1 but WORKER_CONTROL_PLANE_URL is empty; creating server without worker bootstrap");
+            if ssh_pub.trim().is_empty() {
+                None
             } else {
-                let (model_from_db, _vol_from_db) =
-                    resolve_instance_model_and_volume(&pool, instance_uuid).await;
-                // model is mandatory; do not fallback silently here
-                let worker_model =
-                    model_from_db.expect("model is mandatory (validated before provisioning)");
+                Some(build_ssh_key_cloud_init(&ssh_pub))
+            }
+        } else {
+            let (model_from_db, _vol_from_db) =
+                resolve_instance_model_and_volume(&pool, instance_uuid).await;
+            // model is mandatory; do not fallback silently here
+            let worker_model =
+                model_from_db.expect("model is mandatory (validated before provisioning)");
 
-                let provider_id: Option<Uuid> =
-                    sqlx::query_scalar("SELECT provider_id FROM instances WHERE id = $1")
-                        .bind(instance_uuid)
-                        .fetch_optional(&pool)
-                        .await
-                        .unwrap_or(None);
+            let provider_id: Option<Uuid> =
+                sqlx::query_scalar("SELECT provider_id FROM instances WHERE id = $1")
+                    .bind(instance_uuid)
+                    .fetch_optional(&pool)
+                    .await
+                    .unwrap_or(None);
 
             // Resolve vLLM image with hierarchy:
             // 1. instance_types.allocation_params.vllm_image (instance-type specific)
@@ -1393,22 +1412,19 @@ pub async fn process_provisioning(
             // 3. provider_settings.WORKER_VLLM_IMAGE (provider default)
             // 4. WORKER_VLLM_IMAGE (env var)
             // 5. Hardcoded default (stable version, not "latest")
-            let instance_type_id: Option<Uuid> = sqlx::query_scalar("SELECT instance_type_id FROM instances WHERE id = $1")
-                .bind(instance_uuid)
-                        .fetch_optional(&pool)
-                        .await
-                        .ok()
-                .flatten();
-            
-            let vllm_image = resolve_vllm_image(
-                &pool,
-                instance_type_id,
-                provider_id,
-                &instance_type,
-            ).await;
+            let instance_type_id: Option<Uuid> =
+                sqlx::query_scalar("SELECT instance_type_id FROM instances WHERE id = $1")
+                    .bind(instance_uuid)
+                    .fetch_optional(&pool)
+                    .await
+                    .ok()
+                    .flatten();
 
-                let worker_health_port: u16 = if let Some(pid) = provider_id {
-                    sqlx::query_scalar::<_, i64>(
+            let vllm_image =
+                resolve_vllm_image(&pool, instance_type_id, provider_id, &instance_type).await;
+
+            let worker_health_port: u16 = if let Some(pid) = provider_id {
+                sqlx::query_scalar::<_, i64>(
                         "SELECT value_int FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_HEALTH_PORT'",
                     )
                         .bind(pid)
@@ -1419,14 +1435,14 @@ pub async fn process_provisioning(
                         .and_then(|v| u16::try_from(v).ok())
                         .or_else(|| std::env::var("WORKER_HEALTH_PORT").ok().and_then(|s| s.parse::<u16>().ok()))
                         .unwrap_or(8080)
-                } else {
-                    std::env::var("WORKER_HEALTH_PORT")
-                        .ok()
-                        .and_then(|s| s.parse::<u16>().ok())
-                        .unwrap_or(8080)
-                };
-                let worker_vllm_port: u16 = if let Some(pid) = provider_id {
-                    sqlx::query_scalar::<_, i64>(
+            } else {
+                std::env::var("WORKER_HEALTH_PORT")
+                    .ok()
+                    .and_then(|s| s.parse::<u16>().ok())
+                    .unwrap_or(8080)
+            };
+            let worker_vllm_port: u16 = if let Some(pid) = provider_id {
+                sqlx::query_scalar::<_, i64>(
                         "SELECT value_int FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_VLLM_PORT'",
                     )
                         .bind(pid)
@@ -1437,38 +1453,38 @@ pub async fn process_provisioning(
                         .and_then(|v| u16::try_from(v).ok())
                         .or_else(|| std::env::var("WORKER_VLLM_PORT").ok().and_then(|s| s.parse::<u16>().ok()))
                         .unwrap_or(8000)
-                } else {
-                    std::env::var("WORKER_VLLM_PORT")
-                        .ok()
-                        .and_then(|s| s.parse::<u16>().ok())
-                        .unwrap_or(8000)
-                };
+            } else {
+                std::env::var("WORKER_VLLM_PORT")
+                    .ok()
+                    .and_then(|s| s.parse::<u16>().ok())
+                    .unwrap_or(8000)
+            };
 
-                let agent_url = std::env::var("WORKER_AGENT_SOURCE_URL")
+            let agent_url = std::env::var("WORKER_AGENT_SOURCE_URL")
                     .ok()
                     .filter(|s| !s.trim().is_empty())
                     .unwrap_or_else(|| "https://raw.githubusercontent.com/Inventiv-IT-for-AI/inventiv-agents/main/inventiv-worker/agent.py".to_string());
 
-                let worker_auth_token = std::env::var("WORKER_AUTH_TOKEN").unwrap_or_default();
-                let worker_hf_token = worker_hf_token();
+            let worker_auth_token = std::env::var("WORKER_AUTH_TOKEN").unwrap_or_default();
+            let worker_hf_token = worker_hf_token();
 
-                Some(build_worker_cloud_init(
-                    &ssh_pub,
-                    &instance_uuid.to_string(),
-                    &cp_url,
-                    &worker_model,
-                    &vllm_image,
-                    worker_vllm_port,
-                    worker_health_port,
-                    &agent_url,
-                    &worker_auth_token,
-                    &worker_hf_token,
-                ))
-            }
-        } else if !ssh_pub.trim().is_empty() {
-            Some(build_ssh_key_cloud_init(&ssh_pub))
-        } else {
-            None
+            Some(build_worker_cloud_init(
+                &ssh_pub,
+                &instance_uuid.to_string(),
+                &cp_url,
+                &worker_model,
+                &vllm_image,
+                worker_vllm_port,
+                worker_health_port,
+                &agent_url,
+                &worker_auth_token,
+                &worker_hf_token,
+            ))
+        }
+    } else if !ssh_pub.trim().is_empty() {
+        Some(build_ssh_key_cloud_init(&ssh_pub))
+    } else {
+        None
     };
 
     // Get data volume configuration (if any)
@@ -1487,20 +1503,20 @@ pub async fn process_provisioning(
     .fetch_optional(&pool)
     .await
     .unwrap_or(None);
-    
-    let mut data_conf: Option<(i64, Option<i32>, bool)> = data_conf_row
-        .and_then(|(gb_opt, perf_opt, del)| gb_opt.map(|gb| (gb, perf_opt, del)));
-    
+
+    let mut data_conf: Option<(i64, Option<i32>, bool)> =
+        data_conf_row.and_then(|(gb_opt, perf_opt, del)| gb_opt.map(|gb| (gb, perf_opt, del)));
+
     // Fallback: if instance type doesn't specify a data volume, infer a safe size from the model.
     // This helps prevent "no space left on device" during docker + image + model pulls on diskless GPUs.
     // Storage strategy is provider-specific and handled via provider abstractions
     if data_conf.is_none() && auto_install && is_worker_target {
         let (model_from_db, vol_from_db) =
             resolve_instance_model_and_volume(&pool, instance_uuid).await;
-        
+
         if let Some(gb) = vol_from_db.filter(|gb| *gb > 0) {
             data_conf = Some((gb, None, true));
-    } else {
+        } else {
             // model is mandatory; do not fallback silently here
             let worker_model =
                 model_from_db.expect("model is mandatory (validated before provisioning)");
@@ -1531,8 +1547,7 @@ pub async fn process_provisioning(
                     .filter(|gb| *gb > 0)
                     .unwrap_or(200)
             };
-            if let Some(gb) =
-                worker_storage::recommended_data_volume_gb(&worker_model, default_gb)
+            if let Some(gb) = worker_storage::recommended_data_volume_gb(&worker_model, default_gb)
             {
                 data_conf = Some((gb, None, true));
             }
@@ -1550,7 +1565,7 @@ pub async fn process_provisioning(
                     "🔵 [process_create] Creating Block Storage volume BEFORE instance creation: name={}, size={}GB",
                     vol_name, gb
                 );
-                
+
                 let create_log = logger::log_event_with_metadata(
                     &pool,
                     "PROVIDER_CREATE_VOLUME",
@@ -1579,18 +1594,17 @@ pub async fn process_provisioning(
                             "✅ [process_create] Block Storage volume created BEFORE instance: id={}, name={}, size={}GB",
                             vol_id, vol_name, gb
                         );
-                        
+
                         // Track the created volume in instance_volumes with status 'created' (not yet attached)
                         let row_id = Uuid::new_v4();
-                        let provider_id: Option<Uuid> = sqlx::query_scalar(
-                            "SELECT provider_id FROM instances WHERE id = $1"
-                        )
-                        .bind(instance_uuid)
-                        .fetch_optional(&pool)
-                        .await
-                        .ok()
-                        .flatten();
-                        
+                        let provider_id: Option<Uuid> =
+                            sqlx::query_scalar("SELECT provider_id FROM instances WHERE id = $1")
+                                .bind(instance_uuid)
+                                .fetch_optional(&pool)
+                                .await
+                                .ok()
+                                .flatten();
+
                         if let Some(pid) = provider_id {
                             let _ = sqlx::query(
                                 r#"
@@ -1643,7 +1657,11 @@ pub async fn process_provisioning(
     // LOG 3: PROVIDER_CREATE (API call)
     let api_start = Instant::now();
     let log_id_provider = logger::log_event_with_metadata(
-        &pool, "PROVIDER_CREATE", "in_progress", instance_uuid, None,
+        &pool,
+        "PROVIDER_CREATE",
+        "in_progress",
+        instance_uuid,
+        None,
         Some(json!({
             "zone": zone,
             "instance_type": instance_type,
@@ -1654,11 +1672,14 @@ pub async fn process_provisioning(
             "cloud_init_length": cloud_init_for_create.as_ref().map(|ci| ci.len()).unwrap_or(0),
             "pre_created_volume_id": pre_created_volume_id.as_deref()
         })),
-    ).await.ok();
+    )
+    .await
+    .ok();
 
     // Prepare volumes list for instance creation (if volume was pre-created)
     // Use as_ref() to avoid moving pre_created_volume_id so it can be used later
-    let volumes_for_create: Option<Vec<String>> = pre_created_volume_id.as_ref().map(|vid| vec![vid.clone()]);
+    let volumes_for_create: Option<Vec<String>> =
+        pre_created_volume_id.as_ref().map(|vid| vec![vid.clone()]);
     let volumes_ref: Option<&[String]> = volumes_for_create.as_deref();
 
     let server_id_result = provider
@@ -1762,25 +1783,29 @@ pub async fn process_provisioning(
             // For Scaleway L4-1-24G: Scaleway creates a Block Storage (sbs_volume) automatically from image snapshot (20GB bootable)
             let mut auto_created_boot_volume_id: Option<String> = None;
             let mut auto_created_boot_volume_size_gb: Option<u64> = None;
-            
+
             if let Ok(attached_volumes) = provider.list_attached_volumes(&zone, &server_id).await {
                 if !attached_volumes.is_empty() {
                     eprintln!(
                         "🔍 [process_create] Discovering volumes for instance {} (found {} volumes)",
                         instance_uuid, attached_volumes.len()
                     );
-                    
+
                     for av in attached_volumes {
                         // For Scaleway L4-1-24G: Scaleway creates a Block Storage automatically (20GB bootable)
                         // We need to resize it to target size before starting the instance
                         // NOTE: Scaleway API may not mark the volume as boot=true, so for diskless instances,
                         // we consider the first sbs_volume as the bootable volume
-                        if requires_diskless && av.volume_type == "sbs_volume" && (av.boot || auto_created_boot_volume_id.is_none()) {
+                        if requires_diskless
+                            && av.volume_type == "sbs_volume"
+                            && (av.boot || auto_created_boot_volume_id.is_none())
+                        {
                             // Only set if not already set (first sbs_volume found)
                             if auto_created_boot_volume_id.is_none() {
                                 auto_created_boot_volume_id = Some(av.provider_volume_id.clone());
                                 if let Some(size_bytes) = av.size_bytes {
-                                    auto_created_boot_volume_size_gb = Some((size_bytes as u64) / 1_000_000_000);
+                                    auto_created_boot_volume_size_gb =
+                                        Some((size_bytes as u64) / 1_000_000_000);
                                 } else {
                                     // Default to 20GB if size not available (Scaleway auto-creates 20GB Block Storage)
                                     auto_created_boot_volume_size_gb = Some(20);
@@ -1793,7 +1818,7 @@ pub async fn process_provisioning(
                                 );
                             }
                         }
-                        
+
                         // Track all volumes (including auto-created Block Storage)
                         // Skip tracking local storage volumes for diskless instances - Scaleway shouldn't create them
                         if requires_diskless && av.volume_type == "l_ssd" {
@@ -1803,7 +1828,7 @@ pub async fn process_provisioning(
                             );
                             // Still track it for cleanup, but log a warning
                         }
-                        
+
                         // Check if this volume is already tracked
                         let exists: bool = sqlx::query_scalar(
                             "SELECT EXISTS(SELECT 1 FROM instance_volumes WHERE instance_id=$1 AND provider_volume_id=$2 AND deleted_at IS NULL)",
@@ -1813,25 +1838,28 @@ pub async fn process_provisioning(
                         .fetch_one(&pool)
                         .await
                         .unwrap_or(false);
-                        
+
                         if !exists {
                             let row_id = Uuid::new_v4();
                             let provider_id: Option<Uuid> = sqlx::query_scalar(
-                                "SELECT provider_id FROM instances WHERE id = $1"
+                                "SELECT provider_id FROM instances WHERE id = $1",
                             )
                             .bind(instance_uuid)
                             .fetch_optional(&pool)
                             .await
                             .ok()
                             .flatten();
-                            
+
                             if let Some(pid) = provider_id {
                                 // If size_bytes is not available from list_attached_volumes, try to fetch it from Block Storage API
                                 let mut size_bytes = av.size_bytes.unwrap_or(0);
                                 if size_bytes == 0 && av.volume_type == "sbs_volume" {
                                     // Try to fetch size from Block Storage API
                                     eprintln!("🔍 [process_create] Size not available from list_attached_volumes, fetching from Block Storage API for volume {}", av.provider_volume_id);
-                                    if let Ok(Some(block_size)) = provider.get_block_storage_size(&zone, &av.provider_volume_id).await {
+                                    if let Ok(Some(block_size)) = provider
+                                        .get_block_storage_size(&zone, &av.provider_volume_id)
+                                        .await
+                                    {
                                         size_bytes = block_size as i64;
                                         eprintln!("✅ [process_create] Retrieved size from Block Storage API: {}GB", size_bytes / 1_000_000_000);
                                     } else {
@@ -1842,13 +1870,13 @@ pub async fn process_provisioning(
                                         }
                                     }
                                 }
-                                
+
                                 eprintln!(
                                     "📦 [process_create] Tracking volume {} for instance {}: type={}, size={}GB, boot={}",
                                     av.provider_volume_id, instance_uuid, av.volume_type,
                                     if size_bytes > 0 { size_bytes / 1_000_000_000 } else { 0 }, av.boot
                                 );
-                                
+
                                 // For volumes created automatically by Scaleway:
                                 // - Boot volumes (boot=true) should be deleted on termination
                                 // - Local Storage volumes for RENDER-S (boot=false, volume_type=l_ssd) should also be deleted
@@ -1867,7 +1895,7 @@ pub async fn process_provisioning(
                                 } else {
                                     false // Other volumes (e.g., Block Storage we create) will be handled by config
                                 };
-                                
+
                                 let insert_result = sqlx::query(
                                     r#"
                                     INSERT INTO instance_volumes 
@@ -1890,7 +1918,7 @@ pub async fn process_provisioning(
                                 .bind(av.boot)
                                 .execute(&pool)
                                 .await;
-                                
+
                                 match insert_result {
                                     Ok(result) => {
                                         if result.rows_affected() > 0 {
@@ -1993,15 +2021,18 @@ pub async fn process_provisioning(
                 if gb > 0 {
                     // Some instance types have auto-created storage (e.g., Scaleway RENDER-S with Local Storage)
                     // Check via provider abstraction if we should skip data volume creation
-                    if is_worker_target && provider.should_skip_data_volume_creation(&instance_type) {
+                    if is_worker_target && provider.should_skip_data_volume_creation(&instance_type)
+                    {
                         eprintln!(
                             "ℹ️ [process_create] Skipping data volume creation for instance {} (type {}) - using auto-created storage",
                             instance_uuid, instance_type
                         );
                         // Still track any volumes that provider created automatically
                         if provider.has_auto_created_storage(&instance_type) {
-                            if let Ok(attached) = provider.list_attached_volumes(&zone, &server_id).await {
-                            for av in attached {
+                            if let Ok(attached) =
+                                provider.list_attached_volumes(&zone, &server_id).await
+                            {
+                                for av in attached {
                                     // Track auto-created volumes if not already tracked
                                     let exists: bool = sqlx::query_scalar(
                                         "SELECT EXISTS(SELECT 1 FROM instance_volumes WHERE instance_id=$1 AND provider_volume_id=$2 AND deleted_at IS NULL)",
@@ -2011,18 +2042,18 @@ pub async fn process_provisioning(
                                     .fetch_one(&pool)
                                     .await
                                     .unwrap_or(false);
-                                    
+
                                     if !exists {
                                         let row_id = Uuid::new_v4();
                                         let provider_id: Option<Uuid> = sqlx::query_scalar(
-                                            "SELECT provider_id FROM instances WHERE id = $1"
+                                            "SELECT provider_id FROM instances WHERE id = $1",
                                         )
                                         .bind(instance_uuid)
                                         .fetch_optional(&pool)
                                         .await
                                         .ok()
                                         .flatten();
-                                        
+
                                         if let Some(pid) = provider_id {
                                             let size_bytes = av.size_bytes.unwrap_or(0);
                                             eprintln!(
@@ -2030,12 +2061,12 @@ pub async fn process_provisioning(
                                                 av.provider_volume_id, instance_uuid, av.volume_type,
                                                 if size_bytes > 0 { size_bytes / 1_000_000_000 } else { 0 }, av.boot
                                             );
-                                            
+
                                             // For auto-created volumes:
                                             // - They should be deleted on termination since they're auto-created and attached to the instance
                                             // - Set delete_on_terminate=true for auto-created volumes
                                             let delete_on_terminate_local = true;
-                                            
+
                                             let insert_result = sqlx::query(
                                                 r#"
                                                 INSERT INTO instance_volumes 
@@ -2058,7 +2089,7 @@ pub async fn process_provisioning(
                                             .bind(av.boot)
                                             .execute(&pool)
                                             .await;
-                                            
+
                                             match insert_result {
                                                 Ok(result) => {
                                                     if result.rows_affected() > 0 {
@@ -2081,10 +2112,12 @@ pub async fn process_provisioning(
                         // For instances without auto-created storage, proceed with data volume creation
                         // Note: Boot volumes are already tracked above (after PROVIDER_CREATE).
                         if is_worker_target {
-                            if let Ok(attached) = provider.list_attached_volumes(&zone, &server_id).await {
+                            if let Ok(attached) =
+                                provider.list_attached_volumes(&zone, &server_id).await
+                            {
                                 for av in attached {
                                     // Update existing volumes with complete metadata if needed
-                                let exists: bool = sqlx::query_scalar(
+                                    let exists: bool = sqlx::query_scalar(
                                         "SELECT EXISTS(SELECT 1 FROM instance_volumes WHERE instance_id=$1 AND provider_volume_id=$2 AND deleted_at IS NULL)",
                                 )
                                 .bind(instance_uuid)
@@ -2092,12 +2125,14 @@ pub async fn process_provisioning(
                                 .fetch_one(&pool)
                                 .await
                                 .unwrap_or(false);
-                                    
-                                if exists {
-                                    // Best effort: if we previously stored incomplete metadata (size/name),
+
+                                    if exists {
+                                        // Best effort: if we previously stored incomplete metadata (size/name),
                                         // update it now so UI can show the expected sizes.
-                                        if av.size_bytes.unwrap_or(0) > 0 || av.provider_volume_name.is_some() {
-                                        let _ = sqlx::query(
+                                        if av.size_bytes.unwrap_or(0) > 0
+                                            || av.provider_volume_name.is_some()
+                                        {
+                                            let _ = sqlx::query(
                                             r#"
                                             UPDATE instance_volumes
                                             SET
@@ -2119,13 +2154,13 @@ pub async fn process_provisioning(
                                         .bind(av.boot)
                                         .execute(&pool)
                                         .await;
-                                    }
+                                        }
                                     }
                                 }
                             }
                         }
                     } // Close the else block for instances without auto-created storage
-                    
+
                     // Attach data volume if not skipped AND not diskless boot
                     // NOTE: requires_diskless is already defined above (after instance creation)
                     // NOTE: For diskless boot instances, skip attachment here - attach_block_storage_after_boot will handle it AFTER startup and SSH
@@ -2137,7 +2172,9 @@ pub async fn process_provisioning(
                             server_id
                         );
                     } else if !provider.should_skip_data_volume_creation(&instance_type) {
-                        let vol_id_to_attach_opt: Option<String> = if let Some(pre_vol_id) = &pre_created_volume_id {
+                        let vol_id_to_attach_opt: Option<String> = if let Some(pre_vol_id) =
+                            &pre_created_volume_id
+                        {
                             // Volume was pre-created before instance creation - use it
                             eprintln!(
                                 "ℹ️ [process_create] Using pre-created Block Storage volume {} (created before instance)",
@@ -2150,8 +2187,8 @@ pub async fn process_provisioning(
                                 "⚠️ [process_create] No pre-created volume found - creating data volume AFTER instance creation (fallback): size={}GB",
                                 gb
                             );
-                    let vol_name = format!("inventiv-data-{}", instance_uuid);
-                    let create_log = logger::log_event_with_metadata(
+                            let vol_name = format!("inventiv-data-{}", instance_uuid);
+                            let create_log = logger::log_event_with_metadata(
                         &pool,
                         "PROVIDER_CREATE_VOLUME",
                         "in_progress",
@@ -2161,32 +2198,40 @@ pub async fn process_provisioning(
                     )
                     .await
                     .ok();
-                    let vol_start = Instant::now();
+                            let vol_start = Instant::now();
                             let volume_type = provider.get_data_volume_type(&instance_type);
-                    let created = provider
-                                .create_volume(&zone, &vol_name, gb_to_bytes(gb), &volume_type, perf_iops)
-                        .await;
+                            let created = provider
+                                .create_volume(
+                                    &zone,
+                                    &vol_name,
+                                    gb_to_bytes(gb),
+                                    &volume_type,
+                                    perf_iops,
+                                )
+                                .await;
                             match created {
                                 Ok(Some(id)) => {
-                            if let Some(lid) = create_log {
-                                let dur = vol_start.elapsed().as_millis() as i32;
-                                        logger::log_event_complete(&pool, lid, "success", dur, None)
-                                    .await
-                                    .ok();
-                            }
+                                    if let Some(lid) = create_log {
+                                        let dur = vol_start.elapsed().as_millis() as i32;
+                                        logger::log_event_complete(
+                                            &pool, lid, "success", dur, None,
+                                        )
+                                        .await
+                                        .ok();
+                                    }
                                     // Track the created volume
                                     let row_id = Uuid::new_v4();
                                     let provider_id: Option<Uuid> = sqlx::query_scalar(
-                                        "SELECT provider_id FROM instances WHERE id = $1"
+                                        "SELECT provider_id FROM instances WHERE id = $1",
                                     )
                                     .bind(instance_uuid)
                                     .fetch_optional(&pool)
                                     .await
                                     .ok()
                                     .flatten();
-                                    
+
                                     if let Some(pid) = provider_id {
-                            let _ = sqlx::query(
+                                        let _ = sqlx::query(
                                             r#"
                                             INSERT INTO instance_volumes 
                                             (id, instance_id, provider_id, zone_code, provider_volume_id, provider_volume_name, volume_type, size_bytes, delete_on_terminate, status, attached_at, is_boot)
@@ -2210,35 +2255,48 @@ pub async fn process_provisioning(
                                     Some(id)
                                 }
                                 Ok(None) => {
-                                    let msg = "Provider does not support volume creation".to_string();
+                                    let msg =
+                                        "Provider does not support volume creation".to_string();
                                     if let Some(lid) = create_log {
                                         let dur = vol_start.elapsed().as_millis() as i32;
-                                        logger::log_event_complete(&pool, lid, "failed", dur, Some(&msg))
-                                .await
-                                .ok();
-                            }
+                                        logger::log_event_complete(
+                                            &pool,
+                                            lid,
+                                            "failed",
+                                            dur,
+                                            Some(&msg),
+                                        )
+                                        .await
+                                        .ok();
+                                    }
                                     eprintln!("⚠️ [process_create] Provider does not support volume creation - skipping attachment");
                                     None // Skip attachment, continue provisioning
-                        }
+                                }
                                 Err(e) => {
                                     let msg = format!("Failed to create data volume: {}", e);
-                        if let Some(lid) = create_log {
-                            let dur = vol_start.elapsed().as_millis() as i32;
-                                        logger::log_event_complete(&pool, lid, "failed", dur, Some(&msg))
-                                .await
-                                .ok();
-                        }
+                                    if let Some(lid) = create_log {
+                                        let dur = vol_start.elapsed().as_millis() as i32;
+                                        logger::log_event_complete(
+                                            &pool,
+                                            lid,
+                                            "failed",
+                                            dur,
+                                            Some(&msg),
+                                        )
+                                        .await
+                                        .ok();
+                                    }
                                     eprintln!("❌ [process_create] {}", msg);
                                     // Don't fail provisioning - continue without volume attachment
                                     None
                                 }
                             }
                         };
-                        
+
                         // If volume creation succeeded, attach it
                         if let Some(vol_id_to_attach) = vol_id_to_attach_opt {
                             // Attach the volume (either pre-created or just created)
-                        let attach_log = logger::log_event_with_metadata(
+                            let attach_log = logger::log_event_with_metadata(
                             &pool,
                             "PROVIDER_ATTACH_VOLUME",
                             "in_progress",
@@ -2248,41 +2306,46 @@ pub async fn process_provisioning(
                         )
                         .await
                         .ok();
-                        let attach_start = Instant::now();
-                        let attach_res = provider
-                            .attach_volume(&zone, &server_id, &vol_id_to_attach, delete_on_terminate)
-                            .await;
-                        if let Some(lid) = attach_log {
-                            let dur = attach_start.elapsed().as_millis() as i32;
-                            match &attach_res {
-                                Ok(true) => {
-                                    logger::log_event_complete(&pool, lid, "success", dur, None)
-                                        .await
-                                        .ok()
-                                }
-                                Ok(false) => logger::log_event_complete(
-                                    &pool,
-                                    lid,
-                                    "failed",
-                                    dur,
-                                    Some("Provider returned false"),
+                            let attach_start = Instant::now();
+                            let attach_res = provider
+                                .attach_volume(
+                                    &zone,
+                                    &server_id,
+                                    &vol_id_to_attach,
+                                    delete_on_terminate,
                                 )
-                                .await
-                                .ok(),
-                                Err(e) => logger::log_event_complete(
-                                    &pool,
-                                    lid,
-                                    "failed",
-                                    dur,
-                                    Some(&e.to_string()),
-                                )
-                                .await
-                                .ok(),
-                            };
-                        }
-                        if attach_res.unwrap_or(false) {
-                            // Update volume status to 'attached' using provider_volume_id
-                            let _ = sqlx::query(
+                                .await;
+                            if let Some(lid) = attach_log {
+                                let dur = attach_start.elapsed().as_millis() as i32;
+                                match &attach_res {
+                                    Ok(true) => {
+                                        logger::log_event_complete(&pool, lid, "success", dur, None)
+                                            .await
+                                            .ok()
+                                    }
+                                    Ok(false) => logger::log_event_complete(
+                                        &pool,
+                                        lid,
+                                        "failed",
+                                        dur,
+                                        Some("Provider returned false"),
+                                    )
+                                    .await
+                                    .ok(),
+                                    Err(e) => logger::log_event_complete(
+                                        &pool,
+                                        lid,
+                                        "failed",
+                                        dur,
+                                        Some(&e.to_string()),
+                                    )
+                                    .await
+                                    .ok(),
+                                };
+                            }
+                            if attach_res.unwrap_or(false) {
+                                // Update volume status to 'attached' using provider_volume_id
+                                let _ = sqlx::query(
                                 r#"
                                 UPDATE instance_volumes 
                                 SET status='attached', attached_at=NOW() 
@@ -2293,11 +2356,11 @@ pub async fn process_provisioning(
                             .bind(&vol_id_to_attach)
                             .execute(&pool)
                             .await;
-                            eprintln!("✅ [process_create] Block Storage volume {} attached successfully", vol_id_to_attach);
-                        } else {
-                            let msg = "Failed to attach data volume".to_string();
-                            // Update volume status to 'failed' using provider_volume_id
-                            let _ = sqlx::query(
+                                eprintln!("✅ [process_create] Block Storage volume {} attached successfully", vol_id_to_attach);
+                            } else {
+                                let msg = "Failed to attach data volume".to_string();
+                                // Update volume status to 'failed' using provider_volume_id
+                                let _ = sqlx::query(
                                 r#"
                                 UPDATE instance_volumes 
                                 SET status='failed', error_message=$3 
@@ -2309,42 +2372,42 @@ pub async fn process_provisioning(
                                 .bind(&msg)
                                 .execute(&pool)
                                 .await;
-                            // Best-effort cleanup of the created volume to avoid cost leak.
-                            let _ = provider.delete_volume(&zone, &vol_id_to_attach).await;
-                            let _ = sqlx::query(
-                                r#"
+                                // Best-effort cleanup of the created volume to avoid cost leak.
+                                let _ = provider.delete_volume(&zone, &vol_id_to_attach).await;
+                                let _ = sqlx::query(
+                                    r#"
                                 UPDATE instance_volumes 
                                 SET status='deleted', deleted_at=NOW() 
                                 WHERE instance_id=$1 AND provider_volume_id=$2
-                                "#
-                            )
-                            .bind(instance_uuid)
-                            .bind(&vol_id_to_attach)
-                            .execute(&pool)
-                            .await;
-                            // Cleanup server to avoid leak
-                            let _ = provider.terminate_instance(&zone, &server_id).await;
-                            let _ = sqlx::query(
+                                "#,
+                                )
+                                .bind(instance_uuid)
+                                .bind(&vol_id_to_attach)
+                                .execute(&pool)
+                                .await;
+                                // Cleanup server to avoid leak
+                                let _ = provider.terminate_instance(&zone, &server_id).await;
+                                let _ = sqlx::query(
                                 "UPDATE instances SET status='failed', error_code=COALESCE(error_code,'PROVIDER_VOLUME_ATTACH_FAILED'), error_message=COALESCE($2,error_message), failed_at=COALESCE(failed_at,NOW()) WHERE id=$1"
                             )
                             .bind(instance_uuid)
                             .bind(&msg)
                             .execute(&pool)
                             .await;
-                            if let Some(log_id) = log_id_execute {
-                                let duration = start.elapsed().as_millis() as i32;
-                                logger::log_event_complete(
-                                    &pool,
-                                    log_id,
-                                    "failed",
-                                    duration,
-                                    Some(&msg),
-                                )
-                                .await
-                                .ok();
+                                if let Some(log_id) = log_id_execute {
+                                    let duration = start.elapsed().as_millis() as i32;
+                                    logger::log_event_complete(
+                                        &pool,
+                                        log_id,
+                                        "failed",
+                                        duration,
+                                        Some(&msg),
+                                    )
+                                    .await
+                                    .ok();
+                                }
+                                return;
                             }
-                            return;
-                        }
                         } else {
                             eprintln!("⚠️ [process_create] Skipping Block Storage attachment - volume creation failed or not supported");
                         } // Close the if let Some(vol_id_to_attach) block
@@ -2368,7 +2431,9 @@ pub async fn process_provisioning(
                     "provider": provider_name,
                     "instance_type": instance_type
                 })),
-            ).await.ok();
+            )
+            .await
+            .ok();
 
             // 3. Resize auto-created Block Storage if required (BEFORE starting the instance)
             // For Scaleway L4-1-24G: Scaleway creates a Block Storage automatically (20GB bootable from image snapshot)
@@ -2376,19 +2441,21 @@ pub async fn process_provisioning(
             if requires_diskless {
                 if let Some(boot_volume_id) = &auto_created_boot_volume_id {
                     let current_size_gb = auto_created_boot_volume_size_gb.unwrap_or(20);
-                    
+
                     // Calculate target size based on model requirements using worker_storage logic
-                    let (model_from_db_for_size, _) = resolve_instance_model_and_volume(&pool, instance_uuid).await;
+                    let (model_from_db_for_size, _) =
+                        resolve_instance_model_and_volume(&pool, instance_uuid).await;
                     let model_code = model_from_db_for_size.as_deref().unwrap_or("");
-                    
+
                     // Get default size from provider settings or env (fallback to 200GB)
-                    let provider_id: Option<Uuid> = sqlx::query_scalar("SELECT provider_id FROM instances WHERE id = $1")
-                        .bind(instance_uuid)
-                        .fetch_optional(&pool)
-                        .await
-                        .ok()
-                        .flatten();
-                    
+                    let provider_id: Option<Uuid> =
+                        sqlx::query_scalar("SELECT provider_id FROM instances WHERE id = $1")
+                            .bind(instance_uuid)
+                            .fetch_optional(&pool)
+                            .await
+                            .ok()
+                            .flatten();
+
                     let default_gb: i64 = if let Some(pid) = provider_id {
                         sqlx::query_scalar("SELECT value_int FROM provider_settings WHERE provider_id = $1 AND key = 'WORKER_DATA_VOLUME_GB_DEFAULT'")
                             .bind(pid)
@@ -2410,19 +2477,20 @@ pub async fn process_provisioning(
                             .filter(|gb| *gb > 0)
                             .unwrap_or(200)
                     };
-                    
+
                     // Use worker_storage logic to determine optimal size based on model
-                    let recommended_gb = worker_storage::recommended_data_volume_gb(model_code, default_gb)
-                        .unwrap_or(default_gb);
-                    
+                    let recommended_gb =
+                        worker_storage::recommended_data_volume_gb(model_code, default_gb)
+                            .unwrap_or(default_gb);
+
                     let target_size_gb = recommended_gb as u64; // Convert to u64 for resize_block_storage
-                    
+
                     if current_size_gb < target_size_gb {
                         eprintln!(
                             "🔵 [process_create] Resizing auto-created Block Storage {} from {}GB to {}GB BEFORE startup",
                             boot_volume_id, current_size_gb, target_size_gb
                         );
-                        
+
                         let resize_log = logger::log_event_with_metadata(
                             &pool,
                             "PROVIDER_VOLUME_RESIZE",
@@ -2441,17 +2509,24 @@ pub async fn process_provisioning(
                         )
                         .await
                         .ok();
-                        
+
                         let resize_start = Instant::now();
-                        
+
                         eprintln!("🔵 [process_create] Calling resize_block_storage for volume {} to {}GB", boot_volume_id, target_size_gb);
-                        match provider.resize_block_storage(&zone, boot_volume_id, target_size_gb).await {
+                        match provider
+                            .resize_block_storage(&zone, boot_volume_id, target_size_gb)
+                            .await
+                        {
                             Ok(true) => {
                                 eprintln!("✅ [process_create] resize_block_storage returned Ok(true) for volume {}", boot_volume_id);
                                 if let Some(lid) = resize_log {
                                     let duration = resize_start.elapsed().as_millis() as i32;
                                     eprintln!("🔵 [process_create] Completing PROVIDER_VOLUME_RESIZE log {} with success (duration: {}ms)", lid, duration);
-                                    if let Err(e) = logger::log_event_complete(&pool, lid, "success", duration, None).await {
+                                    if let Err(e) = logger::log_event_complete(
+                                        &pool, lid, "success", duration, None,
+                                    )
+                                    .await
+                                    {
                                         eprintln!("❌ [process_create] Failed to complete PROVIDER_VOLUME_RESIZE log {}: {:?}", lid, e);
                                     } else {
                                         eprintln!("✅ [process_create] Successfully completed PROVIDER_VOLUME_RESIZE log {}", lid);
@@ -2459,7 +2534,7 @@ pub async fn process_provisioning(
                                 } else {
                                     eprintln!("⚠️ [process_create] No resize_log ID available to complete");
                                 }
-                                
+
                                 // Update volume size in DB
                                 let update_result = sqlx::query(
                                     r#"
@@ -2473,22 +2548,31 @@ pub async fn process_provisioning(
                                 .bind((target_size_gb * 1_000_000_000) as i64)
                                 .execute(&pool)
                                 .await;
-                                
+
                                 if let Err(e) = update_result {
                                     eprintln!("⚠️ [process_create] Failed to update volume size in DB: {:?}", e);
                                 } else {
-                                    eprintln!("✅ [process_create] Updated volume size in DB to {}GB", target_size_gb);
+                                    eprintln!(
+                                        "✅ [process_create] Updated volume size in DB to {}GB",
+                                        target_size_gb
+                                    );
                                 }
-                                
+
                                 eprintln!("✅ [process_create] Successfully resized Block Storage {} to {}GB", boot_volume_id, target_size_gb);
                             }
                             Ok(false) => {
                                 eprintln!("⚠️ [process_create] Block Storage resize not supported by provider");
                                 if let Some(lid) = resize_log {
                                     let duration = resize_start.elapsed().as_millis() as i32;
-                                    logger::log_event_complete(&pool, lid, "failed", duration, Some("Provider does not support resize"))
-                                        .await
-                                        .ok();
+                                    logger::log_event_complete(
+                                        &pool,
+                                        lid,
+                                        "failed",
+                                        duration,
+                                        Some("Provider does not support resize"),
+                                    )
+                                    .await
+                                    .ok();
                                 }
                             }
                             Err(e) => {
@@ -2496,16 +2580,22 @@ pub async fn process_provisioning(
                                     "Failed to resize Block Storage {} from {}GB to {}GB: {}",
                                     boot_volume_id, current_size_gb, target_size_gb, e
                                 );
-                                
+
                                 eprintln!("❌ [process_create] {}", error_msg);
-                                
+
                                 if let Some(lid) = resize_log {
                                     let duration = resize_start.elapsed().as_millis() as i32;
-                                    logger::log_event_complete(&pool, lid, "failed", duration, Some(&error_msg))
-                                        .await
-                                        .ok();
+                                    logger::log_event_complete(
+                                        &pool,
+                                        lid,
+                                        "failed",
+                                        duration,
+                                        Some(&error_msg),
+                                    )
+                                    .await
+                                    .ok();
                                 }
-                                
+
                                 // Don't fail provisioning - instance can still boot with 20GB (though not ideal)
                                 eprintln!("⚠️ [process_create] Continuing with {}GB Block Storage (resize failed)", current_size_gb);
                             }
@@ -2521,15 +2611,15 @@ pub async fn process_provisioning(
             // 4. Power On and ensure server reaches "running" state
             // Generic logic: works for providers that support get_server_state()
             // and providers that don't (e.g., Mock - they just call start_instance() once)
-            
+
             println!("🔌 Starting server {}...", server_id);
             let mut start_success = false;
             let mut last_state: Option<String> = None;
-            
+
             // Check if provider supports state checking
             let state_check_result = provider.get_server_state(&zone, &server_id).await;
             let provider_supports_state_check = matches!(state_check_result, Ok(Some(_)));
-            
+
             if provider_supports_state_check {
                 // Provider supports state checking (e.g., Scaleway)
                 // Loop until server is "running" or timeout
@@ -2537,12 +2627,18 @@ pub async fn process_provisioning(
                     if let Ok(Some(state)) = provider.get_server_state(&zone, &server_id).await {
                         last_state = Some(state.clone());
                         if state == "running" {
-                            println!("✅ Server {} is now running (attempt {})", server_id, start_attempt);
+                            println!(
+                                "✅ Server {} is now running (attempt {})",
+                                server_id, start_attempt
+                            );
                             start_success = true;
                             break;
                         } else if state == "stopped" || state == "stopped_in_place" {
                             // Server is stopped, try to poweron
-                            println!("🔌 Server {} is {}, attempting poweron (attempt {})", server_id, state, start_attempt);
+                            println!(
+                                "🔌 Server {} is {}, attempting poweron (attempt {})",
+                                server_id, state, start_attempt
+                            );
                             match provider.start_instance(&zone, &server_id).await {
                                 Ok(true) => {
                                     println!("✅ Poweron command sent successfully");
@@ -2557,48 +2653,79 @@ pub async fn process_provisioning(
                                     }
                                 }
                                 Err(e) => {
-                                let msg = format!("Failed to start instance on provider: {:?}", e);
-                                
-                                // Check if this is a normal retry (instance in transitional state) vs real error
-                                let (is_retry, retry_msg) = is_normal_retry(
-                                    provider.as_ref(),
-                                    &zone,
-                                    &server_id,
-                                    Some(&msg),
-                                ).await;
-                                
-                                if is_retry {
-                                    println!("⏳ {}", retry_msg.as_ref().unwrap_or(&"Instance is starting - retrying".to_string()));
-                                    if let Some(lid) = log_id_start {
-                                        let duration = start_api.elapsed().as_millis() as i32;
-                                        logger::log_event_complete(&pool, lid, "retry", duration, retry_msg.as_deref())
-                                            .await
-                                            .ok();
-                                    }
-                                    if let Some(log_id) = log_id_execute {
-                                        let duration = start.elapsed().as_millis() as i32;
-                                        logger::log_event_complete(&pool, log_id, "retry", duration, retry_msg.as_deref())
-                                            .await
-                                            .ok();
-                                    }
-                                } else {
-                                    println!("❌ {}", msg);
-                                    if let Some(lid) = log_id_start {
-                                        let duration = start_api.elapsed().as_millis() as i32;
-                                        logger::log_event_complete(&pool, lid, "failed", duration, Some(&msg))
-                                            .await
-                                            .ok();
-                                    }
-                                    if let Some(log_id) = log_id_execute {
-                                        let duration = start.elapsed().as_millis() as i32;
-                                        logger::log_event_complete(&pool, log_id, "failed", duration, Some(&msg))
-                                            .await
-                                            .ok();
-                                    }
-                                }
+                                    let msg =
+                                        format!("Failed to start instance on provider: {:?}", e);
 
-                                // Best-effort cleanup
-                                let terminate_log = logger::log_event_with_metadata(
+                                    // Check if this is a normal retry (instance in transitional state) vs real error
+                                    let (is_retry, retry_msg) = is_normal_retry(
+                                        provider.as_ref(),
+                                        &zone,
+                                        &server_id,
+                                        Some(&msg),
+                                    )
+                                    .await;
+
+                                    if is_retry {
+                                        println!(
+                                            "⏳ {}",
+                                            retry_msg.as_ref().unwrap_or(
+                                                &"Instance is starting - retrying".to_string()
+                                            )
+                                        );
+                                        if let Some(lid) = log_id_start {
+                                            let duration = start_api.elapsed().as_millis() as i32;
+                                            logger::log_event_complete(
+                                                &pool,
+                                                lid,
+                                                "retry",
+                                                duration,
+                                                retry_msg.as_deref(),
+                                            )
+                                            .await
+                                            .ok();
+                                        }
+                                        if let Some(log_id) = log_id_execute {
+                                            let duration = start.elapsed().as_millis() as i32;
+                                            logger::log_event_complete(
+                                                &pool,
+                                                log_id,
+                                                "retry",
+                                                duration,
+                                                retry_msg.as_deref(),
+                                            )
+                                            .await
+                                            .ok();
+                                        }
+                                    } else {
+                                        println!("❌ {}", msg);
+                                        if let Some(lid) = log_id_start {
+                                            let duration = start_api.elapsed().as_millis() as i32;
+                                            logger::log_event_complete(
+                                                &pool,
+                                                lid,
+                                                "failed",
+                                                duration,
+                                                Some(&msg),
+                                            )
+                                            .await
+                                            .ok();
+                                        }
+                                        if let Some(log_id) = log_id_execute {
+                                            let duration = start.elapsed().as_millis() as i32;
+                                            logger::log_event_complete(
+                                                &pool,
+                                                log_id,
+                                                "failed",
+                                                duration,
+                                                Some(&msg),
+                                            )
+                                            .await
+                                            .ok();
+                                        }
+                                    }
+
+                                    // Best-effort cleanup
+                                    let terminate_log = logger::log_event_with_metadata(
                                     &pool,
                                     "PROVIDER_TERMINATE",
                                     "in_progress",
@@ -2608,66 +2735,73 @@ pub async fn process_provisioning(
                                 )
                                 .await
                                 .ok();
-                                let terminate_start = Instant::now();
-                                let terminate_res = provider.terminate_instance(&zone, &server_id).await;
-                                if let Some(lid) = terminate_log {
-                                    let dur = terminate_start.elapsed().as_millis() as i32;
-                                    match &terminate_res {
-                                        Ok(true) => logger::log_event_complete(&pool, lid, "success", dur, None)
+                                    let terminate_start = Instant::now();
+                                    let terminate_res =
+                                        provider.terminate_instance(&zone, &server_id).await;
+                                    if let Some(lid) = terminate_log {
+                                        let dur = terminate_start.elapsed().as_millis() as i32;
+                                        match &terminate_res {
+                                            Ok(true) => logger::log_event_complete(
+                                                &pool, lid, "success", dur, None,
+                                            )
                                             .await
                                             .ok(),
-                                        Ok(false) => logger::log_event_complete(
-                                            &pool,
-                                            lid,
-                                            "failed",
-                                            dur,
-                                            Some("Provider terminate returned false"),
-                                        )
-                                        .await
-                                        .ok(),
-                                        Err(err) => logger::log_event_complete(
-                                            &pool,
-                                            lid,
-                                            "failed",
-                                            dur,
-                                            Some(&err.to_string()),
-                                        )
-                                        .await
-                                        .ok(),
-                                    };
-                                }
+                                            Ok(false) => logger::log_event_complete(
+                                                &pool,
+                                                lid,
+                                                "failed",
+                                                dur,
+                                                Some("Provider terminate returned false"),
+                                            )
+                                            .await
+                                            .ok(),
+                                            Err(err) => logger::log_event_complete(
+                                                &pool,
+                                                lid,
+                                                "failed",
+                                                dur,
+                                                Some(&err.to_string()),
+                                            )
+                                            .await
+                                            .ok(),
+                                        };
+                                    }
 
-                                // Best-effort cleanup: delete volumes if any were created.
-                                let vols: Vec<(Uuid, String, bool)> = sqlx::query_as(
-                                    r#"
+                                    // Best-effort cleanup: delete volumes if any were created.
+                                    let vols: Vec<(Uuid, String, bool)> = sqlx::query_as(
+                                        r#"
                                     SELECT id, provider_volume_id, delete_on_terminate
                                     FROM instance_volumes
                                     WHERE instance_id = $1
                                       AND deleted_at IS NULL
                                     "#,
-                                )
-                                .bind(instance_uuid)
-                                .fetch_all(&pool)
-                                .await
-                                .unwrap_or_default();
-                                for (vol_row_id, provider_volume_id, delete_on_terminate) in vols {
-                                    if !delete_on_terminate {
-                                        continue;
-                                    }
-                                    let _ = provider.delete_volume(&zone, &provider_volume_id).await;
-                                    let _ = sqlx::query(
+                                    )
+                                    .bind(instance_uuid)
+                                    .fetch_all(&pool)
+                                    .await
+                                    .unwrap_or_default();
+                                    for (vol_row_id, provider_volume_id, delete_on_terminate) in
+                                        vols
+                                    {
+                                        if !delete_on_terminate {
+                                            continue;
+                                        }
+                                        let _ = provider
+                                            .delete_volume(&zone, &provider_volume_id)
+                                            .await;
+                                        let _ = sqlx::query(
                                         "UPDATE instance_volumes SET status='deleted', deleted_at=NOW() WHERE id=$1"
                                     )
                                     .bind(vol_row_id)
                                     .execute(&pool)
                                     .await;
-                                }
+                                    }
 
-                                let next_status = match terminate_res {
-                                    Ok(true) => "terminating",
-                                    _ => "provisioning_failed",
-                                };
-                                let _ = sqlx::query(
+                                    let next_status = match terminate_res {
+                                        Ok(true) => "terminating",
+                                        _ => "provisioning_failed",
+                                    };
+                                    let _ = sqlx::query(
                                     "UPDATE instances
                                      SET status = $2::instance_status,
                                          error_code = COALESCE(error_code, 'PROVIDER_START_FAILED'),
@@ -2681,25 +2815,30 @@ pub async fn process_provisioning(
                                 .bind(&msg)
                                 .execute(&pool)
                                 .await;
-                                return;
+                                    return;
+                                }
+                            }
+                        } else {
+                            // Server is in another state (starting, etc.), wait for it to change
+                            if start_attempt % 10 == 0 {
+                                println!(
+                                    "⏳ Server {} state: {} (attempt {}/60)",
+                                    server_id, state, start_attempt
+                                );
                             }
                         }
-                    } else {
-                        // Server is in another state (starting, etc.), wait for it to change
-                        if start_attempt % 10 == 0 {
-                            println!("⏳ Server {} state: {} (attempt {}/60)", server_id, state, start_attempt);
-                        }
+                    }
+
+                    if start_attempt < 60 {
+                        sleep(Duration::from_secs(2)).await;
                     }
                 }
-                
-                if start_attempt < 60 {
-                    sleep(Duration::from_secs(2)).await;
-                }
-            }
             } else {
                 // Provider doesn't support state checking (e.g., Mock)
                 // Just call start_instance() once - if it succeeds, we're done
-                println!("🔌 Provider doesn't support state checking, calling start_instance() directly");
+                println!(
+                    "🔌 Provider doesn't support state checking, calling start_instance() directly"
+                );
                 match provider.start_instance(&zone, &server_id).await {
                     Ok(true) => {
                         println!("✅ start_instance() succeeded");
@@ -2717,42 +2856,67 @@ pub async fn process_provisioning(
                     }
                     Err(e) => {
                         let msg = format!("Failed to start instance on provider: {:?}", e);
-                        
+
                         // Check if this is a normal retry (instance in transitional state) vs real error
-                        let (is_retry, retry_msg) = is_normal_retry(
-                            provider.as_ref(),
-                            &zone,
-                            &server_id,
-                            Some(&msg),
-                        ).await;
-                        
+                        let (is_retry, retry_msg) =
+                            is_normal_retry(provider.as_ref(), &zone, &server_id, Some(&msg)).await;
+
                         if is_retry {
-                            println!("⏳ {}", retry_msg.as_ref().unwrap_or(&"Instance is starting - retrying".to_string()));
+                            println!(
+                                "⏳ {}",
+                                retry_msg
+                                    .as_ref()
+                                    .unwrap_or(&"Instance is starting - retrying".to_string())
+                            );
                             if let Some(lid) = log_id_start {
                                 let duration = start_api.elapsed().as_millis() as i32;
-                                logger::log_event_complete(&pool, lid, "retry", duration, retry_msg.as_deref())
-                                    .await
-                                    .ok();
+                                logger::log_event_complete(
+                                    &pool,
+                                    lid,
+                                    "retry",
+                                    duration,
+                                    retry_msg.as_deref(),
+                                )
+                                .await
+                                .ok();
                             }
                             if let Some(log_id) = log_id_execute {
                                 let duration = start.elapsed().as_millis() as i32;
-                                logger::log_event_complete(&pool, log_id, "retry", duration, retry_msg.as_deref())
-                                    .await
-                                    .ok();
+                                logger::log_event_complete(
+                                    &pool,
+                                    log_id,
+                                    "retry",
+                                    duration,
+                                    retry_msg.as_deref(),
+                                )
+                                .await
+                                .ok();
                             }
                         } else {
                             println!("❌ {}", msg);
                             if let Some(lid) = log_id_start {
                                 let duration = start_api.elapsed().as_millis() as i32;
-                                logger::log_event_complete(&pool, lid, "failed", duration, Some(&msg))
-                                    .await
-                                    .ok();
+                                logger::log_event_complete(
+                                    &pool,
+                                    lid,
+                                    "failed",
+                                    duration,
+                                    Some(&msg),
+                                )
+                                .await
+                                .ok();
                             }
                             if let Some(log_id) = log_id_execute {
                                 let duration = start.elapsed().as_millis() as i32;
-                                logger::log_event_complete(&pool, log_id, "failed", duration, Some(&msg))
-                                    .await
-                                    .ok();
+                                logger::log_event_complete(
+                                    &pool,
+                                    log_id,
+                                    "failed",
+                                    duration,
+                                    Some(&msg),
+                                )
+                                .await
+                                .ok();
                             }
                         }
 
@@ -2772,9 +2936,11 @@ pub async fn process_provisioning(
                         if let Some(lid) = terminate_log {
                             let dur = terminate_start.elapsed().as_millis() as i32;
                             match &terminate_res {
-                                Ok(true) => logger::log_event_complete(&pool, lid, "success", dur, None)
-                                    .await
-                                    .ok(),
+                                Ok(true) => {
+                                    logger::log_event_complete(&pool, lid, "success", dur, None)
+                                        .await
+                                        .ok()
+                                }
                                 Ok(false) => logger::log_event_complete(
                                     &pool,
                                     lid,
@@ -2844,10 +3010,13 @@ pub async fn process_provisioning(
                     }
                 }
             }
-            
+
             if !start_success {
                 let msg = if let Some(state) = last_state {
-                    format!("Server {} did not reach 'running' state after 2 minutes. Last state: {}", server_id, state)
+                    format!(
+                        "Server {} did not reach 'running' state after 2 minutes. Last state: {}",
+                        server_id, state
+                    )
                 } else {
                     format!("Server {} could not be started after 2 minutes", server_id)
                 };
@@ -2980,7 +3149,10 @@ pub async fn process_provisioning(
             // 3.5. Wait for server to be running, then retrieve IP
             // Scaleway assigns IP dynamically only after the server reaches "running" state.
             // This matches the behavior in scw_instance_provision.sh which waits for "running" before checking IP.
-            println!("⏳ Waiting for server {} to be running before retrieving IP...", server_id);
+            println!(
+                "⏳ Waiting for server {} to be running before retrieving IP...",
+                server_id
+            );
             let mut server_running = false;
             let mut last_state: Option<String> = None;
             for wait_attempt in 1..=150 {
@@ -2988,20 +3160,30 @@ pub async fn process_provisioning(
                 if let Ok(Some(state)) = provider.get_server_state(&zone, &server_id).await {
                     last_state = Some(state.clone());
                     if state == "running" {
-                        println!("✅ Server {} is now running (attempt {})", server_id, wait_attempt);
+                        println!(
+                            "✅ Server {} is now running (attempt {})",
+                            server_id, wait_attempt
+                        );
                         server_running = true;
                         break;
                     } else {
                         if wait_attempt % 10 == 0 {
                             // Log every 10th attempt to avoid spam
-                            println!("⏳ Server {} state: {} (attempt {}/150, ~{}s elapsed)", 
-                                server_id, state, wait_attempt, wait_attempt * 2);
+                            println!(
+                                "⏳ Server {} state: {} (attempt {}/150, ~{}s elapsed)",
+                                server_id,
+                                state,
+                                wait_attempt,
+                                wait_attempt * 2
+                            );
                         }
                     }
                 } else {
                     // Provider doesn't support get_server_state, or API call failed
                     // Proceed anyway - get_instance_ip will handle it
-                    println!("⚠️ Could not retrieve server state, proceeding with IP retrieval anyway");
+                    println!(
+                        "⚠️ Could not retrieve server state, proceeding with IP retrieval anyway"
+                    );
                     break;
                 }
                 if wait_attempt < 150 {
@@ -3012,7 +3194,10 @@ pub async fn process_provisioning(
                 if let Some(state) = last_state {
                     println!("⚠️ Server {} did not reach 'running' state after 5 minutes. Last state: {}", server_id, state);
                 } else {
-                    println!("⚠️ Server {} state could not be determined after 5 minutes", server_id);
+                    println!(
+                        "⚠️ Server {} state could not be determined after 5 minutes",
+                        server_id
+                    );
                 }
             }
 
@@ -3023,7 +3208,7 @@ pub async fn process_provisioning(
                 println!("⏳ Waiting 5s for Scaleway to assign IP address...");
                 sleep(Duration::from_secs(5)).await;
             }
-            
+
             println!("🔍 Retrieving IP address for {}...", server_id);
             let mut ip_address: Option<String> = None;
             let ip_api = Instant::now();
@@ -3040,21 +3225,26 @@ pub async fn process_provisioning(
                     "max_attempts": 10,
                     "server_running": server_running
                 })),
-             ).await.ok();
-            
+            )
+            .await
+            .ok();
+
             // Use exponential backoff: 2s, 3s, 5s, 8s, 13s, 21s, 34s, 55s, 89s, 144s
             // Total max wait: ~470 seconds (~8 minutes) if IP is not available
             let backoff_delays = vec![2, 3, 5, 8, 13, 21, 34, 55, 89, 144];
             for (attempt_idx, delay_secs) in backoff_delays.iter().enumerate() {
                 let attempt = attempt_idx + 1;
-                
+
                 // Verify server is still running before each attempt
                 if let Ok(Some(state)) = provider.get_server_state(&zone, &server_id).await {
                     if state != "running" {
-                        eprintln!("⚠️ Server {} is not running (state: {}), IP may not be available", server_id, state);
+                        eprintln!(
+                            "⚠️ Server {} is not running (state: {}), IP may not be available",
+                            server_id, state
+                        );
                     }
                 }
-                
+
                 match provider.get_instance_ip(&zone, &server_id).await {
                     Ok(Some(ip)) => {
                         println!("✅ IP Address retrieved: {} (attempt {})", ip, attempt);
@@ -3063,7 +3253,12 @@ pub async fn process_provisioning(
                     }
                     Ok(None) => {
                         if attempt < backoff_delays.len() {
-                            println!("⏳ IP not available yet, waiting {}s before retry (attempt {}/{})", delay_secs, attempt, backoff_delays.len());
+                            println!(
+                                "⏳ IP not available yet, waiting {}s before retry (attempt {}/{})",
+                                delay_secs,
+                                attempt,
+                                backoff_delays.len()
+                            );
                             sleep(Duration::from_secs(*delay_secs)).await;
                         } else {
                             println!("⚠️ IP not available after {} attempts (server may still be starting or IP assignment delayed)", attempt);
@@ -3075,12 +3270,12 @@ pub async fn process_provisioning(
                         if attempt < backoff_delays.len() {
                             sleep(Duration::from_secs(*delay_secs)).await;
                         } else {
-                        break;
+                            break;
                         }
                     }
                 }
             }
-            
+
             if let Some(lid) = log_id_ip {
                 let duration = ip_api.elapsed().as_millis() as i32;
                 let meta = json!({
@@ -3148,7 +3343,7 @@ pub async fn process_provisioning(
                         })
                         .unwrap_or(true)
                 };
-                
+
                 if expose {
                     let worker_health_port: u16 = if let Some(pid) = provider_id {
                         sqlx::query_scalar::<_, i64>(
@@ -3186,12 +3381,12 @@ pub async fn process_provisioning(
                             .and_then(|s| s.parse::<u16>().ok())
                             .unwrap_or(8000)
                     };
-                    
+
                     // Include SSH port (22) in addition to worker ports
                     let mut ports_to_open = vec![22u16]; // SSH port
                     ports_to_open.push(worker_vllm_port);
                     ports_to_open.push(worker_health_port);
-                    
+
                     let security_group_log = logger::log_event_with_metadata(
                         &pool,
                         "PROVIDER_SECURITY_GROUP",
@@ -3208,15 +3403,11 @@ pub async fn process_provisioning(
                     )
                     .await
                     .ok();
-                    
+
                     let security_group_start = Instant::now();
-                    
+
                     match provider
-                        .ensure_inbound_tcp_ports(
-                            &zone,
-                            &server_id,
-                            ports_to_open.clone(),
-                        )
+                        .ensure_inbound_tcp_ports(&zone, &server_id, ports_to_open.clone())
                         .await
                     {
                         Ok(true) => {
@@ -3234,31 +3425,46 @@ pub async fn process_provisioning(
                         Ok(false) => {
                             if let Some(lid) = security_group_log {
                                 let duration = security_group_start.elapsed().as_millis() as i32;
-                                logger::log_event_complete(&pool, lid, "failed", duration, Some("Provider does not support ensure_inbound_tcp_ports"))
-                                    .await
-                                    .ok();
+                                logger::log_event_complete(
+                                    &pool,
+                                    lid,
+                                    "failed",
+                                    duration,
+                                    Some("Provider does not support ensure_inbound_tcp_ports"),
+                                )
+                                .await
+                                .ok();
                             }
                             eprintln!("⚠️ [process_create] Provider does not support ensure_inbound_tcp_ports (skipped)");
                         }
                         Err(e) => {
                             if let Some(lid) = security_group_log {
                                 let duration = security_group_start.elapsed().as_millis() as i32;
-                                logger::log_event_complete(&pool, lid, "failed", duration, Some(&e.to_string()))
-                                    .await
-                                    .ok();
+                                logger::log_event_complete(
+                                    &pool,
+                                    lid,
+                                    "failed",
+                                    duration,
+                                    Some(&e.to_string()),
+                                )
+                                .await
+                                .ok();
                             }
-                            eprintln!("⚠️ [process_create] Failed to configure Security Groups: {}", e);
+                            eprintln!(
+                                "⚠️ [process_create] Failed to configure Security Groups: {}",
+                                e
+                            );
                         }
                     }
                 }
             }
-            
+
             // Check SSH accessibility (AFTER Security Groups configuration)
             // For Scaleway: SSH should be accessible after ~20 seconds
             if ip_address.is_some() && auto_install && is_worker_target {
                 let ip_for_ssh = ip_address.as_ref().unwrap();
                 eprintln!("⏳ [process_create] Waiting for SSH to become accessible on {} (max 3 minutes)...", ip_for_ssh);
-                
+
                 let ssh_check_log = logger::log_event_with_metadata(
                     &pool,
                     "WORKER_SSH_ACCESSIBLE",
@@ -3276,20 +3482,20 @@ pub async fn process_provisioning(
                 )
                 .await
                 .ok();
-                
+
                 let ssh_check_start = Instant::now();
                 let mut ssh_accessible = false;
                 let max_wait_seconds = 180; // 3 minutes max (as per validation test)
                 let check_interval = 10; // Check every 10 seconds
                 let max_attempts = max_wait_seconds / check_interval; // 18 attempts
-                
+
                 for ssh_check_attempt in 1..=max_attempts {
                     if check_ssh_accessible(ip_for_ssh).await {
                         let elapsed_seconds = ssh_check_attempt * check_interval;
                         eprintln!("✅ [process_create] SSH is accessible on {} after {} seconds (attempt {}/{})", 
                             ip_for_ssh, elapsed_seconds, ssh_check_attempt, max_attempts);
                         ssh_accessible = true;
-                        
+
                         if let Some(lid) = ssh_check_log {
                             let duration = ssh_check_start.elapsed().as_millis() as i32;
                             logger::log_event_complete_with_metadata(
@@ -3307,7 +3513,7 @@ pub async fn process_provisioning(
                             .await
                             .ok();
                         }
-                        
+
                         // Transition to "installing" status when SSH becomes accessible
                         // This indicates we're ready to start worker installation
                         if is_worker_target {
@@ -3324,7 +3530,7 @@ pub async fn process_provisioning(
                         } else {
                             eprintln!("ℹ️ [process_create] Skipping transition to installing (not a worker target: instance_type={})", instance_type);
                         }
-                        
+
                         break;
                     }
                     if ssh_check_attempt < max_attempts {
@@ -3335,24 +3541,33 @@ pub async fn process_provisioning(
                         sleep(Duration::from_secs(check_interval)).await;
                     }
                 }
-                
+
                 if !ssh_accessible {
                     let elapsed_seconds = max_attempts * check_interval;
                     eprintln!("❌ [process_create] SSH did not become accessible on {} after {} seconds (3 minutes)", ip_for_ssh, elapsed_seconds);
-                    
+
                     // Check if instance is still starting (normal retry scenario)
                     let (is_retry, retry_msg) = is_normal_retry(
                         provider.as_ref(),
                         &zone,
                         &server_id,
-                        Some(&format!("SSH not accessible after {} seconds", elapsed_seconds)),
-                    ).await;
-                    
+                        Some(&format!(
+                            "SSH not accessible after {} seconds",
+                            elapsed_seconds
+                        )),
+                    )
+                    .await;
+
                     if let Some(lid) = ssh_check_log {
                         let duration = ssh_check_start.elapsed().as_millis() as i32;
                         if is_retry {
                             // Instance is still starting - this is a normal retry, not a failure
-                            eprintln!("⏳ [process_create] {}", retry_msg.as_ref().unwrap_or(&"Instance is starting - retrying SSH check".to_string()));
+                            eprintln!(
+                                "⏳ [process_create] {}",
+                                retry_msg.as_ref().unwrap_or(
+                                    &"Instance is starting - retrying SSH check".to_string()
+                                )
+                            );
                             logger::log_event_complete_with_metadata(
                                 &pool,
                                 lid,
@@ -3375,7 +3590,10 @@ pub async fn process_provisioning(
                                 lid,
                                 "failed",
                                 duration,
-                                Some(&format!("SSH not accessible after {} seconds", elapsed_seconds)),
+                                Some(&format!(
+                                    "SSH not accessible after {} seconds",
+                                    elapsed_seconds
+                                )),
                                 Some(json!({
                                     "ip_address": ip_for_ssh,
                                     "elapsed_seconds": elapsed_seconds,
@@ -3386,7 +3604,7 @@ pub async fn process_provisioning(
                             .ok();
                         }
                     }
-                    
+
                     // Mark instance as failed if SSH is not accessible after 3 minutes
                     // This prevents indefinite waiting
                     let _ = sqlx::query(
@@ -3395,13 +3613,16 @@ pub async fn process_provisioning(
                              error_code = COALESCE(error_code, 'SSH_NOT_ACCESSIBLE'),
                              error_message = COALESCE($2, error_message),
                              failed_at = COALESCE(failed_at, NOW())
-                         WHERE id = $1"
+                         WHERE id = $1",
                     )
                     .bind(instance_uuid)
-                    .bind(&format!("SSH not accessible after {} seconds on {}", elapsed_seconds, ip_for_ssh))
+                    .bind(&format!(
+                        "SSH not accessible after {} seconds on {}",
+                        elapsed_seconds, ip_for_ssh
+                    ))
                     .execute(&pool)
                     .await;
-                    
+
                     // Don't return - let the function complete normally so cleanup can happen
                 }
             }
@@ -3534,10 +3755,13 @@ pub async fn resolve_vllm_image(
             }
         }
     }
-    
+
     // 2. Check provider_settings.WORKER_VLLM_IMAGE_<INSTANCE_TYPE_CODE> (per instance type)
     if let Some(pid) = provider_id {
-        let setting_key = format!("WORKER_VLLM_IMAGE_{}", instance_type_code.replace("-", "_").to_uppercase());
+        let setting_key = format!(
+            "WORKER_VLLM_IMAGE_{}",
+            instance_type_code.replace("-", "_").to_uppercase()
+        );
         if let Ok(Some(img)) = sqlx::query_scalar::<_, Option<String>>(
             "SELECT NULLIF(TRIM(value_text), '') FROM provider_settings WHERE provider_id = $1 AND key = $2"
         )
@@ -3554,7 +3778,7 @@ pub async fn resolve_vllm_image(
             }
         }
     }
-    
+
     // 3. Check provider_settings.WORKER_VLLM_IMAGE (provider default)
     if let Some(pid) = provider_id {
         if let Ok(Some(img)) = sqlx::query_scalar::<_, Option<String>>(
@@ -3572,15 +3796,18 @@ pub async fn resolve_vllm_image(
             }
         }
     }
-    
+
     // 4. Check environment variable
     if let Ok(img) = std::env::var("WORKER_VLLM_IMAGE") {
         if !img.trim().is_empty() {
-            eprintln!("✅ [resolve_vllm_image] Using env var WORKER_VLLM_IMAGE: {}", img);
+            eprintln!(
+                "✅ [resolve_vllm_image] Using env var WORKER_VLLM_IMAGE: {}",
+                img
+            );
             return img;
         }
     }
-    
+
     // 5. Hardcoded default (stable version, not "latest")
     // Default: v0.13.0 is a stable version available on Docker Hub
     // Note: For P100 (RENDER-S), this may need to be a version compiled with sm_60 support
@@ -4101,4 +4328,3 @@ pub async fn process_full_reconciliation(pool: Pool<Postgres>) {
         println!("❌ [Full Reconciliation] Provider not configured (missing credentials).");
     }
 }
-

@@ -154,5 +154,3 @@ pub async fn list_chat_models(
 
     (StatusCode::OK, Json(out)).into_response()
 }
-
-

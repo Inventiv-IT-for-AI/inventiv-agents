@@ -1,13 +1,13 @@
 use std::net::SocketAddr;
 
 // Configuration and setup modules
+mod app;
 mod config;
 mod setup;
-mod app;
 
 // Routes and handlers modules
-mod routes;
 mod handlers;
+mod routes;
 
 // Domain modules
 mod action_logs_search;
@@ -22,21 +22,21 @@ mod finops;
 mod instance_type_zones;
 mod metrics;
 mod openai_proxy;
+mod organizations;
 mod password_reset;
 mod progress;
 mod provider_settings;
 mod rbac;
 mod settings;
 mod simple_logger;
-mod organizations;
 mod users_endpoint;
 mod workbench;
 mod worker_routing;
 
 use app::AppState;
 use config::{database::create_pool, redis::create_client};
-use setup::{run_migrations, maybe_seed_catalog, maybe_seed_provider_credentials};
 use routes::create_router;
+use setup::{maybe_seed_catalog, maybe_seed_provider_credentials, run_migrations};
 
 #[tokio::main]
 async fn main() {
@@ -45,8 +45,7 @@ async fn main() {
 
     // Initialize Redis client
     let redis_url = std::env::var("REDIS_URL").expect("REDIS_URL must be set");
-    let client = create_client(&redis_url)
-        .expect("Failed to create Redis client");
+    let client = create_client(&redis_url).expect("Failed to create Redis client");
 
     // Initialize database pool
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
@@ -63,7 +62,7 @@ async fn main() {
     // Optional seeding (guarded by env vars)
     maybe_seed_catalog(&pool).await;
     maybe_seed_provider_credentials(&pool).await;
-    
+
     // Bootstrap default admin and organization
     bootstrap_admin::ensure_default_admin(&pool).await;
     bootstrap_admin::ensure_default_organization(&pool).await;

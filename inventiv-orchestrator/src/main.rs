@@ -308,7 +308,10 @@ async fn main() {
                             let pool = state_redis.db.clone();
                             let redis_client = state_redis.redis_client.clone();
                             tokio::spawn(async move {
-                                eprintln!("🔵 [Redis] Spawning process_provisioning task for instance {}", instance_id);
+                                eprintln!(
+                                    "🔵 [Redis] Spawning process_provisioning task for instance {}",
+                                    instance_id
+                                );
                                 services::process_provisioning(
                                     pool,
                                     redis_client,
@@ -321,14 +324,20 @@ async fn main() {
                                 eprintln!("🔵 [Redis] process_provisioning task completed for instance {}", instance_id);
                             });
                         } else {
-                            eprintln!("⚠️ [Redis] Failed to parse CMD:PROVISION event: {}", payload);
+                            eprintln!(
+                                "⚠️ [Redis] Failed to parse CMD:PROVISION event: {}",
+                                payload
+                            );
                         }
                     }
                     "CMD:TERMINATE" => {
                         if let Ok(cmd) =
                             serde_json::from_value::<CommandTerminate>(event_json.clone())
                         {
-                            eprintln!("📥 [Redis] Received CMD:TERMINATE for instance {}", cmd.instance_id);
+                            eprintln!(
+                                "📥 [Redis] Received CMD:TERMINATE for instance {}",
+                                cmd.instance_id
+                            );
                             let pool = state_redis.db.clone();
                             let redis_client = state_redis.redis_client.clone();
                             tokio::spawn(async move {
@@ -341,7 +350,10 @@ async fn main() {
                                 .await;
                             });
                         } else {
-                            eprintln!("⚠️ [Redis] Failed to parse CMD:TERMINATE event: {}", payload);
+                            eprintln!(
+                                "⚠️ [Redis] Failed to parse CMD:TERMINATE event: {}",
+                                payload
+                            );
                         }
                     }
                     "CMD:REINSTALL" => {
@@ -519,7 +531,7 @@ async fn worker_register(
         "🧩 [Worker] REGISTER: instance_id={} worker_id={:?} model_id={:?} health_port={:?} vllm_port={:?} ip={:?} client_ip={}",
         payload.instance_id, payload.worker_id, payload.model_id, payload.health_port, payload.vllm_port, payload.ip_address, client_ip
     );
-    
+
     // Log payload summary for debugging
     let payload_summary = json!({
         "instance_id": payload.instance_id,
@@ -530,7 +542,10 @@ async fn worker_register(
         "ip_address": payload.ip_address,
         "has_metadata": payload.metadata.is_some()
     });
-    println!("🔵 [Worker] REGISTER payload summary: {}", serde_json::to_string(&payload_summary).unwrap_or_default());
+    println!(
+        "🔵 [Worker] REGISTER payload summary: {}",
+        serde_json::to_string(&payload_summary).unwrap_or_default()
+    );
 
     let res = sqlx::query(
         r#"
@@ -614,7 +629,7 @@ async fn worker_heartbeat(
     }
 
     let status = payload.status.to_ascii_lowercase();
-    
+
     // Log agent info if present
     if let Some(agent_info) = &payload.agent_info {
         println!(
@@ -625,12 +640,12 @@ async fn worker_heartbeat(
             agent_info.checksum.as_ref().map(|s| &s[..16]) // Log first 16 chars of checksum
         );
     }
-    
+
     println!(
         "💓 [Worker] HEARTBEAT: instance_id={} worker_id={:?} status={} model_id={:?} gpu_util={:?} queue_depth={:?} ip={:?}",
         payload.instance_id, payload.worker_id, status, payload.model_id, payload.gpu_utilization, payload.queue_depth, payload.ip_address
     );
-    
+
     // Log essential payload fields for debugging
     let payload_summary = json!({
         "instance_id": payload.instance_id,
@@ -644,11 +659,14 @@ async fn worker_heartbeat(
         "agent_info": payload.agent_info,
         "has_metadata": payload.metadata.is_some()
     });
-    println!("🔵 [Worker] HEARTBEAT payload summary: {}", serde_json::to_string(&payload_summary).unwrap_or_default());
+    println!(
+        "🔵 [Worker] HEARTBEAT payload summary: {}",
+        serde_json::to_string(&payload_summary).unwrap_or_default()
+    );
 
     // We'll need metadata both for persistence on the instance row and for time-series sampling.
     let meta_clone = payload.metadata.clone();
-    
+
     // Merge agent_info into metadata for storage
     let mut enriched_metadata = meta_clone.clone().unwrap_or(json!({}));
     if let Some(agent_info) = &payload.agent_info {
@@ -734,7 +752,8 @@ async fn worker_heartbeat(
                 let total = validate_vram(g.get("gpu_mem_total_mb").and_then(|v| v.as_f64()));
                 let temp = validate_temp(g.get("gpu_temp_c").and_then(|v| v.as_f64()));
                 let power = validate_power(g.get("gpu_power_w").and_then(|v| v.as_f64()));
-                let power_limit = validate_power(g.get("gpu_power_limit_w").and_then(|v| v.as_f64()));
+                let power_limit =
+                    validate_power(g.get("gpu_power_limit_w").and_then(|v| v.as_f64()));
 
                 // Validate VRAM used <= total if both are present
                 let used_final = match (used, total) {
@@ -776,7 +795,8 @@ async fn worker_heartbeat(
             let total = validate_vram(meta.get("gpu_mem_total_mb").and_then(|v| v.as_f64()));
             let temp = validate_temp(meta.get("gpu_temp_c").and_then(|v| v.as_f64()));
             let power = validate_power(meta.get("gpu_power_w").and_then(|v| v.as_f64()));
-            let power_limit = validate_power(meta.get("gpu_power_limit_w").and_then(|v| v.as_f64()));
+            let power_limit =
+                validate_power(meta.get("gpu_power_limit_w").and_then(|v| v.as_f64()));
             let util = validate_gpu_util(payload.gpu_utilization);
             let used = validate_vram(payload.gpu_mem_used_mb);
 

@@ -58,8 +58,14 @@ pub fn can_set_activation_flag(role: OrgRole, flag: ActivationFlag) -> bool {
 pub fn can_assign_role(actor: OrgRole, from: OrgRole, to: OrgRole) -> bool {
     match actor {
         OrgRole::Owner => true,
-        OrgRole::Manager => matches!((from, to), (OrgRole::User, OrgRole::Manager) | (OrgRole::Manager, OrgRole::User)),
-        OrgRole::Admin => matches!((from, to), (OrgRole::User, OrgRole::Admin) | (OrgRole::Admin, OrgRole::User)),
+        OrgRole::Manager => matches!(
+            (from, to),
+            (OrgRole::User, OrgRole::Manager) | (OrgRole::Manager, OrgRole::User)
+        ),
+        OrgRole::Admin => matches!(
+            (from, to),
+            (OrgRole::User, OrgRole::Admin) | (OrgRole::Admin, OrgRole::User)
+        ),
         OrgRole::User => false,
     }
 }
@@ -93,34 +99,82 @@ mod tests {
 
     #[test]
     fn activation_flag_rules() {
-        assert!(can_set_activation_flag(OrgRole::Owner, ActivationFlag::Tech));
+        assert!(can_set_activation_flag(
+            OrgRole::Owner,
+            ActivationFlag::Tech
+        ));
         assert!(can_set_activation_flag(OrgRole::Owner, ActivationFlag::Eco));
-        assert!(can_set_activation_flag(OrgRole::Admin, ActivationFlag::Tech));
-        assert!(!can_set_activation_flag(OrgRole::Admin, ActivationFlag::Eco));
-        assert!(can_set_activation_flag(OrgRole::Manager, ActivationFlag::Eco));
-        assert!(!can_set_activation_flag(OrgRole::Manager, ActivationFlag::Tech));
-        assert!(!can_set_activation_flag(OrgRole::User, ActivationFlag::Tech));
+        assert!(can_set_activation_flag(
+            OrgRole::Admin,
+            ActivationFlag::Tech
+        ));
+        assert!(!can_set_activation_flag(
+            OrgRole::Admin,
+            ActivationFlag::Eco
+        ));
+        assert!(can_set_activation_flag(
+            OrgRole::Manager,
+            ActivationFlag::Eco
+        ));
+        assert!(!can_set_activation_flag(
+            OrgRole::Manager,
+            ActivationFlag::Tech
+        ));
+        assert!(!can_set_activation_flag(
+            OrgRole::User,
+            ActivationFlag::Tech
+        ));
         assert!(!can_set_activation_flag(OrgRole::User, ActivationFlag::Eco));
     }
 
     #[test]
     fn delegation_rules() {
         // Owner can do all.
-        assert!(can_assign_role(OrgRole::Owner, OrgRole::User, OrgRole::Owner));
+        assert!(can_assign_role(
+            OrgRole::Owner,
+            OrgRole::User,
+            OrgRole::Owner
+        ));
 
         // Manager: only manager<->user
-        assert!(can_assign_role(OrgRole::Manager, OrgRole::User, OrgRole::Manager));
-        assert!(can_assign_role(OrgRole::Manager, OrgRole::Manager, OrgRole::User));
-        assert!(!can_assign_role(OrgRole::Manager, OrgRole::User, OrgRole::Admin));
+        assert!(can_assign_role(
+            OrgRole::Manager,
+            OrgRole::User,
+            OrgRole::Manager
+        ));
+        assert!(can_assign_role(
+            OrgRole::Manager,
+            OrgRole::Manager,
+            OrgRole::User
+        ));
+        assert!(!can_assign_role(
+            OrgRole::Manager,
+            OrgRole::User,
+            OrgRole::Admin
+        ));
 
         // Admin: only admin<->user
-        assert!(can_assign_role(OrgRole::Admin, OrgRole::User, OrgRole::Admin));
-        assert!(can_assign_role(OrgRole::Admin, OrgRole::Admin, OrgRole::User));
-        assert!(!can_assign_role(OrgRole::Admin, OrgRole::User, OrgRole::Manager));
+        assert!(can_assign_role(
+            OrgRole::Admin,
+            OrgRole::User,
+            OrgRole::Admin
+        ));
+        assert!(can_assign_role(
+            OrgRole::Admin,
+            OrgRole::Admin,
+            OrgRole::User
+        ));
+        assert!(!can_assign_role(
+            OrgRole::Admin,
+            OrgRole::User,
+            OrgRole::Manager
+        ));
 
         // User: none
-        assert!(!can_assign_role(OrgRole::User, OrgRole::User, OrgRole::Admin));
+        assert!(!can_assign_role(
+            OrgRole::User,
+            OrgRole::User,
+            OrgRole::Admin
+        ));
     }
 }
-
-

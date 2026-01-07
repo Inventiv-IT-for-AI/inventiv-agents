@@ -128,7 +128,7 @@ pub async fn search_users(
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .map(|s| format!("%{}%", s));
-    
+
     let org_role_filter: Option<String> = params
         .organization_role
         .as_deref()
@@ -166,7 +166,7 @@ pub async fn search_users(
         count_qb.push(" AND om.role = ");
         count_qb.push_bind(org_role_filter.as_deref());
     }
-    
+
     let filtered_count: i64 = count_qb
         .build_query_scalar()
         .fetch_one(&state.db)

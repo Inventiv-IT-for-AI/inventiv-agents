@@ -158,7 +158,7 @@ pub async fn list_gpu_activity(
     let rows: Vec<GpuSampleRow> = match gran.as_str() {
         "minute" => {
             let res = sqlx::query_as::<Postgres, GpuSampleRow>(
-            r#"
+                r#"
                 SELECT
                   gs.bucket as time,
                   gs.instance_id,
@@ -195,7 +195,7 @@ pub async fn list_gpu_activity(
         }
         "hour" => {
             let res = sqlx::query_as::<Postgres, GpuSampleRow>(
-            r#"
+                r#"
                 SELECT
                   gs.bucket as time,
                   gs.instance_id,
@@ -232,7 +232,7 @@ pub async fn list_gpu_activity(
         }
         "day" => {
             let res = sqlx::query_as::<Postgres, GpuSampleRow>(
-            r#"
+                r#"
                 SELECT
                   gs.bucket as time,
                   gs.instance_id,
@@ -270,7 +270,7 @@ pub async fn list_gpu_activity(
         // second (default): raw table (still can be sparse depending on heartbeat interval)
         _ => {
             let res = sqlx::query_as::<Postgres, GpuSampleRow>(
-            r#"
+                r#"
                 SELECT
                   gs.time,
                   gs.instance_id,
@@ -605,19 +605,23 @@ pub async fn list_system_activity(
             net_rx_mbps,
             net_tx_mbps,
         };
-        let entry = map
-            .entry(r.instance_id)
-            .or_insert((r.instance_name.clone(), r.provider_name.clone(), Vec::new()));
+        let entry = map.entry(r.instance_id).or_insert((
+            r.instance_name.clone(),
+            r.provider_name.clone(),
+            Vec::new(),
+        ));
         entry.2.push(sample);
     }
 
     let instances = map
         .into_iter()
-        .map(|(instance_id, (instance_name, provider_name, samples))| SystemActivityInstanceSeries {
-            instance_id,
-            instance_name,
-            provider_name,
-            samples,
+        .map(|(instance_id, (instance_name, provider_name, samples))| {
+            SystemActivityInstanceSeries {
+                instance_id,
+                instance_name,
+                provider_name,
+                samples,
+            }
         })
         .collect();
 
@@ -631,4 +635,3 @@ pub async fn list_system_activity(
     )
         .into_response()
 }
-

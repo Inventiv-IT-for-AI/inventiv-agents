@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from "react";
-import { apiUrl, apiRequest } from "@/lib/api";
+import { apiRequest } from "@/lib/api";
 import type { Organization } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -271,7 +271,7 @@ export default function OrganizationsPage() {
         ),
       },
     ];
-  }, [currentOrgId]);
+  }, [currentOrgId, setCurrentOrganization, openMembers]);
 
   return (
     <div className="p-8 space-y-6">
@@ -342,7 +342,7 @@ export default function OrganizationsPage() {
                 placeholder="Ex: mon-entreprise (auto-généré si vide)"
               />
               <p className="text-xs text-muted-foreground">
-                Identifiant unique de l'organisation. Sera généré automatiquement à partir du nom si non spécifié.
+                Identifiant unique de l&apos;organisation. Sera généré automatiquement à partir du nom si non spécifié.
               </p>
             </div>
           </div>

@@ -13,4 +13,3 @@ impl AppState {
         Arc::new(Self { redis_client, db })
     }
 }
-

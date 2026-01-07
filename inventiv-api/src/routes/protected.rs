@@ -1,45 +1,45 @@
 // Protected routes (require user session)
-use axum::middleware;
-use axum::routing::{get, post, put, delete};
-use axum::Router;
 use crate::app::AppState;
 use crate::auth;
+use axum::middleware;
+use axum::routing::{delete, get, post, put};
+use axum::Router;
 use std::sync::Arc;
 
+use crate::action_logs_search;
+use crate::api_keys;
 use crate::auth_endpoints;
 use crate::chat;
-use crate::organizations;
-use crate::api_keys;
-use crate::settings;
-use crate::provider_settings;
-use crate::instance_type_zones;
 use crate::finops;
-use crate::users_endpoint;
-use crate::action_logs_search;
+use crate::instance_type_zones;
 use crate::metrics;
+use crate::organizations;
+use crate::provider_settings;
+use crate::settings;
+use crate::users_endpoint;
 
-use crate::handlers::monitoring::list_runtime_models;
-use crate::handlers::monitoring::list_gpu_activity;
-use crate::handlers::monitoring::list_system_activity;
-use crate::handlers::deployments::create_deployment;
-use crate::handlers::events::events_stream;
-use crate::handlers::models::list_models;
-use crate::handlers::models::create_model;
-use crate::handlers::models::list_compatible_models;
-use crate::handlers::models::get_model;
-use crate::handlers::models::update_model;
-use crate::handlers::models::delete_model;
-use crate::handlers::models::get_recommended_data_volume;
-use crate::handlers::instances::list_instances;
-use crate::handlers::instances::search_instances;
-use crate::handlers::instances::get_instance;
-use crate::handlers::instances::archive_instance;
-use crate::handlers::instances::terminate_instance;
-use crate::handlers::instances::reinstall_instance;
-use crate::handlers::commands::manual_reconcile_trigger;
-use crate::handlers::commands::manual_catalog_sync_trigger;
 use crate::handlers::commands::list_action_logs;
 use crate::handlers::commands::list_action_types;
+use crate::handlers::commands::manual_catalog_sync_trigger;
+use crate::handlers::commands::manual_reconcile_trigger;
+use crate::handlers::deployments::create_deployment;
+use crate::handlers::events::events_stream;
+use crate::handlers::instances::archive_instance;
+use crate::handlers::instances::get_instance;
+use crate::handlers::instances::list_instances;
+use crate::handlers::instances::reinstall_instance;
+use crate::handlers::instances::search_instances;
+use crate::handlers::instances::terminate_instance;
+use crate::handlers::models::create_model;
+use crate::handlers::models::delete_model;
+use crate::handlers::models::get_model;
+use crate::handlers::models::get_recommended_data_volume;
+use crate::handlers::models::list_compatible_models;
+use crate::handlers::models::list_models;
+use crate::handlers::models::update_model;
+use crate::handlers::monitoring::list_gpu_activity;
+use crate::handlers::monitoring::list_runtime_models;
+use crate::handlers::monitoring::list_system_activity;
 
 /// Create protected routes router
 pub fn create_protected_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
@@ -48,14 +48,8 @@ pub fn create_protected_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/auth/me",
             get(auth_endpoints::me).put(auth_endpoints::update_me),
         )
-        .route(
-            "/auth/me/password",
-            put(auth_endpoints::change_password),
-        )
-        .route(
-            "/auth/sessions",
-            get(auth_endpoints::list_sessions),
-        )
+        .route("/auth/me/password", put(auth_endpoints::change_password))
+        .route("/auth/sessions", get(auth_endpoints::list_sessions))
         .route(
             "/auth/sessions/{session_id}/revoke",
             post(auth_endpoints::revoke_session_endpoint),
@@ -106,28 +100,31 @@ pub fn create_protected_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/events/stream", get(events_stream))
         // Models (catalog)
         .route("/models", get(list_models).post(create_model))
-        .route("/instance_types/{instance_type_id}/models", get(list_compatible_models))
+        .route(
+            "/instance_types/{instance_type_id}/models",
+            get(list_compatible_models),
+        )
         .route(
             "/models/{id}",
             get(get_model).put(update_model).delete(delete_model),
         )
-        .route("/models/{id}/recommended-data-volume", get(get_recommended_data_volume))
+        .route(
+            "/models/{id}/recommended-data-volume",
+            get(get_recommended_data_volume),
+        )
         // Instances
         .route("/instances", get(list_instances))
         .route("/instances/search", get(search_instances))
-        .route("/instances/{instance_id}/metrics", get(metrics::get_instance_metrics))
         .route(
-            "/instances/{id}/archive",
-            put(archive_instance),
+            "/instances/{instance_id}/metrics",
+            get(metrics::get_instance_metrics),
         )
+        .route("/instances/{id}/archive", put(archive_instance))
         .route(
             "/instances/{id}",
             get(get_instance).delete(terminate_instance),
         )
-        .route(
-            "/instances/{id}/reinstall",
-            post(reinstall_instance),
-        )
+        .route("/instances/{id}/reinstall", post(reinstall_instance))
         // Action logs
         .route("/action_logs", get(list_action_logs))
         .route(
@@ -144,10 +141,7 @@ pub fn create_protected_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(settings::list_providers).post(settings::create_provider),
         )
         .route("/providers/search", get(settings::search_providers))
-        .route(
-            "/providers/{id}",
-            put(settings::update_provider),
-        )
+        .route("/providers/{id}", put(settings::update_provider))
         .route(
             "/settings/definitions",
             get(provider_settings::list_settings_definitions),
@@ -186,10 +180,7 @@ pub fn create_protected_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/instance_types/search",
             get(settings::search_instance_types),
         )
-        .route(
-            "/instance_types/{id}",
-            put(settings::update_instance_type),
-        )
+        .route("/instance_types/{id}", put(settings::update_instance_type))
         // Instance Type <-> Zones
         .route(
             "/instance_types/{id}/zones",
@@ -250,4 +241,3 @@ pub fn create_protected_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             auth::require_user,
         ))
 }
-

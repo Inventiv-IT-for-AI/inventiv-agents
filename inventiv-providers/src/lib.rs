@@ -12,14 +12,14 @@ pub trait CloudProvider: Send + Sync {
         volumes: Option<&[String]>, // Optional list of volume IDs to attach at creation
     ) -> Result<String>;
     async fn start_instance(&self, zone: &str, server_id: &str) -> Result<bool>;
-    
+
     /// Phase 1: Remove local volumes from diskless instance (BEFORE startup).
     /// This must be called AFTER instance creation but BEFORE starting the instance.
     /// If a pre_created_volume_id is provided, it will be attached BEFORE removing local volumes
     /// to ensure the instance always has at least one volume attached (Scaleway requirement).
     /// Returns true if local volumes were found and removed, false if none found.
     /// Default implementation returns Ok(false) (no special handling needed).
-    /// 
+    ///
     /// `pre_created_volume_id`: Optional ID of a Block Storage volume that was created
     /// BEFORE instance creation. If provided, this volume will be attached before removing local volumes.
     async fn remove_local_volumes(
@@ -36,7 +36,7 @@ pub trait CloudProvider: Send + Sync {
     /// This must be called AFTER the instance has started and SSH is accessible.
     /// Returns the ID of the attached Block Storage volume.
     /// Default implementation returns Ok("".to_string()) (no special handling needed).
-    /// 
+    ///
     /// `pre_created_volume_id`: Optional ID of a Block Storage volume that was created
     /// BEFORE instance creation. If provided, this volume should be reused instead of creating a new one.
     async fn attach_block_storage_after_boot(
@@ -55,7 +55,7 @@ pub trait CloudProvider: Send + Sync {
     /// this method detaches auto-created local volumes and attaches Block Storage.
     /// Returns the ID of the attached data volume, or empty string if not applicable.
     /// Default implementation returns Ok("".to_string()) (no special preparation needed).
-    /// 
+    ///
     /// `pre_created_volume_id`: Optional ID of a Block Storage volume that was created
     /// BEFORE instance creation. If provided, this volume should be reused instead of creating a new one.
     async fn prepare_diskless_instance(
@@ -68,23 +68,19 @@ pub trait CloudProvider: Send + Sync {
     ) -> Result<String> {
         Ok(String::new())
     }
-    
+
     // Optional: stop/poweroff instance before termination
     // Default implementation returns Ok(false) (not supported)
     async fn stop_instance(&self, _zone: &str, _server_id: &str) -> Result<bool> {
         Ok(false)
     }
-    
+
     async fn terminate_instance(&self, zone: &str, server_id: &str) -> Result<bool>;
     async fn get_instance_ip(&self, zone: &str, server_id: &str) -> Result<Option<String>>;
 
     // Optional: get server state (e.g., "running", "stopped", "starting")
     // Default implementation returns None (caller cannot wait for specific state).
-    async fn get_server_state(
-        &self,
-        _zone: &str,
-        _server_id: &str,
-    ) -> Result<Option<String>> {
+    async fn get_server_state(&self, _zone: &str, _server_id: &str) -> Result<Option<String>> {
         Ok(None)
     }
 
@@ -171,11 +167,7 @@ pub trait CloudProvider: Send + Sync {
     // Optional: get Block Storage volume size in bytes.
     // Used to retrieve volume size when not available from list_attached_volumes.
     // Default implementation returns Ok(None) (not supported).
-    async fn get_block_storage_size(
-        &self,
-        _zone: &str,
-        _volume_id: &str,
-    ) -> Result<Option<u64>> {
+    async fn get_block_storage_size(&self, _zone: &str, _volume_id: &str) -> Result<Option<u64>> {
         Ok(None)
     }
 
@@ -270,5 +262,3 @@ pub mod mock;
 
 #[cfg(feature = "scaleway")]
 pub mod scaleway;
-
-

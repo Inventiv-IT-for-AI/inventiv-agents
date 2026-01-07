@@ -34,7 +34,7 @@ export default function ForgotPasswordPage() {
         return;
       }
 
-      const data = await res.json();
+      await res.json();
       setSuccess(true);
     } catch (e) {
       console.error("Password reset request error:", e);
@@ -68,10 +68,10 @@ export default function ForgotPasswordPage() {
               </IAAlertDescription>
             </IAAlert>
             <div className="text-sm text-muted-foreground">
-              <p>Si vous ne recevez pas l'email :</p>
+              <p>Si vous ne recevez pas l&apos;email :</p>
               <ul className="list-disc list-inside mt-2 space-y-1">
                 <li>Vérifiez votre dossier spam</li>
-                <li>Vérifiez que l'adresse email est correcte</li>
+                <li>Vérifiez que l&apos;adresse email est correcte</li>
                 <li>Attendez quelques minutes</li>
               </ul>
             </div>
@@ -100,7 +100,7 @@ export default function ForgotPasswordPage() {
     <div className="min-h-screen flex items-center justify-center p-6 bg-background">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle>J'ai oublié mon mot de passe</CardTitle>
+          <CardTitle>J&apos;ai oublié mon mot de passe</CardTitle>
           <CardDescription>
             Entrez votre adresse email pour recevoir un lien de réinitialisation.
           </CardDescription>

@@ -134,14 +134,13 @@ pub async fn ensure_default_organization(db: &Pool<Postgres>) {
     let admin_username = env_string("DEFAULT_ADMIN_USERNAME", "admin").to_ascii_lowercase();
 
     // Get admin user ID
-    let admin_user_id: Option<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT id FROM users WHERE username = $1 LIMIT 1"
-    )
-    .bind(&admin_username)
-    .fetch_optional(db)
-    .await
-    .ok()
-    .flatten();
+    let admin_user_id: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT id FROM users WHERE username = $1 LIMIT 1")
+            .bind(&admin_username)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
 
     let Some(admin_id) = admin_user_id else {
         eprintln!(
@@ -173,13 +172,14 @@ pub async fn ensure_default_organization(db: &Pool<Postgres>) {
     } else {
         // Organization already exists, fetch its ID
         match sqlx::query_scalar::<_, uuid::Uuid>(
-            "SELECT id FROM organizations WHERE slug = $1 LIMIT 1"
+            "SELECT id FROM organizations WHERE slug = $1 LIMIT 1",
         )
         .bind(&org_slug)
         .fetch_optional(db)
         .await
         .ok()
-        .flatten() {
+        .flatten()
+        {
             Some(id) => id,
             None => {
                 eprintln!(

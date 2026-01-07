@@ -18,7 +18,7 @@ pub async fn maybe_seed_catalog(pool: &Pool<Postgres>) {
     if !enabled {
         return;
     }
-    
+
     // Important: do NOT skip seeding based on one table (e.g. providers).
     // We want seeding to be re-runnable and idempotent (the seed file should use ON CONFLICT),
     // otherwise partial resets (like TRUNCATE action_types) would leave the UI broken.
@@ -166,21 +166,22 @@ pub async fn maybe_seed_provider_credentials(pool: &Pool<Postgres>) {
     };
 
     // Encrypt using pgcrypto (installed by baseline migration).
-    let enc_b64: Option<String> = sqlx::query_scalar(
-        "SELECT encode(pgp_sym_encrypt($1::text, $2::text), 'base64')",
-    )
-    .bind(&secret_key)
-    .bind(&passphrase)
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten();
+    let enc_b64: Option<String> =
+        sqlx::query_scalar("SELECT encode(pgp_sym_encrypt($1::text, $2::text), 'base64')")
+            .bind(&secret_key)
+            .bind(&passphrase)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
     let Some(enc_b64) = enc_b64 else {
         eprintln!("⚠️  AUTO_SEED_PROVIDER_CREDENTIALS: encryption failed; skipping");
         return;
     };
 
-    println!("🌱 AUTO_SEED_PROVIDER_CREDENTIALS: upserting scaleway credentials into provider_settings");
+    println!(
+        "🌱 AUTO_SEED_PROVIDER_CREDENTIALS: upserting scaleway credentials into provider_settings"
+    );
 
     // Upsert project id (non-secret).
     let _ = sqlx::query(
@@ -218,4 +219,3 @@ pub async fn maybe_seed_provider_credentials(pool: &Pool<Postgres>) {
 
     println!("✅ AUTO_SEED_PROVIDER_CREDENTIALS done");
 }
-

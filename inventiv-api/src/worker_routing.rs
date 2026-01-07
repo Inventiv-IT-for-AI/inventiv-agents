@@ -121,7 +121,7 @@ pub async fn resolve_openai_model_id(
 ) -> Result<String, (axum::http::StatusCode, axum::Json<serde_json::Value>)> {
     use axum::{http::StatusCode, Json};
     use serde_json::json;
-    
+
     // Accept either:
     // - HF repo id (models.model_id)
     // - UUID (models.id) as string
@@ -228,7 +228,9 @@ pub async fn resolve_openai_model_id(
         if offering_org_id != current_org {
             return Err((
                 StatusCode::FORBIDDEN,
-                Json(json!({"error":"forbidden","message":"offering_not_accessible_in_current_org"})),
+                Json(
+                    json!({"error":"forbidden","message":"offering_not_accessible_in_current_org"}),
+                ),
             ));
         }
 
@@ -241,7 +243,6 @@ pub async fn resolve_openai_model_id(
         Json(json!({"error":"model_not_found", "model": raw})),
     ))
 }
-
 
 fn openai_worker_stale_seconds_env() -> i64 {
     std::env::var("OPENAI_WORKER_STALE_SECONDS")
@@ -279,4 +280,3 @@ fn stable_hash_u64(s: &str) -> u64 {
     s.hash(&mut hasher);
     hasher.finish()
 }
-

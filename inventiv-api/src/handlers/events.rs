@@ -54,7 +54,8 @@ pub async fn events_stream(
         // We compute a stable signature (hash) for "meaningful" instance fields and only emit when it changes.
         // On connect, we initialize the signature map but do not emit (UI will fetch initial state anyway).
         let mut instances_initialized = false;
-        let mut instance_sig: std::collections::HashMap<uuid::Uuid, String> = std::collections::HashMap::new();
+        let mut instance_sig: std::collections::HashMap<uuid::Uuid, String> =
+            std::collections::HashMap::new();
 
         let mut last_actions_ts = chrono::Utc::now();
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
@@ -210,4 +211,3 @@ pub async fn events_stream(
             .text("keepalive"),
     )
 }
-

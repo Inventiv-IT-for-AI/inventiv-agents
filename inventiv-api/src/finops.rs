@@ -859,7 +859,9 @@ pub async fn get_costs_dashboard_series(
 ) -> Json<Vec<CostsDashboardSeriesPoint>> {
     let db = &state.db;
     let window_label = params.window.clone().unwrap_or_else(|| "hour".to_string());
-    let window_minutes = window_to_minutes(&window_label).unwrap_or(60).clamp(1, 60 * 24 * 365);
+    let window_minutes = window_to_minutes(&window_label)
+        .unwrap_or(60)
+        .clamp(1, 60 * 24 * 365);
     let limit_points = params.limit_points.unwrap_or(180).clamp(30, 400);
 
     let bucket_end: Option<chrono::DateTime<chrono::Utc>> =

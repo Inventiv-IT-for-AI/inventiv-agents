@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from "react";
-import { apiUrl, apiRequest } from "@/lib/api";
+import { apiRequest } from "@/lib/api";
 import type { Organization } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { IADataTable, type DataTableSortState, type IADataTableColumn, type LoadRangeResult } from "ia-widgets";
 import { IAAlert, IAAlertDescription, IAAlertTitle } from "ia-designsys";
 import { useSnackbar } from "ia-widgets";
-import { Building2, Users as UsersIcon } from "lucide-react";
+import { Building2 } from "lucide-react";
 
 type User = {
   id: string;
@@ -112,7 +112,7 @@ export default function UsersPage() {
 
   const createUser = async () => {
     try {
-      const res = await fetch(apiUrl("/users"), {
+      const res = await apiRequest("/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -144,7 +144,7 @@ export default function UsersPage() {
   const saveUser = async () => {
     if (!selected) return;
     try {
-      const res = await fetch(apiUrl(`/users/${selected.id}`), {
+      const res = await apiRequest(`/users/${selected.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -177,7 +177,7 @@ export default function UsersPage() {
   const deleteUser = async (u: User) => {
     if (!confirm(`Supprimer l'utilisateur ${u.email} ?`)) return;
     try {
-      const res = await fetch(apiUrl(`/users/${u.id}`), { method: "DELETE" });
+      const res = await apiRequest(`/users/${u.id}`, { method: "DELETE" });
       if (!res.ok && res.status !== 204) {
         const msg = await res.text().catch(() => "");
         const eMsg = `Erreur suppression user (${res.status})`;
@@ -228,7 +228,7 @@ export default function UsersPage() {
           params.set("sort_dir", sort.direction);
         }
       }
-      const res = await fetch(apiUrl(`/users/search?${params.toString()}`));
+      const res = await apiRequest(`/users/search?${params.toString()}`);
       if (!res.ok) {
         throw new Error(`users/search failed (${res.status})`);
       }
@@ -320,7 +320,7 @@ export default function UsersPage() {
         ),
       },
     ];
-  }, []);
+  }, [deleteUser, openEdit]);
 
   return (
     <div className="p-8 space-y-6">

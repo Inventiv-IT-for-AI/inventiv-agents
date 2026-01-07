@@ -324,7 +324,7 @@ export function InstanceTimelineModal({
         ),
       },
     ];
-  }, [actionTypes]);
+  }, [actionTypes, formatActionLabel, getCategoryDotClass]);
 
   const fetchAllActions = useCallback(async (): Promise<ActionLog[]> => {
     const allActions: ActionLog[] = [];

@@ -25,21 +25,24 @@ impl SmtpConfig {
             .and_then(|s| s.parse::<u16>().ok())
             .unwrap_or(465);
         let username = std::env::var("SMTP_USERNAME").ok()?;
-        let password = std::env::var("SMTP_PASSWORD")
-            .ok()
-            .or_else(|| {
-                // Try reading from file (for secrets)
-                std::env::var("SMTP_PASSWORD_FILE")
-                    .ok()
-                    .and_then(|path| std::fs::read_to_string(path).ok())
-            })?;
+        let password = std::env::var("SMTP_PASSWORD").ok().or_else(|| {
+            // Try reading from file (for secrets)
+            std::env::var("SMTP_PASSWORD_FILE")
+                .ok()
+                .and_then(|path| std::fs::read_to_string(path).ok())
+        })?;
         let from_email = std::env::var("SMTP_FROM_EMAIL")
             .ok()
             .unwrap_or_else(|| username.clone());
         let from_name = std::env::var("SMTP_FROM_NAME").ok();
         let use_tls = std::env::var("SMTP_USE_TLS")
             .ok()
-            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .map(|v| {
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
             .unwrap_or(true);
 
         Some(Self {
@@ -90,12 +93,7 @@ impl EmailService {
     }
 
     /// Send a plain text email
-    pub async fn send_text(
-        &self,
-        to: &str,
-        subject: &str,
-        body: &str,
-    ) -> Result<(), EmailError> {
+    pub async fn send_text(&self, to: &str, subject: &str, body: &str) -> Result<(), EmailError> {
         let from_mailbox: Mailbox = if let Some(from_name) = &self.config.from_name {
             format!("{} <{}>", from_name, self.config.from_email)
                 .parse()
@@ -345,4 +343,3 @@ impl std::fmt::Display for EmailError {
 }
 
 impl std::error::Error for EmailError {}
-

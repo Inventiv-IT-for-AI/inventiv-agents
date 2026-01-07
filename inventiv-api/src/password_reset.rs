@@ -1,9 +1,4 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -12,7 +7,7 @@ use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::{AppState, email};
+use crate::{email, AppState};
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct RequestPasswordResetRequest {
@@ -75,14 +70,12 @@ pub async fn request_password_reset(
     }
 
     // Find user by email
-    let user_id: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM users WHERE email = $1 LIMIT 1",
-    )
-    .bind(&email_addr)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten();
+    let user_id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM users WHERE email = $1 LIMIT 1")
+        .bind(&email_addr)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
 
     // Always return success to prevent email enumeration
     // But only actually send email if user exists
@@ -91,10 +84,14 @@ pub async fn request_password_reset(
         let token = generate_token();
         let token_hash = hash_token(&token);
         let expires_at = Utc::now() + Duration::hours(1);
-        
+
         tracing::debug!("Token expires at: {}", expires_at);
-        
-        tracing::debug!("Generated password reset token: length={}, hash={}", token.len(), &token_hash[..16.min(token_hash.len())]);
+
+        tracing::debug!(
+            "Generated password reset token: length={}, hash={}",
+            token.len(),
+            &token_hash[..16.min(token_hash.len())]
+        );
 
         // Store token in database
         let insert_result = sqlx::query(
@@ -108,12 +105,15 @@ pub async fn request_password_reset(
         .bind(expires_at)
         .execute(&state.db)
         .await;
-        
+
         if let Err(e) = insert_result {
             tracing::error!("Failed to insert password reset token: {}", e);
             // Continue anyway - email will be sent but token won't be stored
         } else if let Ok(result) = insert_result {
-            tracing::debug!("Password reset token inserted: rows_affected={}", result.rows_affected());
+            tracing::debug!(
+                "Password reset token inserted: rows_affected={}",
+                result.rows_affected()
+            );
         }
 
         // Send email if email service is configured
@@ -121,7 +121,7 @@ pub async fn request_password_reset(
             let base_url = std::env::var("FRONTEND_URL")
                 .or_else(|_| std::env::var("FRONTEND_DOMAIN"))
                 .unwrap_or_else(|_| "http://localhost:3000".to_string());
-            
+
             if let Err(e) = email_service
                 .send_password_reset(&email_addr, &token, Some(&base_url))
                 .await
@@ -130,7 +130,10 @@ pub async fn request_password_reset(
                 // Continue anyway - token is stored, user can request again
             }
         } else {
-            tracing::warn!("SMTP not configured - password reset email not sent. Token: {}", token);
+            tracing::warn!(
+                "SMTP not configured - password reset email not sent. Token: {}",
+                token
+            );
         }
     }
 
@@ -138,7 +141,8 @@ pub async fn request_password_reset(
     (
         StatusCode::OK,
         Json(RequestPasswordResetResponse {
-            message: "Si cette adresse email existe, un email de réinitialisation a été envoyé.".to_string(),
+            message: "Si cette adresse email existe, un email de réinitialisation a été envoyé."
+                .to_string(),
         }),
     )
         .into_response()
@@ -184,27 +188,36 @@ pub async fn reset_password(
         .map(|s| s.to_string())
         .unwrap_or_else(|_| token.to_string());
     let token_hash = hash_token(&decoded_token);
-    
-    tracing::debug!("Token validation: received token length={}, decoded length={}, hash={}", 
-        token.len(), decoded_token.len(), &token_hash[..16.min(token_hash.len())]);
+
+    tracing::debug!(
+        "Token validation: received token length={}, decoded length={}, hash={}",
+        token.len(),
+        decoded_token.len(),
+        &token_hash[..16.min(token_hash.len())]
+    );
 
     // Find valid token
     let now = Utc::now();
-    tracing::debug!("Current time: {}, looking for token hash: {}", now, &token_hash[..16.min(token_hash.len())]);
-    
-    let token_row: Option<(Uuid, chrono::DateTime<Utc>, Option<chrono::DateTime<Utc>>)> = sqlx::query_as(
-        r#"
+    tracing::debug!(
+        "Current time: {}, looking for token hash: {}",
+        now,
+        &token_hash[..16.min(token_hash.len())]
+    );
+
+    let token_row: Option<(Uuid, chrono::DateTime<Utc>, Option<chrono::DateTime<Utc>>)> =
+        sqlx::query_as(
+            r#"
         SELECT user_id, expires_at, used_at
         FROM password_reset_tokens
         WHERE token_hash = $1
         LIMIT 1
         "#,
-    )
-    .bind(&token_hash)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten();
+        )
+        .bind(&token_hash)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
 
     let Some((user_id, expires_at, used_at)) = token_row else {
         tracing::debug!("Token not found in database");
@@ -214,7 +227,7 @@ pub async fn reset_password(
         )
             .into_response();
     };
-    
+
     if used_at.is_some() {
         tracing::debug!("Token already used at: {}", used_at.unwrap());
         return (
@@ -223,7 +236,7 @@ pub async fn reset_password(
         )
             .into_response();
     }
-    
+
     if expires_at <= now {
         tracing::debug!("Token expired: expires_at={}, now={}", expires_at, now);
         return (
@@ -275,4 +288,3 @@ pub async fn reset_password(
     )
         .into_response()
 }
-

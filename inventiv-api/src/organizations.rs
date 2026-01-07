@@ -9,8 +9,8 @@ use serde_json::json;
 use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 
-use crate::{auth, AppState};
 use crate::rbac;
+use crate::{auth, AppState};
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct OrganizationRow {
@@ -237,7 +237,12 @@ pub async fn list_organizations(
     .await
     .unwrap_or_default();
 
-    Json(rows.into_iter().map(OrganizationResponse::from).collect::<Vec<_>>()).into_response()
+    Json(
+        rows.into_iter()
+            .map(OrganizationResponse::from)
+            .collect::<Vec<_>>(),
+    )
+    .into_response()
 }
 
 pub async fn create_organization(
@@ -372,11 +377,13 @@ pub async fn create_organization(
         let org_role = get_membership_role(&state.db, id, user.user_id)
             .await
             .map(|r| r.as_str().to_string());
-        
+
         // Update session in DB
-        let session_id = uuid::Uuid::parse_str(&user.session_id)
-            .unwrap_or_else(|_| uuid::Uuid::new_v4());
-        if let Err(e) = auth::update_session_org(&state.db, session_id, Some(id), org_role.clone()).await {
+        let session_id =
+            uuid::Uuid::parse_str(&user.session_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+        if let Err(e) =
+            auth::update_session_org(&state.db, session_id, Some(id), org_role.clone()).await
+        {
             tracing::error!("Failed to update session org: {}", e);
         } else {
             // Regenerate JWT with new org context
@@ -390,7 +397,9 @@ pub async fn create_organization(
             };
             if let Ok(tok) = auth::sign_session_jwt(&auth_user) {
                 let token_hash = auth::hash_session_token(&tok);
-                if let Err(e) = auth::update_session_token_hash(&state.db, session_id, &token_hash).await {
+                if let Err(e) =
+                    auth::update_session_token_hash(&state.db, session_id, &token_hash).await
+                {
                     tracing::error!("Failed to update session token hash: {}", e);
                 }
                 resp.headers_mut()
@@ -435,7 +444,9 @@ pub async fn set_current_organization(
             .map(|r| r.as_str().to_string());
 
         // Update session in DB
-        if let Err(e) = auth::update_session_org(&state.db, session_id, Some(org_id), org_role.clone()).await {
+        if let Err(e) =
+            auth::update_session_org(&state.db, session_id, Some(org_id), org_role.clone()).await
+        {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error":"db_error","message": e.to_string()})),
@@ -470,8 +481,8 @@ pub async fn set_current_organization(
         }
 
         let cookie = auth::session_cookie_value(&token);
-        let mut resp = Json(json!({"status":"ok","current_organization_id": org_id}))
-            .into_response();
+        let mut resp =
+            Json(json!({"status":"ok","current_organization_id": org_id})).into_response();
         resp.headers_mut().insert(header::SET_COOKIE, cookie);
         return resp;
     }
@@ -513,8 +524,7 @@ pub async fn set_current_organization(
     }
 
     let cookie = auth::session_cookie_value(&token);
-    let mut resp = Json(json!({"status":"ok","current_organization_id": null}))
-        .into_response();
+    let mut resp = Json(json!({"status":"ok","current_organization_id": null})).into_response();
     resp.headers_mut().insert(header::SET_COOKIE, cookie);
     resp
 }
@@ -567,7 +577,12 @@ pub async fn list_current_organization_members(
     .await
     .unwrap_or_default();
 
-    Json(rows.into_iter().map(OrganizationMemberResponse::from).collect::<Vec<_>>()).into_response()
+    Json(
+        rows.into_iter()
+            .map(OrganizationMemberResponse::from)
+            .collect::<Vec<_>>(),
+    )
+    .into_response()
 }
 
 pub async fn set_current_organization_member_role(
@@ -663,7 +678,8 @@ pub async fn set_current_organization_member_role(
     )
     .await;
 
-    Json(json!({"status":"ok","member_user_id":member_user_id,"role":new_role.as_str()})).into_response()
+    Json(json!({"status":"ok","member_user_id":member_user_id,"role":new_role.as_str()}))
+        .into_response()
 }
 
 pub async fn remove_current_organization_member(
@@ -821,7 +837,7 @@ pub async fn leave_current_organization(
 mod tests {
     use super::*;
     use axum::body::to_bytes;
-    use axum::extract::{State as AxumState};
+    use axum::extract::State as AxumState;
     use axum::http::StatusCode;
     use axum::Extension;
     use sqlx::postgres::PgPoolOptions;
@@ -987,7 +1003,11 @@ mod tests {
         // at least those two slugs
         let slugs: Vec<String> = arr
             .iter()
-            .filter_map(|o| o.get("slug").and_then(|s| s.as_str()).map(|s| s.to_string()))
+            .filter_map(|o| {
+                o.get("slug")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_string())
+            })
             .collect();
         assert!(slugs.contains(&"org-a".to_string()));
         assert!(slugs.contains(&"org-b".to_string()));
@@ -1133,5 +1153,3 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 }
-
-

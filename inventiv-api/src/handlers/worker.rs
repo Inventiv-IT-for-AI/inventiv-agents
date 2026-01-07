@@ -87,11 +87,7 @@ fn orchestrator_internal_url() -> String {
         .unwrap_or_else(|_| "http://orchestrator:8002".to_string())
 }
 
-async fn proxy_post_to_orchestrator(
-    path: &str,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
+async fn proxy_post_to_orchestrator(path: &str, headers: HeaderMap, body: Bytes) -> Response {
     let base = orchestrator_internal_url();
     let url = format!("{}/{}", base, path.trim_start_matches('/'));
 
@@ -152,7 +148,9 @@ pub async fn proxy_worker_register(
             Err(_) => {
                 return (
                     axum::http::StatusCode::BAD_REQUEST,
-                    Json(json!({"error":"invalid_body","message":"missing_or_invalid_instance_id"})),
+                    Json(
+                        json!({"error":"invalid_body","message":"missing_or_invalid_instance_id"}),
+                    ),
                 )
                     .into_response();
             }
@@ -195,4 +193,3 @@ pub async fn proxy_worker_heartbeat(
 
     proxy_post_to_orchestrator("/internal/worker/heartbeat", headers, body).await
 }
-

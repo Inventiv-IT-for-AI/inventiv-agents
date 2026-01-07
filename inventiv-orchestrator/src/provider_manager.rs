@@ -1,6 +1,6 @@
-use inventiv_providers::CloudProvider;
 #[cfg(feature = "provider-scaleway")]
 use inventiv_providers::scaleway::ScalewayProvider;
+use inventiv_providers::CloudProvider;
 // use std::collections::HashMap;
 use sqlx::{Pool, Postgres};
 use std::env;
@@ -38,7 +38,10 @@ impl ProviderManager {
         let from_env = env::var("PROVIDER_SETTINGS_ENCRYPTION_KEY")
             .ok()
             .or_else(|| env::var("PROVIDER_SETTINGS_PASSPHRASE").ok());
-        from_file.or(from_env).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+        from_file
+            .or(from_env)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
     }
 
     async fn scaleway_init_from_db(
@@ -223,7 +226,9 @@ impl ProviderManager {
             #[cfg(feature = "provider-mock")]
             "mock" => Ok(Box::new(MockProvider::new(db))),
             #[cfg(not(feature = "provider-mock"))]
-            "mock" => Err("Mock provider is disabled (build without --features provider-mock)".to_string()),
+            "mock" => Err(
+                "Mock provider is disabled (build without --features provider-mock)".to_string(),
+            ),
             // Add other providers here:
             // "ovh" => ...
             _ => Err(format!("Unknown provider '{}'", provider_name)),

@@ -23,7 +23,10 @@ pub async fn run(pool: Pool<Postgres>) {
 
         match reconcile_volumes(&pool).await {
             Ok(count) if count > 0 => {
-                println!("🔍 job-volume-reconciliation: reconciled {} volume(s)", count)
+                println!(
+                    "🔍 job-volume-reconciliation: reconciled {} volume(s)",
+                    count
+                )
             }
             Ok(_) => {
                 // Silent - no volumes to reconcile (this is normal)
@@ -63,17 +66,24 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
     .fetch_all(pool)
     .await?;
 
-    for (row_id, provider_volume_id, zone_code, instance_id_str, provider_id_opt) in deleted_but_existing {
+    for (row_id, provider_volume_id, zone_code, instance_id_str, provider_id_opt) in
+        deleted_but_existing
+    {
         if let Some(provider_id) = provider_id_opt {
-            let provider_code: String = sqlx::query_scalar("SELECT code FROM providers WHERE id = $1")
-                .bind(provider_id)
-                .fetch_optional(pool)
-                .await?
-                .unwrap_or_else(|| ProviderManager::current_provider_name());
+            let provider_code: String =
+                sqlx::query_scalar("SELECT code FROM providers WHERE id = $1")
+                    .bind(provider_id)
+                    .fetch_optional(pool)
+                    .await?
+                    .unwrap_or_else(|| ProviderManager::current_provider_name());
 
-            if let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()).await {
+            if let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()).await
+            {
                 // Check if volume still exists at provider
-                match provider.check_volume_exists(&zone_code, &provider_volume_id).await {
+                match provider
+                    .check_volume_exists(&zone_code, &provider_volume_id)
+                    .await
+                {
                     Ok(true) => {
                         // Volume still exists - retry deletion
                         eprintln!(
@@ -99,15 +109,23 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
                         .ok();
 
                         let start = std::time::Instant::now();
-                        let res = provider.delete_volume(&zone_code, &provider_volume_id).await;
+                        let res = provider
+                            .delete_volume(&zone_code, &provider_volume_id)
+                            .await;
 
                         if let Some(lid) = log_id {
                             let dur = start.elapsed().as_millis() as i32;
                             match &res {
                                 Ok(true) => {
-                                    logger::log_event_complete(pool, lid, "success", dur, Some("Volume deleted successfully"))
-                                        .await
-                                        .ok();
+                                    logger::log_event_complete(
+                                        pool,
+                                        lid,
+                                        "success",
+                                        dur,
+                                        Some("Volume deleted successfully"),
+                                    )
+                                    .await
+                                    .ok();
                                     // Update DB to reflect successful deletion
                                     let _ = sqlx::query(
                                         "UPDATE instance_volumes SET last_reconciliation = NOW() WHERE id = $1"
@@ -118,9 +136,15 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
                                     reconciled += 1;
                                 }
                                 Ok(false) => {
-                                    logger::log_event_complete(pool, lid, "failed", dur, Some("Provider returned non-success"))
-                                        .await
-                                        .ok();
+                                    logger::log_event_complete(
+                                        pool,
+                                        lid,
+                                        "failed",
+                                        dur,
+                                        Some("Provider returned non-success"),
+                                    )
+                                    .await
+                                    .ok();
                                     // Update last_reconciliation to retry later
                                     let _ = sqlx::query(
                                         "UPDATE instance_volumes SET last_reconciliation = NOW() WHERE id = $1"
@@ -130,9 +154,15 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
                                     .await;
                                 }
                                 Err(e) => {
-                                    logger::log_event_complete(pool, lid, "failed", dur, Some(&e.to_string()))
-                                        .await
-                                        .ok();
+                                    logger::log_event_complete(
+                                        pool,
+                                        lid,
+                                        "failed",
+                                        dur,
+                                        Some(&e.to_string()),
+                                    )
+                                    .await
+                                    .ok();
                                     // Update last_reconciliation to retry later
                                     let _ = sqlx::query(
                                         "UPDATE instance_volumes SET last_reconciliation = NOW() WHERE id = $1"
@@ -156,7 +186,7 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
                             SET reconciled_at = NOW(), 
                                 last_reconciliation = NOW()
                             WHERE id = $1
-                            "#
+                            "#,
                         )
                         .bind(row_id)
                         .execute(pool)
@@ -170,7 +200,7 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
                         );
                         // Update last_reconciliation to retry later
                         let _ = sqlx::query(
-                            "UPDATE instance_volumes SET last_reconciliation = NOW() WHERE id = $1"
+                            "UPDATE instance_volumes SET last_reconciliation = NOW() WHERE id = $1",
                         )
                         .bind(row_id)
                         .execute(pool)
@@ -207,17 +237,24 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
     .fetch_all(pool)
     .await?;
 
-    for (row_id, provider_volume_id, zone_code, instance_id_str, provider_id_opt) in failed_deletions {
+    for (row_id, provider_volume_id, zone_code, instance_id_str, provider_id_opt) in
+        failed_deletions
+    {
         if let Some(provider_id) = provider_id_opt {
-            let provider_code: String = sqlx::query_scalar("SELECT code FROM providers WHERE id = $1")
-                .bind(provider_id)
-                .fetch_optional(pool)
-                .await?
-                .unwrap_or_else(|| ProviderManager::current_provider_name());
+            let provider_code: String =
+                sqlx::query_scalar("SELECT code FROM providers WHERE id = $1")
+                    .bind(provider_id)
+                    .fetch_optional(pool)
+                    .await?
+                    .unwrap_or_else(|| ProviderManager::current_provider_name());
 
-            if let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()).await {
+            if let Ok(provider) = ProviderManager::get_provider(&provider_code, pool.clone()).await
+            {
                 // Check if volume still exists
-                match provider.check_volume_exists(&zone_code, &provider_volume_id).await {
+                match provider
+                    .check_volume_exists(&zone_code, &provider_volume_id)
+                    .await
+                {
                     Ok(true) => {
                         // Volume exists - try to delete it
                         eprintln!(
@@ -225,7 +262,9 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
                             provider_volume_id, instance_id_str
                         );
 
-                        let instance_id = Uuid::parse_str(&instance_id_str).ok().unwrap_or(Uuid::nil());
+                        let instance_id = Uuid::parse_str(&instance_id_str)
+                            .ok()
+                            .unwrap_or(Uuid::nil());
                         let log_id = logger::log_event_with_metadata(
                             pool,
                             "VOLUME_RECONCILIATION_RETRY_DELETE",
@@ -243,15 +282,23 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
                         .ok();
 
                         let start = std::time::Instant::now();
-                        let res = provider.delete_volume(&zone_code, &provider_volume_id).await;
+                        let res = provider
+                            .delete_volume(&zone_code, &provider_volume_id)
+                            .await;
 
                         if let Some(lid) = log_id {
                             let dur = start.elapsed().as_millis() as i32;
                             match &res {
                                 Ok(true) => {
-                                    logger::log_event_complete(pool, lid, "success", dur, Some("Volume deleted successfully"))
-                                        .await
-                                        .ok();
+                                    logger::log_event_complete(
+                                        pool,
+                                        lid,
+                                        "success",
+                                        dur,
+                                        Some("Volume deleted successfully"),
+                                    )
+                                    .await
+                                    .ok();
                                     // Mark as deleted but not yet reconciled (will be reconciled in next cycle after verification)
                                     let _ = sqlx::query(
                                         r#"
@@ -260,7 +307,7 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
                                             deleted_at=NOW(), 
                                             last_reconciliation=NOW() 
                                         WHERE id = $1
-                                        "#
+                                        "#,
                                     )
                                     .bind(row_id)
                                     .execute(pool)
@@ -268,9 +315,15 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
                                     reconciled += 1;
                                 }
                                 Ok(false) => {
-                                    logger::log_event_complete(pool, lid, "failed", dur, Some("Provider returned non-success"))
-                                        .await
-                                        .ok();
+                                    logger::log_event_complete(
+                                        pool,
+                                        lid,
+                                        "failed",
+                                        dur,
+                                        Some("Provider returned non-success"),
+                                    )
+                                    .await
+                                    .ok();
                                     let _ = sqlx::query(
                                         "UPDATE instance_volumes SET last_reconciliation = NOW() WHERE id = $1"
                                     )
@@ -279,9 +332,15 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
                                     .await;
                                 }
                                 Err(e) => {
-                                    logger::log_event_complete(pool, lid, "failed", dur, Some(&e.to_string()))
-                                        .await
-                                        .ok();
+                                    logger::log_event_complete(
+                                        pool,
+                                        lid,
+                                        "failed",
+                                        dur,
+                                        Some(&e.to_string()),
+                                    )
+                                    .await
+                                    .ok();
                                     let _ = sqlx::query(
                                         "UPDATE instance_volumes SET last_reconciliation = NOW() WHERE id = $1"
                                     )
@@ -306,7 +365,7 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
                                 reconciled_at=NOW(),
                                 last_reconciliation=NOW() 
                             WHERE id = $1
-                            "#
+                            "#,
                         )
                         .bind(row_id)
                         .execute(pool)
@@ -319,7 +378,7 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
                             provider_volume_id, e
                         );
                         let _ = sqlx::query(
-                            "UPDATE instance_volumes SET last_reconciliation = NOW() WHERE id = $1"
+                            "UPDATE instance_volumes SET last_reconciliation = NOW() WHERE id = $1",
                         )
                         .bind(row_id)
                         .execute(pool)
@@ -332,4 +391,3 @@ async fn reconcile_volumes(pool: &Pool<Postgres>) -> Result<usize, Box<dyn std::
 
     Ok(reconciled)
 }
-

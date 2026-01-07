@@ -1,12 +1,12 @@
 // Routes module - Centralizes all route definitions
-pub mod public;
-pub mod worker;
 pub mod openai;
-pub mod workbench;
 pub mod protected;
+pub mod public;
+pub mod workbench;
+pub mod worker;
 
-use axum::Router;
 use crate::app::AppState;
+use axum::Router;
 use std::sync::Arc;
 
 /// Build the main application router
@@ -18,4 +18,3 @@ pub fn create_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .merge(workbench::create_workbench_routes(state.clone()))
         .merge(protected::create_protected_routes(state.clone()))
 }
-

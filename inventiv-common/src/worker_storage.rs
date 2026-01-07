@@ -63,4 +63,3 @@ pub fn recommended_data_volume_gb(model_id: &str, default_gb: i64) -> Option<i64
     // Fallback for unknown models.
     Some(default_gb).filter(|gb| *gb > 0)
 }
-

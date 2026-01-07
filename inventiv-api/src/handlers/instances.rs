@@ -86,18 +86,18 @@ pub struct InstanceStorageInfo {
     pub volume_type: String,
     pub size_gb: Option<i64>,
     pub is_boot: bool,
-    
+
     // Statut et cycle de vie
-    pub status: String,  // 'attached', 'detached', 'deleting', 'deleted'
+    pub status: String, // 'attached', 'detached', 'deleting', 'deleted'
     pub delete_on_terminate: bool,
-    
+
     // Timestamps (historique complet)
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub attached_at: Option<chrono::DateTime<chrono::Utc>>,
     pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
     pub reconciled_at: Option<chrono::DateTime<chrono::Utc>>,
     pub last_reconciliation: Option<chrono::DateTime<chrono::Utc>>,
-    
+
     // Erreurs et réconciliation
     pub error_message: Option<String>,
 }
@@ -448,25 +448,28 @@ pub async fn get_instance(
     match row {
         Some(mut inst) => {
             // Enrich instance with progress percentage
-            progress::enrich_instances_with_progress(&state.db, std::slice::from_mut(&mut inst)).await;
-            let storages: Vec<InstanceStorageInfo> =
-                sqlx::query_as::<Postgres, (
-                    uuid::Uuid,           // id
-                    String,                // provider_volume_id
-                    Option<String>,        // provider_volume_name
-                    String,                // volume_type
-                    i64,                   // size_bytes
-                    bool,                  // is_boot
-                    String,                // status
-                    bool,                  // delete_on_terminate
-                    chrono::DateTime<chrono::Utc>,  // created_at
-                    Option<chrono::DateTime<chrono::Utc>>,  // attached_at
-                    Option<chrono::DateTime<chrono::Utc>>,  // deleted_at
-                    Option<chrono::DateTime<chrono::Utc>>,  // reconciled_at
-                    Option<chrono::DateTime<chrono::Utc>>,  // last_reconciliation
-                    Option<String>,        // error_message
-                )>(
-                    r#"
+            progress::enrich_instances_with_progress(&state.db, std::slice::from_mut(&mut inst))
+                .await;
+            let storages: Vec<InstanceStorageInfo> = sqlx::query_as::<
+                Postgres,
+                (
+                    uuid::Uuid,                            // id
+                    String,                                // provider_volume_id
+                    Option<String>,                        // provider_volume_name
+                    String,                                // volume_type
+                    i64,                                   // size_bytes
+                    bool,                                  // is_boot
+                    String,                                // status
+                    bool,                                  // delete_on_terminate
+                    chrono::DateTime<chrono::Utc>,         // created_at
+                    Option<chrono::DateTime<chrono::Utc>>, // attached_at
+                    Option<chrono::DateTime<chrono::Utc>>, // deleted_at
+                    Option<chrono::DateTime<chrono::Utc>>, // reconciled_at
+                    Option<chrono::DateTime<chrono::Utc>>, // last_reconciliation
+                    Option<String>,                        // error_message
+                ),
+            >(
+                r#"
                 SELECT
                   iv.id,
                   iv.provider_volume_id,
@@ -489,42 +492,57 @@ pub async fn get_instance(
                   CASE WHEN iv.deleted_at IS NULL THEN 0 ELSE 1 END,
                   iv.created_at DESC
                 "#,
-                )
-                .bind(id)
-                .fetch_all(&state.db)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(
-                    |(id, provider_volume_id, name, volume_type, size_bytes, is_boot, status, delete_on_terminate, created_at, attached_at, deleted_at, reconciled_at, last_reconciliation, error_message)| {
-                        InstanceStorageInfo {
-                            id,
-                            provider_volume_id,
-                            name,
-                            volume_type,
-                            size_gb: if size_bytes > 0 {
-                                if size_bytes < 1_000_000_000 {
-                                    // Some providers return "size" in GB already.
-                                    Some(size_bytes)
-                                } else {
-                                    Some(((size_bytes as f64) / 1_000_000_000.0).round() as i64)
-                                }
+            )
+            .bind(id)
+            .fetch_all(&state.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    provider_volume_id,
+                    name,
+                    volume_type,
+                    size_bytes,
+                    is_boot,
+                    status,
+                    delete_on_terminate,
+                    created_at,
+                    attached_at,
+                    deleted_at,
+                    reconciled_at,
+                    last_reconciliation,
+                    error_message,
+                )| {
+                    InstanceStorageInfo {
+                        id,
+                        provider_volume_id,
+                        name,
+                        volume_type,
+                        size_gb: if size_bytes > 0 {
+                            if size_bytes < 1_000_000_000 {
+                                // Some providers return "size" in GB already.
+                                Some(size_bytes)
                             } else {
-                                None
-                            },
-                            is_boot,
-                            status,
-                            delete_on_terminate,
-                            created_at,
-                            attached_at,
-                            deleted_at,
-                            reconciled_at,
-                            last_reconciliation,
-                            error_message,
-                        }
-                    },
-                )
-                .collect();
+                                Some(((size_bytes as f64) / 1_000_000_000.0).round() as i64)
+                            }
+                        } else {
+                            None
+                        },
+                        is_boot,
+                        status,
+                        delete_on_terminate,
+                        created_at,
+                        attached_at,
+                        deleted_at,
+                        reconciled_at,
+                        last_reconciliation,
+                        error_message,
+                    }
+                },
+            )
+            .collect();
 
             Json(InstanceWithStoragesResponse {
                 instance: inst,
@@ -1087,4 +1105,3 @@ pub async fn reinstall_instance(
         }
     }
 }
-

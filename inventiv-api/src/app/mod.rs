@@ -12,4 +12,3 @@ pub fn create_cors() -> CorsLayer {
         .allow_methods(Any)
         .allow_headers(Any)
 }
-

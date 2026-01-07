@@ -195,13 +195,28 @@ pub async fn run(pool: Pool<Postgres>) {
                                                     }
                                                     Ok(false) => {
                                                         // Check if instance is in transitional state (normal retry)
-                                                        let instance_state = provider.get_server_state(&zone, pid).await.ok().flatten();
-                                                        let is_retry = instance_state.as_deref()
-                                                            .map(|s| matches!(s, "starting" | "booting" | "stopped" | "stopped_in_place"))
+                                                        let instance_state = provider
+                                                            .get_server_state(&zone, pid)
+                                                            .await
+                                                            .ok()
+                                                            .flatten();
+                                                        let is_retry = instance_state
+                                                            .as_deref()
+                                                            .map(|s| {
+                                                                matches!(
+                                                                    s,
+                                                                    "starting"
+                                                                        | "booting"
+                                                                        | "stopped"
+                                                                        | "stopped_in_place"
+                                                                )
+                                                            })
                                                             .unwrap_or(false);
-                                                        
+
                                                         if is_retry {
-                                                            let state_str = instance_state.as_deref().unwrap_or("starting");
+                                                            let state_str = instance_state
+                                                                .as_deref()
+                                                                .unwrap_or("starting");
                                                             logger::log_event_complete(
                                                                 &db_clone,
                                                                 lid,
@@ -226,22 +241,37 @@ pub async fn run(pool: Pool<Postgres>) {
                                                     Err(e) => {
                                                         let err_msg = e.to_string();
                                                         // Check if error indicates instance is in transitional state
-                                                        let mut is_retry = err_msg.contains("current state: starting")
-                                                            || err_msg.contains("current state: booting")
-                                                            || err_msg.contains("current state: stopped");
-                                                        
+                                                        let mut is_retry = err_msg
+                                                            .contains("current state: starting")
+                                                            || err_msg
+                                                                .contains("current state: booting")
+                                                            || err_msg
+                                                                .contains("current state: stopped");
+
                                                         if !is_retry {
                                                             // Also check actual instance state
-                                                            if let Ok(Some(state)) = provider.get_server_state(&zone, pid).await {
-                                                                let state_lower = state.to_ascii_lowercase();
-                                                                if matches!(state_lower.as_str(), "starting" | "booting" | "stopped" | "stopped_in_place") {
+                                                            if let Ok(Some(state)) = provider
+                                                                .get_server_state(&zone, pid)
+                                                                .await
+                                                            {
+                                                                let state_lower =
+                                                                    state.to_ascii_lowercase();
+                                                                if matches!(
+                                                                    state_lower.as_str(),
+                                                                    "starting"
+                                                                        | "booting"
+                                                                        | "stopped"
+                                                                        | "stopped_in_place"
+                                                                ) {
                                                                     is_retry = true;
                                                                 }
                                                             }
                                                         }
-                                                        
+
                                                         if is_retry {
-                                                            let retry_msg = if err_msg.contains("current state:") {
+                                                            let retry_msg = if err_msg
+                                                                .contains("current state:")
+                                                            {
                                                                 err_msg.split("current state: ").nth(1)
                                                                     .and_then(|s| s.split_whitespace().next())
                                                                     .map(|s| format!("Instance is {} - retrying poweron", s))
@@ -249,7 +279,7 @@ pub async fn run(pool: Pool<Postgres>) {
                                                             } else {
                                                                 "Instance is in transitional state - retrying poweron".to_string()
                                                             };
-                                                            
+
                                                             logger::log_event_complete(
                                                                 &db_clone,
                                                                 lid,
