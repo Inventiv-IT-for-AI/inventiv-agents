@@ -1,11 +1,36 @@
+# ============================================================================
+# GHCR (arm64 build + promote) - Build et promotion d'images Docker
+# ============================================================================
+# Description:
+#   Workflow pour construire des images Docker ARM64 et les promouvoir entre
+#   environnements. Build automatique sur création de tag version, promotion
+#   manuelle entre environnements (staging/prod).
+#
+# Déclenchement:
+#   - Automatique: sur push de tag version (ex: git tag v0.2.3 && git push --tags)
+#   - Manuel: via workflow_dispatch pour promouvoir une image existante
+#
+# Jobs:
+#   - build_arm64: Build et push des images avec tag version + SHA (sur tag v*)
+#   - promote: Promotion d'une image existante vers staging ou prod (manuel)
+#
+# Usage:
+#   - Créer un tag: git tag v0.2.3 && git push origin v0.2.3
+#   - Promouvoir: GitHub Actions → "Run workflow" → sélectionner env + source_tag
+# ============================================================================
+
 name: GHCR (arm64 build + promote)
 
+# Déclencheurs du workflow
 on:
+  # Déclenché automatiquement sur push de tag version (ex: v0.2.3)
   push:
     tags:
       - "v*"
+  # Déclenchement manuel pour promotion d'images
   workflow_dispatch:
     inputs:
+      # Environnement cible pour la promotion
       promote_env:
         description: "Promote a version tag to this env tag (staging/prod)"
         required: false
@@ -13,49 +38,64 @@ on:
         options:
           - staging
           - prod
+      # Tag source à promouvoir (version ou SHA)
       source_tag:
         description: "Existing immutable tag to promote (e.g. v0.2.2 or b25bd1790939)"
         required: false
         type: string
 
+# Permissions GitHub nécessaires
 permissions:
-  contents: read
-  packages: write
+  contents: read   # Lecture du repository
+  packages: write  # Écriture dans GitHub Container Registry (GHCR)
 
+# Variables d'environnement globales
 env:
   # IMPORTANT: GHCR repository names must be lowercase
   IMAGE_REPO_PATH: inventiv-agents
 
 jobs:
+  # Job Build: Construit les images ARM64 sur push de tag version
   build_arm64:
+    # Ne s'exécute que si le tag commence par "v" (ex: v0.2.3)
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      # Récupération du code source
       - uses: actions/checkout@v4
 
+      # Calcul des métadonnées pour les tags d'images
       - name: Compute image repo (lowercase)
         run: |
+          # Owner en minuscules (requis par GHCR)
           echo "OWNER_LC=$(echo \"$GITHUB_REPOSITORY_OWNER\" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+          # Tag version (ex: v0.2.3)
           echo "TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          # SHA12 du commit (tag immutable)
           echo "SHA=${GITHUB_SHA:0:12}" >> "$GITHUB_ENV"
 
+      # Configuration QEMU pour build ARM64 sur x86_64
       - uses: docker/setup-qemu-action@v3
         with:
           platforms: arm64
 
+      # Configuration Docker Buildx pour builds multi-arch
       - uses: docker/setup-buildx-action@v3
 
+      # Authentification sur GitHub Container Registry
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Build et push des images avec tag version ET tag SHA
       - name: Build & push (linux/arm64)
         run: |
           set -euo pipefail
           REPO="ghcr.io/${OWNER_LC}/${IMAGE_REPO_PATH}"
 
+          # Build chaque service Rust avec 2 tags: version (ex: v0.2.3) et SHA (immutable)
           docker buildx build --platform linux/arm64 \
             -f Dockerfile.rust.prod --build-arg SERVICE_NAME=inventiv-api \
             -t "${REPO}/inventiv-api:${TAG}" \
@@ -74,35 +114,48 @@ jobs:
             -t "${REPO}/inventiv-finops:${SHA}" \
             --push .
 
+          # Build du frontend Next.js avec 2 tags également
           docker buildx build --platform linux/arm64 \
             -f inventiv-frontend/Dockerfile \
             -t "${REPO}/inventiv-frontend:${TAG}" \
             -t "${REPO}/inventiv-frontend:${SHA}" \
             --push inventiv-frontend
 
+  # Job Promote: Promeut une image existante vers staging ou prod
   promote:
+    # Ne s'exécute que si déclenché manuellement avec les inputs requis
     if: github.event_name == 'workflow_dispatch' && inputs.promote_env != '' && inputs.source_tag != ''
     runs-on: ubuntu-latest
     steps:
+      # Calcul des métadonnées pour la promotion
       - name: Compute image repo (lowercase)
         run: |
+          # Owner en minuscules (requis par GHCR)
           echo "OWNER_LC=$(echo \"$GITHUB_REPOSITORY_OWNER\" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+          # Environnement cible (staging ou prod)
           echo "PROMOTE_ENV=${{ inputs.promote_env }}" >> "$GITHUB_ENV"
+          # Tag source à promouvoir (ex: v0.2.3 ou SHA12)
           echo "SOURCE_TAG=${{ inputs.source_tag }}" >> "$GITHUB_ENV"
 
+      # Configuration Docker Buildx pour les opérations sur les images
       - uses: docker/setup-buildx-action@v3
 
+      # Authentification sur GitHub Container Registry
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Promotion: crée un tag environnement pointant vers le même digest que le tag source
+      # Utilise docker buildx imagetools pour garantir l'immutabilité (même digest)
       - name: Promote tags (same digest)
         run: |
           set -euo pipefail
           REPO="ghcr.io/${OWNER_LC}/${IMAGE_REPO_PATH}"
 
+          # Promotion de chaque service vers l'environnement cible (même digest)
+          # Exemple: promote v0.2.3 -> staging crée :staging pointant vers le digest de v0.2.3
           docker buildx imagetools create -t "${REPO}/inventiv-api:${PROMOTE_ENV}" "${REPO}/inventiv-api:${SOURCE_TAG}"
           docker buildx imagetools create -t "${REPO}/inventiv-orchestrator:${PROMOTE_ENV}" "${REPO}/inventiv-orchestrator:${SOURCE_TAG}"
           docker buildx imagetools create -t "${REPO}/inventiv-finops:${PROMOTE_ENV}" "${REPO}/inventiv-finops:${SOURCE_TAG}"

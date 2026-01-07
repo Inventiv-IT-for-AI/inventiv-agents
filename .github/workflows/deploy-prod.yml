@@ -1,32 +1,62 @@
+# ============================================================================
+# Deploy (production) - Déploiement manuel sur production
+# ============================================================================
+# Description:
+#   Déploie une version spécifique sur l'environnement production.
+#   Nécessite une approbation manuelle (GitHub Environments) et promeut
+#   une image existante vers :prod, puis déploie sur la VM production.
+#
+# Déclenchement:
+#   - Manuel uniquement: via workflow_dispatch depuis l'interface GitHub Actions
+#   - Requiert: approbation manuelle configurée dans l'environnement "production"
+#
+# Étapes:
+#   1. Promote: Promeut une image existante (SHA ou version) vers :prod
+#   2. Deploy: Met à jour les containers sur la VM production via SSH
+#
+# Usage:
+#   - Depuis GitHub Actions UI: "Run workflow" → saisir le tag source
+#   - Tag source: SHA12 (ex: "a1b2c3d4e5f6") ou version (ex: "v0.2.3")
+# ============================================================================
+
 name: Deploy (production)
 
+# Déclencheurs du workflow
 on:
+  # Déclenchement manuel uniquement (pas automatique)
   workflow_dispatch:
     inputs:
+      # Tag source à promouvoir vers :prod (SHA12 ou version tag)
       image_tag:
         description: "Source tag to promote to :prod (sha12 or vX.Y.Z)"
         required: true
 
+# Permissions GitHub nécessaires
 permissions:
-  contents: read
-  packages: write
+  contents: read   # Lecture du repository
+  packages: write  # Écriture dans GitHub Container Registry (GHCR)
 
+# Gestion de la concurrence: ne pas annuler les déploiements en cours
 concurrency:
   group: deploy-prod
-  cancel-in-progress: false
+  cancel-in-progress: false  # Important: ne pas interrompre un déploiement en cours
 
 jobs:
+  # Job Deploy: Promotion et déploiement sur production
   deploy:
     name: Promote + Deploy to production (manual)
     runs-on: ubuntu-latest
-    environment: production
+    environment: production  # Requiert approbation manuelle configurée dans GitHub
     steps:
+      # Récupération du code source (pour accéder au Makefile)
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Configuration Docker Buildx pour les opérations sur les images
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Authentification sur GitHub Container Registry (GHCR)
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -34,11 +64,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Promotion: crée un tag :prod pointant vers le même digest que le tag source
+      # Le tag source peut être un SHA12 ou une version (ex: v0.2.3)
       - name: Promote -> :prod (same digest)
         env:
           IMAGE_REPO: ${{ secrets.IMAGE_REPO || format('ghcr.io/{0}/inventiv-agents', github.repository_owner) }}
+        # Utilise docker buildx imagetools pour promouvoir par digest (immutable)
         run: make images-promote-prod IMAGE_TAG=${{ inputs.image_tag }}
 
+      # Génération du fichier .env pour le déploiement distant
+      # Contient toutes les variables d'environnement nécessaires sur la VM production
       - name: Write prod env file (for remote deploy)
         run: |
           set -euo pipefail
@@ -73,17 +108,22 @@ jobs:
           ACME_EMAIL=${{ secrets.PROD_ACME_EMAIL }}
           EOF
 
+      # Configuration de la clé SSH pour se connecter à la VM production
       - name: Setup SSH key
         run: |
           set -euo pipefail
           install -d -m 700 ~/.ssh
+          # Écriture de la clé privée depuis les secrets GitHub
           echo "${{ secrets.PROD_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key  # Permissions restrictives pour la clé
 
+      # Déploiement sur la VM production via SSH
+      # Exécute docker compose pull + up pour mettre à jour les containers
       - name: Deploy update on production
         env:
-          PRD_ENV_FILE: env/prod.env
-          SSH_IDENTITY_FILE: ~/.ssh/deploy_key
+          PRD_ENV_FILE: env/prod.env         # Fichier .env généré précédemment
+          SSH_IDENTITY_FILE: ~/.ssh/deploy_key  # Clé SSH configurée
+        # Exécute: docker compose pull + up sur la VM production
         run: make prod-update
 
 

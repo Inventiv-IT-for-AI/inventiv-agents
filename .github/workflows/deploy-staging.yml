@@ -1,65 +1,104 @@
+# ============================================================================
+# Deploy (staging) - Déploiement automatique sur staging
+# ============================================================================
+# Description:
+#   Déploie automatiquement la dernière version du code sur l'environnement
+#   staging après validation de la CI. Build les images Docker ARM64, les
+#   pousse sur GHCR, les promeut vers :staging, puis déploie sur la VM staging.
+#
+# Déclenchement:
+#   - Automatique: sur chaque push vers main (après validation CI)
+#   - Manuel: via workflow_dispatch depuis l'interface GitHub Actions
+#
+# Étapes:
+#   1. CI gate: Exécute le workflow CI pour valider le code
+#   2. Build ARM64: Construit les images Docker pour linux/arm64 (Scaleway)
+#   3. Push GHCR: Pousse les images avec tag SHA (immutable)
+#   4. Promote: Promeut les images SHA vers :staging (même digest)
+#   5. Deploy: Met à jour les containers sur la VM staging via SSH
+# ============================================================================
+
 name: Deploy (staging)
 
+# Déclencheurs du workflow
 on:
+  # Déclenché automatiquement sur chaque push vers main
   push:
     branches: ["main"]
+  # Permet de déclencher manuellement depuis l'interface GitHub Actions
   workflow_dispatch:
 
+# Permissions GitHub nécessaires
 permissions:
-  contents: read
-  packages: write
+  contents: read   # Lecture du repository
+  packages: write  # Écriture dans GitHub Container Registry (GHCR)
 
+# Gestion de la concurrence: ne pas annuler les déploiements en cours
 concurrency:
   group: deploy-staging
-  cancel-in-progress: false
+  cancel-in-progress: false  # Important: ne pas interrompre un déploiement en cours
 
 jobs:
+  # Job CI: Validation du code avant déploiement
   ci:
     name: CI gate
-    uses: ./.github/workflows/ci.yml
+    uses: ./.github/workflows/ci.yml  # Réutilise le workflow CI
 
+  # Job Deploy: Build, push et déploiement sur staging
   deploy:
     name: Build (arm64) + Promote + Deploy to staging
     runs-on: ubuntu-latest
-    needs: [ci]
-    environment: staging
+    needs: [ci]  # Attend que la CI soit passée
+    environment: staging  # Utilise les secrets de l'environnement "staging"
     steps:
+      # Récupération du code source
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Configuration QEMU pour build multi-architecture (ARM64 sur x86_64)
       - name: Setup QEMU (arm64)
         uses: docker/setup-qemu-action@v3
         with:
-          platforms: arm64
+          platforms: arm64  # Architecture cible: ARM64 (Scaleway VMs)
 
+      # Configuration Docker Buildx pour builds multi-arch
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Authentification sur GitHub Container Registry (GHCR)
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ github.actor }}  # Utilisateur GitHub qui déclenche le workflow
+          password: ${{ secrets.GITHUB_TOKEN }}  # Token automatique GitHub
 
+      # Calcul des métadonnées pour les tags d'images
       - name: Compute image tag
         id: meta
         run: |
           set -euo pipefail
+          # SHA12: 12 premiers caractères du commit SHA (tag immutable)
           echo "sha12=${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
+          # Owner en minuscules (requis par GHCR)
           echo "owner_lc=$(echo \"$GITHUB_REPOSITORY_OWNER\" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
+      # Vérification optionnelle de la version de l'agent
       - name: Agent version check
         run: make agent-version-check || echo "⚠️  Agent version check skipped (agent.py unchanged or first commit)"
 
+      # Build et push des images Docker pour ARM64 avec tag SHA
       - name: Build & push images (linux/arm64, sha)
         env:
+          # Repository GHCR (utilise le secret ou génère depuis le repo)
           IMAGE_REPO: ${{ secrets.IMAGE_REPO || format('ghcr.io/{0}/inventiv-agents', steps.meta.outputs.owner_lc) }}
+          # Tag SHA12 (immutable, basé sur le commit)
           IMAGE_TAG: ${{ steps.meta.outputs.sha12 }}
         run: |
           set -euo pipefail
           REPO="${IMAGE_REPO}"
 
+          # Build et push de chaque service Rust (api, orchestrator, finops)
           docker buildx build --platform linux/arm64 \
             -f Dockerfile.rust.prod --build-arg SERVICE_NAME=inventiv-api \
             -t "${REPO}/inventiv-api:${IMAGE_TAG}" \
@@ -75,16 +114,22 @@ jobs:
             -t "${REPO}/inventiv-finops:${IMAGE_TAG}" \
             --push .
 
+          # Build et push du frontend Next.js
           docker buildx build --platform linux/arm64 \
             -f inventiv-frontend/Dockerfile \
             -t "${REPO}/inventiv-frontend:${IMAGE_TAG}" \
             --push inventiv-frontend
 
+      # Promotion: crée un tag :staging pointant vers le même digest que SHA12
+      # Permet de référencer "staging" au lieu du SHA, tout en gardant l'immutabilité
       - name: Promote sha -> :staging (same digest)
         env:
           IMAGE_REPO: ${{ secrets.IMAGE_REPO || format('ghcr.io/{0}/inventiv-agents', steps.meta.outputs.owner_lc) }}
+        # Utilise docker buildx imagetools pour promouvoir par digest (immutable)
         run: make images-promote-stg IMAGE_TAG=${{ steps.meta.outputs.sha12 }}
 
+      # Génération du fichier .env pour le déploiement distant
+      # Contient toutes les variables d'environnement nécessaires sur la VM staging
       - name: Write staging env file (for remote deploy)
         run: |
           set -euo pipefail
@@ -119,17 +164,22 @@ jobs:
           ACME_EMAIL=${{ secrets.STG_ACME_EMAIL }}
           EOF
 
+      # Configuration de la clé SSH pour se connecter à la VM staging
       - name: Setup SSH key
         run: |
           set -euo pipefail
           install -d -m 700 ~/.ssh
+          # Écriture de la clé privée depuis les secrets GitHub
           echo "${{ secrets.STG_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key  # Permissions restrictives pour la clé
 
+      # Déploiement sur la VM staging via SSH
+      # Exécute docker compose pull + up pour mettre à jour les containers
       - name: Deploy update on staging
         env:
-          STG_ENV_FILE: env/staging.env
-          SSH_IDENTITY_FILE: ~/.ssh/deploy_key
+          STG_ENV_FILE: env/staging.env      # Fichier .env généré précédemment
+          SSH_IDENTITY_FILE: ~/.ssh/deploy_key  # Clé SSH configurée
+        # Exécute: docker compose pull + up sur la VM staging
         run: make stg-update
 
 
