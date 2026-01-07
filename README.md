@@ -33,6 +33,7 @@
 - ✅ **Multi-Tenancy & Organizations**: Create and manage organizations, switch between Personal and Organization workspaces, member management with RBAC roles (Owner, Admin, Manager, User)
 - ✅ **Organization Invitations**: Invite users by email to join organizations, public invitation acceptance page, role-based invitation permissions
 - ✅ **RBAC (Role-Based Access Control)**: Granular permissions per role, double activation (technical/economic) for resources, workspace-scoped access control
+- ✅ **Organization-Scoped Provider Credentials**: Provider credentials (Scaleway API keys, project IDs) stored per organization in encrypted database (`provider_settings`), automatic seeding for default organization, organization-specific reconciliation
 - ✅ **Personal Dashboard**: "My Dashboard" for all users showing account, subscription, chat sessions, accessible models, credits, and tokens
 - ✅ **Admin Dashboard**: Organization-scoped administrative dashboard restricted to Owner/Admin/Manager roles
 
@@ -246,6 +247,9 @@ Runtime secrets are mounted in containers via `SECRETS_DIR` → `/run/secrets`:
 
 - `default_admin_password`: admin password (bootstrap)
 - `jwt_secret`: JWT secret for sessions (optional, dev fallback)
+- `provider_settings_key`: Passphrase for encrypting provider credentials in database (pgcrypto)
+- `scaleway_secret_key`: Scaleway API secret key (for seeding provider credentials)
+- `scaleway_access_key`: Scaleway access key (for CLI operations like volume resize)
 - `scaleway_secret_key`: Scaleway secret key (if real provider)
 
 **In local dev**: create `deploy/secrets/` and place secret files there.
@@ -806,7 +810,7 @@ make test-worker-observability-clean [PORT_OFFSET=...]
 - **Secret files**: Mounted via `SECRETS_DIR` → `/run/secrets` (not committed)
 - **Env vars**: Sensitive variables in `env/*.env` (not committed)
 - **Bootstrap admin**: Password from secret file (`DEFAULT_ADMIN_PASSWORD_FILE`)
-- **Seed provider credentials (optional)**: `AUTO_SEED_PROVIDER_CREDENTIALS=1` allows initializing `provider_settings` from secrets mounted in `/run/secrets` (e.g., Scaleway). See `env/staging.env.example` / `env/prod.env.example`.
+- **Seed provider credentials (optional)**: `AUTO_SEED_PROVIDER_CREDENTIALS=1` allows initializing `provider_settings` from secrets mounted in `/run/secrets` (e.g., Scaleway). Credentials are encrypted using `pgcrypto` with passphrase from `/run/secrets/provider_settings_key` and stored per organization. The seed creates credentials only for the default organization ("Inventiv IT"). See `env/staging.env.example` / `env/prod.env.example`.
 
 ### Worker tokens
 

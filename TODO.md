@@ -58,7 +58,7 @@ This file reflects the **actual** state of the repo (code + migrations + UI) and
 - ✅ **Organization Invitations**: Complete invitation system with email-based invites, public acceptance page, role-based permissions.
 - ✅ **Instance Scoping**: Instances isolated by `organization_id` with RBAC access control (Owner/Admin only).
 - ✅ **Double Activation**: Technical activation (Admin/Owner) + economic activation (Manager/Owner) per instance.
-- ✅ **Provider Settings Scoping**: Provider credentials scoped by `organization_id`.
+- ✅ **Provider Settings Scoping**: Provider credentials scoped by `organization_id` with DB storage, encryption (pgcrypto), and organization-specific reconciliation.
 - ✅ **Personal Dashboard**: "My Dashboard" for all users showing account, subscription, chat sessions, accessible models, credits.
 - ✅ **Admin Dashboard**: Organization-scoped administrative dashboard restricted to Owner/Admin/Manager roles.
 - ✅ **Sidebar RBAC**: Granular access control for all modules (ADMIN group, HISTORY group, individual modules).
@@ -205,7 +205,14 @@ This file reflects the **actual** state of the repo (code + migrations + UI) and
 - **Validation**: consolidate dashboards + exports + time series.
 
 ### Secrets & credentials
-- **AUTO_SEED_PROVIDER_CREDENTIALS**: clearly document the model "secrets in /run/secrets → encrypted pgcrypto provider_settings" + rotation/rollback + key conventions (`SCALEWAY_PROJECT_ID`, `SCALEWAY_SECRET_KEY_ENC`) + threat (logs/backup).
+- ✅ **AUTO_SEED_PROVIDER_CREDENTIALS**: Implemented model "secrets in /run/secrets → encrypted pgcrypto provider_settings" with organization scoping:
+  - Migration: `20260108000006_add_provider_settings_organization_id.sql` adds `organization_id` to `provider_settings`
+  - Seed: `maybe_seed_provider_credentials()` creates credentials only for default organization ("Inventiv IT")
+  - Encryption: Uses `pgcrypto` with passphrase from `/run/secrets/provider_settings_key`
+  - Key conventions: `SCALEWAY_PROJECT_ID`, `SCALEWAY_SECRET_KEY_ENC`, `SCALEWAY_ACCESS_KEY`, `SCALEWAY_ORGANIZATION_ID`
+  - Organization-specific: Each organization has its own credentials in `provider_settings`
+  - Reconciliation: `process_full_reconciliation()` uses credentials of each organization for its own resources
+  - TODO: Document rotation/rollback procedures + threat model (logs/backup)
 
 ### Multi-tenant & security
 - ✅ **Organizations (MVP)**: creation + membership + "current organization" selection (switcher UX).
