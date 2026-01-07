@@ -68,15 +68,19 @@ export default function ChatPage() {
         throw new Error(body?.message || body?.error || `http_${res.status}`);
       }
       const data = (await res.json()) as ChatModel[];
-      setModels(Array.isArray(data) ? data : []);
-      if (Array.isArray(data) && data.length === 0) {
-        setModelsError("Aucun modèle disponible (aucun worker READY).");
-      } else {
-        setModelsError(null);
-      }
+      startTransition(() => {
+        setModels(Array.isArray(data) ? data : []);
+        if (Array.isArray(data) && data.length === 0) {
+          setModelsError("Aucun modèle disponible (aucun worker READY).");
+        } else {
+          setModelsError(null);
+        }
+      });
     } catch (e) {
-      setModels([]);
-      setModelsError(e instanceof Error ? e.message : String(e));
+      startTransition(() => {
+        setModels([]);
+        setModelsError(e instanceof Error ? e.message : String(e));
+      });
     }
   }, []);
 
@@ -88,11 +92,15 @@ export default function ChatPage() {
         throw new Error(body?.message || body?.error || `http_${res.status}`);
       }
       const data = (await res.json()) as WorkbenchRun[];
-      setRuns(data);
-      setRunsError(null);
+      startTransition(() => {
+        setRuns(data);
+        setRunsError(null);
+      });
     } catch (e) {
-      setRuns([]);
-      setRunsError(e instanceof Error ? e.message : String(e));
+      startTransition(() => {
+        setRuns([]);
+        setRunsError(e instanceof Error ? e.message : String(e));
+      });
     }
   }, []);
 
@@ -104,11 +112,15 @@ export default function ChatPage() {
         throw new Error(body?.message || body?.error || `http_${res.status}`);
       }
       const data = (await res.json()) as WorkbenchProject[];
-      setProjects(Array.isArray(data) ? data : []);
-      setProjectsError(null);
+      startTransition(() => {
+        setProjects(Array.isArray(data) ? data : []);
+        setProjectsError(null);
+      });
     } catch (e) {
-      setProjects([]);
-      setProjectsError(e instanceof Error ? e.message : String(e));
+      startTransition(() => {
+        setProjects([]);
+        setProjectsError(e instanceof Error ? e.message : String(e));
+      });
     }
   }, []);
 
