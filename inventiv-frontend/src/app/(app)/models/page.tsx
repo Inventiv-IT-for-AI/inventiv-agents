@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, startTransition } from "react";
 import { apiUrl } from "@/lib/api";
 import type { RuntimeModel } from "@/lib/types";
 import { Card, CardContent } from "@/components/ui/card";
@@ -17,7 +17,9 @@ export default function ModelsPage() {
         const res = await fetch(apiUrl("runtime/models"));
         if (!res.ok) return;
         const data = (await res.json()) as RuntimeModel[];
-        setRows(data);
+        startTransition(() => {
+            setRows(data);
+        });
     }, []);
 
     useEffect(() => {
