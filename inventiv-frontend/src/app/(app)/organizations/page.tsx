@@ -176,7 +176,7 @@ export default function OrganizationsPage() {
     }
   };
 
-  const setCurrentOrganization = async (orgId: string | null) => {
+  const setCurrentOrganization = useCallback(async (orgId: string | null) => {
     try {
       const res = await apiRequest("/organizations/current", {
         method: "PUT",
@@ -200,7 +200,7 @@ export default function OrganizationsPage() {
       const msg = e instanceof Error ? e.message : String(e);
       snackbar.error("Erreur réseau", { title: "Organisations", details: msg });
     }
-  };
+  }, [snackbar, setCurrentOrgId, setRefreshTick, setError]);
 
   const columns = useMemo<IADataTableColumn<OrganizationWithActions>[]>(() => {
     return [

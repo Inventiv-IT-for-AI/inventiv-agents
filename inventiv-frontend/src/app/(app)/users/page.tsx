@@ -97,7 +97,7 @@ export default function UsersPage() {
     setCreateOpen(true);
   };
 
-  const openEdit = (u: User) => {
+  const openEdit = useCallback((u: User) => {
     setSelected(u);
     setForm({
       username: u.username,
@@ -108,7 +108,7 @@ export default function UsersPage() {
       last_name: u.last_name ?? "",
     });
     setEditOpen(true);
-  };
+  }, []);
 
   const createUser = async () => {
     try {
@@ -174,7 +174,7 @@ export default function UsersPage() {
     }
   };
 
-  const deleteUser = async (u: User) => {
+  const deleteUser = useCallback(async (u: User) => {
     if (!confirm(`Supprimer l'utilisateur ${u.email} ?`)) return;
     try {
       const res = await apiRequest(`/users/${u.id}`, { method: "DELETE" });
@@ -192,7 +192,7 @@ export default function UsersPage() {
       setError(`Erreur réseau ${msg}`);
       snackbar.error("Erreur réseau", { title: "Users", details: msg });
     }
-  };
+  }, [snackbar, setError, setRefreshTick]);
 
   type UsersSearchResponse = {
     offset: number;

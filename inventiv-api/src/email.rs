@@ -146,7 +146,7 @@ impl EmailService {
             .parse()
             .map_err(|_| EmailError::InvalidAddress("to".to_string()))?;
 
-        let mut builder = Message::builder()
+        let builder = Message::builder()
             .from(from_mailbox)
             .to(to_mailbox)
             .subject(subject);

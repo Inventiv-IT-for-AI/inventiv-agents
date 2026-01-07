@@ -157,7 +157,7 @@ impl MockProvider {
 
         // Execute with timeout (30 seconds max for docker compose up)
         // Use spawn + select to allow killing the process on timeout
-        let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+        let child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
             Ok(c) => c,
             Err(e) => {
                 return Err(anyhow::anyhow!(
@@ -217,7 +217,7 @@ impl MockProvider {
             ip_cmd.stdout(Stdio::piped()).stderr(Stdio::null());
 
             match ip_cmd.spawn() {
-                Ok(mut child) => {
+                Ok(child) => {
                     // Get child ID before select! since wait_with_output() takes ownership
                     let child_id_opt = child.id();
                     let ip_result = tokio::select! {

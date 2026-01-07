@@ -212,7 +212,7 @@ impl CloudProvider for ScalewayProvider {
                 server_id, volumes_debug
             );
 
-            let has_local_volumes = volumes.map_or(false, |vols| {
+            let has_local_volumes = volumes.is_some_and(|vols| {
                 vols.iter().any(|v| {
                     // Check if volume is local (volume_type="l_ssd" indicates local volume)
                     // For L40S instances, ANY volume with volume_type="l_ssd" is problematic
@@ -1172,7 +1172,7 @@ impl CloudProvider for ScalewayProvider {
                     server_id
                 );
                 // Wait longer and verify state before retry
-                if let Ok(_) = self.stop_instance(zone, server_id).await {
+                if self.stop_instance(zone, server_id).await.is_ok() {
                     // Wait a bit more and verify state
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                     let verify_state = self.get_server_state(zone, server_id).await?;
@@ -2400,7 +2400,7 @@ impl CloudProvider for ScalewayProvider {
             .get("volumes")
             .and_then(|v| v.as_object())
             .cloned()
-            .unwrap_or_else(|| serde_json::Map::new());
+            .unwrap_or_else(serde_json::Map::new);
 
         // Build CLI command arguments: volume-ids.0=<id0> volume-ids.1=<id1> ...
         let mut volume_ids = Vec::new();

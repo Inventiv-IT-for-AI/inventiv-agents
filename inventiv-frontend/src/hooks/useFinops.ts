@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { apiUrl } from "@/lib/api";
 import {
     FinopsCostsDashboardSummaryResponse,
@@ -14,7 +14,7 @@ export function useFinopsCosts() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
-    const fetchAll = async () => {
+    const fetchAll = useCallback(async () => {
         try {
             setLoading(true);
             const [summaryRes, breakdownRes] = await Promise.all([
@@ -42,9 +42,9 @@ export function useFinopsCosts() {
         } finally {
             setLoading(false);
         }
-    };
+    }, [window]);
 
-    const fetchSeries = async () => {
+    const fetchSeries = useCallback(async () => {
         try {
             const res = await fetch(
                 apiUrl(`finops/dashboard/costs/series?window=${encodeURIComponent(window)}&limit_points=220`)
@@ -59,7 +59,7 @@ export function useFinopsCosts() {
             console.error("FinOps series fetch error:", err);
             setSeries(null);
         }
-    };
+    }, [window]);
 
     useEffect(() => {
         fetchAll(); // initial
@@ -69,7 +69,7 @@ export function useFinopsCosts() {
             fetchSeries();
         }, 10000); // every 10s
         return () => clearInterval(interval);
-    }, [window]);
+    }, [window, fetchAll, fetchSeries]);
 
     return {
         summary,

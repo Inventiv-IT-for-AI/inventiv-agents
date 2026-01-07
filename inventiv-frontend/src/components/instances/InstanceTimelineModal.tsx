@@ -161,7 +161,7 @@ export function InstanceTimelineModal({
     return iconMap[def?.icon || "Activity"] || Server;
   };
 
-  const getCategoryDotClass = (actionType: string) => {
+  const getCategoryDotClass = useCallback((actionType: string) => {
     const def = actionTypes[actionType];
     const cat = def?.category || "";
     if (cat === "create") return "bg-orange-500";
@@ -170,14 +170,14 @@ export function InstanceTimelineModal({
     if (cat === "archive") return "bg-gray-600";
     if (cat === "reconcile") return "bg-yellow-600";
     return "bg-slate-400";
-  };
+  }, [actionTypes]);
 
-  const formatActionLabel = (actionType: string) =>
+  const formatActionLabel = useCallback((actionType: string) =>
     actionTypes[actionType]?.label ??
     actionType
       .toLowerCase()
       .replace(/_/g, " ")
-      .replace(/\b\w/g, (l) => l.toUpperCase());
+      .replace(/\b\w/g, (l) => l.toUpperCase()), [actionTypes]);
 
   const formatDuration = (ms: number | null) => {
     if (!ms) return "-";
@@ -324,7 +324,7 @@ export function InstanceTimelineModal({
         ),
       },
     ];
-  }, [actionTypes, formatActionLabel, getCategoryDotClass]);
+  }, [formatActionLabel, getCategoryDotClass]);
 
   const fetchAllActions = useCallback(async (): Promise<ActionLog[]> => {
     const allActions: ActionLog[] = [];
