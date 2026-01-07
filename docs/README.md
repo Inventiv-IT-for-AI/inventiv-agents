@@ -9,11 +9,13 @@ These documents are **must-read** and must be kept up-to-date:
 - **[README.md](../README.md)** - Project overview and quickstart
 - **[TODO.md](../TODO.md)** - Roadmap and current status
 - **[architecture.md](architecture.md)** - Technical architecture overview
-- **[domain_design.md](domain_design.md)** - Domain model and data structures (DDD)
-- **[specification.md](specification.md)** - General specification and features
+- **[domain_design_and_data_model.md](domain_design_and_data_model.md)** - Domain model and data structures (DDD)
+- **[project_requirements.md](project_requirements.md)** - Project requirements and general specification
+- **[specification.md](specification.md)** - General specification and features (legacy, see project_requirements.md)
 - **[ui_design_system.md](ui_design_system.md)** - UI design system and component conventions
 - **[ia_widgets.md](ia_widgets.md)** - AI UI widgets documentation
 - **[engineering_guidelines.md](engineering_guidelines.md)** - Code quality and best practices
+- **[testing.md](testing.md)** - Testing strategies and test plans
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** - Contribution guidelines
 - **[DEVELOPMENT_SETUP.md](DEVELOPMENT_SETUP.md)** - Development environment setup
 
@@ -42,21 +44,23 @@ These documents are **must-read** and must be kept up-to-date:
 - **[MOCK_REAL_VLLM_USAGE.md](MOCK_REAL_VLLM_USAGE.md)** - Mock vLLM usage guide
 - **[VLLM_IMAGE_SELECTION_ARCHITECTURE.md](VLLM_IMAGE_SELECTION_ARCHITECTURE.md)** - vLLM image selection
 
-### Test Plans
+### Testing
+- **[testing.md](testing.md)** - Testing guide and strategies (consolidated)
 - **[TEST_PLAN_CHAT_SESSIONS.md](TEST_PLAN_CHAT_SESSIONS.md)** - Chat sessions test plan
 - **[TEST_PLAN_STORAGE_MANAGEMENT.md](TEST_PLAN_STORAGE_MANAGEMENT.md)** - Storage management test plan
 
 ## 🏢 Multi-Tenant Documentation
 
-Active plans and implementation guides:
+Active plans and implementation guides (see `syntheses/` directory):
 
-- **[MULTI_TENANT_ROADMAP.md](MULTI_TENANT_ROADMAP.md)** - Multi-tenant roadmap
-- **[MULTI_TENANT_MODEL_SHARING_BILLING.md](MULTI_TENANT_MODEL_SHARING_BILLING.md)** - Model sharing and billing
-- **[MULTI_TENANT_MIGRATION_PLAN.md](MULTI_TENANT_MIGRATION_PLAN.md)** - Migration plan
-- **[MULTI_TENANT_MIGRATION_TRACKER.md](MULTI_TENANT_MIGRATION_TRACKER.md)** - Migration progress tracker
-- **[RBAC_ANALYSIS.md](RBAC_ANALYSIS.md)** - Role-Based Access Control analysis
-- **[MULTI_TENANT_NEXT_STEPS.md](MULTI_TENANT_NEXT_STEPS.md)** - Next steps (active plan)
-- **[MULTI_TENANT_STATUS_2025.md](MULTI_TENANT_STATUS_2025.md)** - Current status
+- **[syntheses/MULTI_TENANT_ROADMAP.md](syntheses/MULTI_TENANT_ROADMAP.md)** - Multi-tenant roadmap
+- **[syntheses/MULTI_TENANT_MODEL_SHARING_BILLING.md](syntheses/MULTI_TENANT_MODEL_SHARING_BILLING.md)** - Model sharing and billing
+- **[syntheses/MULTI_TENANT_MIGRATION_PLAN.md](syntheses/MULTI_TENANT_MIGRATION_PLAN.md)** - Migration plan
+- **[syntheses/MULTI_TENANT_MIGRATION_TRACKER.md](syntheses/MULTI_TENANT_MIGRATION_TRACKER.md)** - Migration progress tracker
+- **[syntheses/RBAC_ANALYSIS.md](syntheses/RBAC_ANALYSIS.md)** - Role-Based Access Control analysis
+- **[syntheses/MULTI_TENANT_NEXT_STEPS.md](syntheses/MULTI_TENANT_NEXT_STEPS.md)** - Next steps (active plan)
+- **[syntheses/MULTI_TENANT_STATUS_2025.md](syntheses/MULTI_TENANT_STATUS_2025.md)** - Current status
+- **[syntheses/VISIBILITY_AND_DATA_MODEL_ANALYSIS.md](syntheses/VISIBILITY_AND_DATA_MODEL_ANALYSIS.md)** - Visibility and data model analysis
 
 ## 📊 Reference Documentation
 
@@ -66,9 +70,10 @@ Active plans and implementation guides:
 ## 📁 Documentation Organization
 
 ### `docs/syntheses/`
-Contains synthesis documents and action plans:
-- Active plans and roadmaps
-- Implementation summaries
+Contains synthesis documents and active action plans:
+- Multi-tenant implementation plans and roadmaps
+- Active analysis documents
+- Current status and next steps documents
 
 ### `docs/syntheses/archives/`
 Contains historical documents:
