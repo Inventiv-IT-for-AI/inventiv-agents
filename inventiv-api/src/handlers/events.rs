@@ -2,7 +2,6 @@
 use axum::extract::{Query, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use serde::Deserialize;
-use serde_json::json;
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;

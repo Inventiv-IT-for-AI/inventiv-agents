@@ -43,19 +43,28 @@ async fn test_login_success() {
 
 #[tokio::test]
 async fn test_login_invalid_credentials() {
+    // Ensure JWT_SECRET is set for tests
+    std::env::set_var("JWT_SECRET", "test-secret-key-for-testing-only");
+    std::env::set_var("JWT_ISSUER", "inventiv-api");
+
     let app = create_test_app_service().await;
     let server = TestServer::new(app).unwrap();
 
     let pool = get_test_db_pool().await;
 
+    // Clean up any existing test data
+    let _ = sqlx::query("DELETE FROM users WHERE email = 'test_login_invalid@test.com'")
+        .execute(&pool)
+        .await;
+
     // Create a test user
-    create_test_user(&pool, "test_user@test.com", "password123").await;
+    create_test_user(&pool, "test_login_invalid@test.com", "password123").await;
 
     // Test login with wrong password
     let response = server
         .post("/auth/login")
         .json(&json!({
-            "email": "test_user@test.com",
+            "email": "test_login_invalid@test.com",
             "password": "wrong_password"
         }))
         .await;

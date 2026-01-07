@@ -9,7 +9,6 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::app::AppState;
-use crate::auth;
 
 #[derive(Deserialize)]
 struct WorkerInstanceIdPayload {

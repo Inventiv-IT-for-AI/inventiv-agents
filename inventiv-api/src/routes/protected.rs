@@ -2,7 +2,7 @@
 use crate::app::AppState;
 use crate::auth;
 use axum::middleware;
-use axum::routing::{delete, get, post, put};
+use axum::routing::{get, post, put};
 use axum::Router;
 use std::sync::Arc;
 

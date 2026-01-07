@@ -7,7 +7,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use sqlx::Postgres;
 use std::sync::Arc;
-use utoipa::{IntoParams, ToSchema};
+use utoipa::IntoParams;
 
 use crate::app::state::AppState;
 use crate::progress;

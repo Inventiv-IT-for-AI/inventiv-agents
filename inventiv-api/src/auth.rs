@@ -302,10 +302,11 @@ pub async fn require_user(
                 .into_response()
         }
         Err(e) => {
-            tracing::debug!("Session verification error: {}", e);
+            tracing::error!("Session verification error: {}", e);
+            // Return 500 instead of 401 to indicate server error (not auth error)
             (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({"error":"unauthorized","message":"session_invalid_or_expired"})),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"internal_server_error","message":"session_verification_failed"})),
             )
                 .into_response()
         }
@@ -495,10 +496,13 @@ pub async fn verify_session_db(
 
     // Fetch the row and compare hash in Rust (avoids SQL string comparison issues)
     // Use a small buffer for expires_at comparison to avoid race conditions
+    // Handle NULL ip_address gracefully
     let row: Option<SessionRow> = sqlx::query_as(
         r#"
         SELECT id, user_id, current_organization_id, organization_role,
-               session_token_hash, ip_address::text as ip_address, user_agent,
+               session_token_hash, 
+               CASE WHEN ip_address IS NULL THEN NULL ELSE ip_address::text END as ip_address,
+               user_agent,
                created_at, last_used_at, expires_at, revoked_at
         FROM user_sessions
         WHERE id = $1
@@ -509,7 +513,15 @@ pub async fn verify_session_db(
     )
     .bind(session_id)
     .fetch_optional(db)
-    .await?;
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            "SQL error in verify_session_db for session_id={}: {}",
+            session_id,
+            e
+        );
+        anyhow::anyhow!("Database error: {}", e)
+    })?;
 
     let result = match row {
         Some(row) => row.session_token_hash == token_hash,
