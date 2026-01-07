@@ -61,7 +61,6 @@ export default function ChatPage() {
   }, [models, selectedModel]);
 
   const loadModels = useCallback(async () => {
-    setModelsError(null);
     try {
       const res = await fetch(apiUrl("/chat/models"), { cache: "no-store", credentials: "include" });
       if (!res.ok) {
@@ -70,18 +69,16 @@ export default function ChatPage() {
       }
       const data = (await res.json()) as ChatModel[];
       setModels(Array.isArray(data) ? data : []);
-      setModelsError(null);
-      if (!selectedModel && Array.isArray(data) && data.length > 0) {
-        setSelectedModel(data[0].model);
-      }
       if (Array.isArray(data) && data.length === 0) {
         setModelsError("Aucun modèle disponible (aucun worker READY).");
+      } else {
+        setModelsError(null);
       }
     } catch (e) {
       setModels([]);
       setModelsError(e instanceof Error ? e.message : String(e));
     }
-  }, [selectedModel]);
+  }, []);
 
   const loadRuns = useCallback(async () => {
     try {
