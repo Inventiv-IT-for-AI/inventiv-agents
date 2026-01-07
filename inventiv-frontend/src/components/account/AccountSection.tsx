@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label";
 import { OrganizationSection, type WorkspaceMe } from "./OrganizationSection";
 import { useSnackbar } from "ia-widgets";
 import { OrganizationMembersDialog } from "./OrganizationMembersDialog";
+import { SessionsDialog } from "./SessionsDialog";
 
 export type Me = WorkspaceMe & {
   user_id: string;
@@ -23,6 +24,7 @@ export type Me = WorkspaceMe & {
   last_name?: string | null;
   current_organization_name?: string | null;
   current_organization_slug?: string | null;
+  current_organization_role?: string | null;
 };
 
 export type AccountSectionProps = {
@@ -66,6 +68,7 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
   const [createOrgSaving, setCreateOrgSaving] = useState(false);
   const [createOrgError, setCreateOrgError] = useState<string | null>(null);
   const [orgMembersOpen, setOrgMembersOpen] = useState(false);
+  const [sessionsDialogOpen, setSessionsDialogOpen] = useState(false);
 
   const currentOrgRole = useMemo(() => {
     const orgId = me?.current_organization_id;
@@ -474,6 +477,9 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
                   <Button variant="outline" onClick={() => setOrgMembersOpen(true)}>
                     Membres & rôles
                   </Button>
+                  <Button variant="outline" onClick={() => setSessionsDialogOpen(true)}>
+                    Sessions actives
+                  </Button>
                 </div>
               ) : null}
               {me?.current_organization_name ? (
@@ -581,6 +587,11 @@ export function AccountSection({ onMeChange }: AccountSectionProps) {
         }}
         actorUserId={me?.user_id ?? null}
         actorOrgRole={currentOrgRole}
+      />
+
+      <SessionsDialog
+        open={sessionsDialogOpen}
+        onOpenChange={setSessionsDialogOpen}
       />
     </>
   );

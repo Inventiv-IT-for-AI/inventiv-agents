@@ -197,11 +197,23 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
   - `organization_models` (offering publié par org)
   - `organization_model_shares` (contrats provider→consumer, `pricing` JSONB)
   - extension `finops.inference_usage` pour attribuer `provider_organization_id` / `consumer_organization_id` + `unit_price_eur_per_1k_tokens` + `charged_amount_eur`
-- ✅ **Session Management**: Architecture multi-sessions avec `user_sessions` table, `session_token_hash` pour sécurité, support de plusieurs sessions actives par user avec organisations différentes.
+- ✅ **RBAC Foundation**: Module RBAC avec rôles Owner/Admin/Manager/User, règles de délégation, double activation (tech/eco).
+- ✅ **Gestion Membres**: Endpoints pour lister/changer rôle/retirer membres avec invariant "dernier owner".
+- ✅ **Bootstrap Default Org**: Création automatique org "Inventiv IT" avec admin comme owner.
 - ✅ **Password Reset Flow**: Intégration SMTP Scaleway TEM, génération de tokens sécurisés, emails de réinitialisation, endpoints API complets.
 - ✅ **Code Reorganization**: Refactoring majeur de `main.rs` (~3500 lignes → ~86 lignes), extraction en modules `config/`, `setup/`, `routes/`, `handlers/` pour meilleure maintenabilité.
 - ✅ **Integration Tests**: Infrastructure de tests d'intégration avec `axum-test`, tests pour auth, deployments, instances (Mock provider uniquement pour éviter coûts cloud).
 - ✅ **Axum 0.8 Upgrade**: Migration vers `axum 0.8` et `axum-test 18.0`, corrections pour `async_trait`, `SwaggerUi`, `FromRequestParts`, compatibilité OpenAPI avec `utoipa 5.4`.
+- ⏳ **Architecture Sessions Multi-Org**: Table `user_sessions` pour plusieurs sessions simultanées avec orgs différentes (voir `docs/SESSION_ARCHITECTURE_PROPOSAL.md`).
+- ⏳ **Scoping Instances**: Isoler instances par `organization_id` + RBAC.
+- ⏳ **Scoping Models**: Isoler modèles par `organization_id` + visibilité publique/privée.
+- ⏳ **Invitations**: Inviter users par email dans une organisation.
+- ⏳ **Scoping API Keys**: Isoler clés API par `organization_id`.
+- ⏳ **Scoping Users**: Filtrer liste users selon workspace.
+- ⏳ **Scoping FinOps**: Filtrer dashboards financiers selon workspace.
+- ⏳ **Migration Frontend Modules**: Masquer/afficher modules selon workspace + rôle.
+- ⏳ **Double Activation**: Activation technique (Admin) + économique (Manager) par ressource.
+- ⏳ **Model Sharing & Billing**: Partage modèles entre orgs avec facturation au token.
 
 📄 Doc: `docs/MULTI_TENANT_MODEL_SHARING_BILLING.md` (pricing v1 = **€/1k tokens**)
 - **Tenants v1 (Org isolation)**:
@@ -247,15 +259,32 @@ Ce fichier reflète l’état **réel** du repo (code + migrations + UI) et la s
 
 ---
 
-## 🎯 Next steps (3–7 priorités)
+## 🎯 Next steps Multi-Tenant (priorités)
 
-1) **Deploy Staging + DNS** (`studio-stg.inventiv-agents.fr`) avec routing propre UI/API + certs  
-2) **Streaming Workbench** (UX + robustesse)  
-3) **Observability** (metrics + dashboards minimum viable)  
-4) **FinOps tokens** (in/out) + agrégations par API_KEY/User/Model  
-5) **Tenants + RBAC** (premier cut)  
-6) **LB hardening** + signaux worker (queue depth / TTFT)  
-7) **Autoscaling MVP** (politiques + cooldowns)
+**Phase Immédiate (Sprint 1)** :
+1) **Architecture Sessions Multi-Org** : Table `user_sessions`, migration `current_organization_id`, enrichir JWT avec `session_id` + `organization_role`  
+2) **Migration PK/FK** : Appliquer migration `20260106000000_add_multi_tenant_primary_keys_and_foreign_keys.sql`
+
+**Phase Court Terme (Sprint 2-3)** :
+3) **Scoping Instances** : Migration SQL + API + UI + Tests pour isoler instances par `organization_id`  
+4) **Scoping Models** : Migration SQL + API + UI + Tests pour isoler modèles par `organization_id`  
+5) **Invitations** : Migration SQL + API + UI + Tests pour inviter users par email
+
+**Phase Moyen Terme (Sprint 4-6)** :
+6) **Scoping API Keys** : API + UI + Tests  
+7) **Scoping Users** : API + UI + Tests  
+8) **Scoping FinOps** : API + UI + Tests  
+9) **Migration Frontend Modules** : Masquer/afficher selon workspace + rôle
+
+**Phase Long Terme (Sprint 7+)** :
+10) **Double Activation** : Tech (Admin) + Eco (Manager) par ressource  
+11) **Model Sharing & Billing** : Partage modèles entre orgs avec facturation au token
+
+**Autres priorités** :
+- **Deploy Staging + DNS** (`studio-stg.inventiv-agents.fr`) avec routing propre UI/API + certs  
+- **Observability** (metrics + dashboards minimum viable)  
+- **LB hardening** + signaux worker (queue depth / TTFT)  
+- **Autoscaling MVP** (politiques + cooldowns)
 
 ---
 

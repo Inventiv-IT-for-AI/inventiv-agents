@@ -52,6 +52,14 @@ pub fn create_protected_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/auth/me/password",
             put(auth_endpoints::change_password),
         )
+        .route(
+            "/auth/sessions",
+            get(auth_endpoints::list_sessions),
+        )
+        .route(
+            "/auth/sessions/{session_id}/revoke",
+            post(auth_endpoints::revoke_session_endpoint),
+        )
         // Chat (UI): list allowed models for current workspace
         .route("/chat/models", get(chat::list_chat_models))
         // Organizations (multi-tenant MVP)

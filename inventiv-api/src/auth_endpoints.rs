@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
@@ -47,6 +47,7 @@ pub struct MeResponse {
     pub current_organization_id: Option<uuid::Uuid>,
     pub current_organization_name: Option<String>,
     pub current_organization_slug: Option<String>,
+    pub current_organization_role: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -297,6 +298,7 @@ pub async fn me(
         current_organization_id: user.current_organization_id,
         current_organization_name: org_name,
         current_organization_slug: org_slug,
+        current_organization_role: user.current_organization_role,
     })
     .into_response()
 }
@@ -429,6 +431,7 @@ pub async fn update_me(
                 current_organization_id: user.current_organization_id,
                 current_organization_name: org_name,
                 current_organization_slug: org_slug,
+                current_organization_role: user.current_organization_role,
             })
             .into_response()
         }
@@ -521,5 +524,185 @@ pub async fn change_password(
             Json(json!({"error":"db_error","message": e.to_string()})),
         )
             .into_response(),
+    }
+}
+
+// ============================================================================
+// Session Management Endpoints
+// ============================================================================
+
+#[derive(Debug, Serialize)]
+pub struct SessionResponse {
+    pub session_id: uuid::Uuid,
+    pub current_organization_id: Option<uuid::Uuid>,
+    pub current_organization_name: Option<String>,
+    pub organization_role: Option<String>,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub last_used_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+    pub is_current: bool,
+}
+
+#[derive(sqlx::FromRow)]
+struct SessionRow {
+    id: uuid::Uuid,
+    current_organization_id: Option<uuid::Uuid>,
+    current_organization_name: Option<String>,
+    organization_role: Option<String>,
+    ip_address: Option<String>,
+    user_agent: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    last_used_at: chrono::DateTime<chrono::Utc>,
+    expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// List all active sessions for the current user
+pub async fn list_sessions(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
+) -> impl IntoResponse {
+    let current_session_id = match uuid::Uuid::parse_str(&user.session_id) {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"invalid_session_id"})),
+            )
+                .into_response();
+        }
+    };
+
+    let rows: Vec<SessionRow> = match sqlx::query_as(
+        r#"
+        SELECT 
+            us.id,
+            us.current_organization_id,
+            o.name as current_organization_name,
+            us.organization_role,
+            us.ip_address::text as ip_address,
+            us.user_agent,
+            us.created_at,
+            us.last_used_at,
+            us.expires_at
+        FROM user_sessions us
+        LEFT JOIN organizations o ON o.id = us.current_organization_id
+        WHERE us.user_id = $1
+          AND us.revoked_at IS NULL
+          AND us.expires_at > NOW()
+        ORDER BY us.last_used_at DESC
+        "#,
+    )
+    .bind(user.user_id)
+    .fetch_all(&state.db)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!("Failed to fetch sessions: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"db_error","message": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let sessions: Vec<SessionResponse> = rows
+        .into_iter()
+        .map(|row| SessionResponse {
+            session_id: row.id,
+            current_organization_id: row.current_organization_id,
+            current_organization_name: row.current_organization_name,
+            organization_role: row.organization_role,
+            ip_address: row.ip_address,
+            user_agent: row.user_agent,
+            created_at: row.created_at,
+            last_used_at: row.last_used_at,
+            expires_at: row.expires_at,
+            is_current: row.id == current_session_id,
+        })
+        .collect();
+
+    Json(sessions).into_response()
+}
+
+/// Revoke a specific session
+pub async fn revoke_session_endpoint(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
+    Path(session_id): Path<uuid::Uuid>,
+) -> impl IntoResponse {
+    // Verify that session_id belongs to user_id (security check)
+    let session_user_id: Option<uuid::Uuid> = match sqlx::query_scalar(
+        r#"
+        SELECT user_id 
+        FROM user_sessions 
+        WHERE id = $1 
+          AND revoked_at IS NULL
+        "#,
+    )
+    .bind(session_id)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(id)) => Some(id),
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error":"session_not_found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!("Failed to verify session ownership: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"db_error","message": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    if session_user_id != Some(user.user_id) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"forbidden","message":"session_does_not_belong_to_user"})),
+        )
+            .into_response();
+    }
+
+    // Prevent revoking the current session (user should use logout instead)
+    let current_session_id = match uuid::Uuid::parse_str(&user.session_id) {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"invalid_session_id"})),
+            )
+                .into_response();
+        }
+    };
+
+    if session_id == current_session_id {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"cannot_revoke_current_session","message":"use_logout_endpoint_instead"})),
+        )
+            .into_response();
+    }
+
+    // Revoke the session
+    match auth::revoke_session(&state.db, session_id).await {
+        Ok(_) => Json(json!({"status":"ok","message":"session_revoked"})).into_response(),
+        Err(e) => {
+            tracing::error!("Failed to revoke session: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"db_error","message": e.to_string()})),
+            )
+                .into_response()
+        }
     }
 }
