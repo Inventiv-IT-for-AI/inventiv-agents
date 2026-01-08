@@ -1,96 +1,105 @@
 # Résumé Exécutif - Merge V1.0.0
 
 ## 🎯 Objectif
-Fusionner la branche `full-i18n` (i18n complet) dans `main` (multi-tenancy) pour préparer la release V1.0.0.
+Fusionner la branche `full-i18n` (i18n complet) dans `main` (multi-tenancy + RBAC) pour créer la version **V1.0.0**.
 
 ## 📊 État actuel
 
 ### Branches
 - **`main`**: v0.6.1 - Multi-tenancy complet + RBAC
-- **`full-i18n`**: v0.4.0 - Support i18n (fr-FR, en-US, ar)
+- **`full-i18n`**: v0.4.0 - Support i18n complet (fr-FR, en-US, ar)
 
 ### Divergence
-- **446 fichiers modifiés** entre les deux branches
-- **~25 commits** dans `main` non présents dans `full-i18n`
-- **~15 commits** dans `full-i18n` non présents dans `main`
-- **2 fichiers** avec changements non commités
+- **77 commits** dans `main` non présents dans `full-i18n`
+- **15 commits** dans `full-i18n` non présents dans `main`
+- **29 fichiers** modifiés entre les deux branches
 
 ## ⚠️ Conflits majeurs identifiés
 
-### 1. Fichiers avec conflits critiques (6 fichiers)
-- `inventiv-api/src/main.rs` - Endpoints + queries
-- `inventiv-api/src/auth_endpoints.rs` - Structures + session management
-- `inventiv-api/src/users_endpoint.rs` - CRUD users avec orgs + locale
-- `inventiv-api/src/bootstrap_admin.rs` - Création admin
-- `inventiv-api/src/settings.rs` - Organization-scoped + i18n queries
-- `inventiv-api/src/instance_type_zones.rs` - Organization-scoped + i18n
+### 6 fichiers nécessitent une résolution manuelle :
 
-### 2. Migrations SQL
-- ✅ **Compatibles**: Les migrations i18n utilisent `IF NOT EXISTS` et sont idempotentes
-- ✅ **Ordre**: Les migrations i18n peuvent être appliquées après le baseline multi-tenant
+1. **`inventiv-api/src/main.rs`**
+   - `main`: endpoints organizations
+   - `full-i18n`: endpoints i18n (`/locales`)
+   - **Action**: Combiner les deux
 
-## ✅ Points positifs
+2. **`inventiv-api/src/auth_endpoints.rs`**
+   - `main`: session management avec `current_organization_id`
+   - `full-i18n`: `locale_code` dans MeResponse
+   - **Action**: Ajouter `locale_code` aux structures de `main`
 
-1. **Pas de conflit de schéma**: Les migrations i18n sont compatibles avec le schema multi-tenant
-2. **Code complémentaire**: Les fonctionnalités i18n et multi-tenancy sont complémentaires
-3. **Frontend isolé**: Le code i18n frontend est nouveau et n'a pas de conflit
+3. **`inventiv-api/src/users_endpoint.rs`**
+   - `main`: `organization_id` dans UserResponse
+   - `full-i18n`: `locale_code` dans UserResponse
+   - **Action**: Combiner les deux champs
 
-## 📋 Plan d'action (simplifié)
+4. **`inventiv-api/src/bootstrap_admin.rs`**
+   - `main`: `ensure_default_organization`
+   - `full-i18n`: `locale_code='fr-FR'`
+   - **Action**: Créer admin avec organization ET locale_code
 
-### Étape 1: Préparation
-```bash
-# Sauvegarder les changements non commités
-git stash push -m "WIP avant merge v1.0.0"
+5. **`inventiv-api/src/settings.rs`**
+   - `main`: filtering par `organization_id`
+   - `full-i18n`: queries avec `i18n_get_text`
+   - **Action**: Combiner les deux dans toutes les queries
 
-# Mettre à jour full-i18n avec main
-git checkout full-i18n
-git fetch origin
-git merge origin/main
-```
+6. **`inventiv-api/src/instance_type_zones.rs`**
+   - Même approche que `settings.rs`
 
-### Étape 2: Résolution des conflits
-1. **`main.rs`**: Ajouter endpoints organizations + conserver endpoints i18n
-2. **`auth_endpoints.rs`**: Ajouter `locale_code` aux structures existantes
-3. **`users_endpoint.rs`**: Combiner organization_id et locale_code
-4. **`bootstrap_admin.rs`**: Créer admin avec org + locale
-5. **`settings.rs`**: Combiner filtering org + i18n queries
-6. **`instance_type_zones.rs`**: Même approche que settings.rs
+## ✅ Compatibilité des migrations
 
-### Étape 3: Tests
-- Tests unitaires pour chaque endpoint modifié
-- Tests d'intégration pour vérifier org + i18n ensemble
-- Tests de migration sur DB vide et existante
+### Migrations multi-tenant (`main`)
+- Tables: `organizations`, `organization_memberships`, `user_sessions`
+- Colonnes: `organization_id` dans plusieurs tables
 
-### Étape 4: Release
-```bash
-echo "1.0.0" > VERSION
-git commit -m "chore(release): v1.0.0 - Multi-tenancy + i18n"
-git tag -a v1.0.0 -m "Release v1.0.0"
-```
+### Migrations i18n (`full-i18n`)
+- Tables: `locales`, `i18n_keys`, `i18n_texts`
+- Colonnes: `locale_code` dans `users`, `*_i18n_id` dans catalog
 
-## ⏱️ Estimation
+### ✅ Compatibilité confirmée
+- Les migrations i18n sont **compatibles** avec le schéma multi-tenant
+- L'ordre chronologique est correct (baseline → i18n)
+- Pas de conflit de colonnes (locale_code vs organization_id sont complémentaires)
 
-- **Résolution conflits**: 4-6 heures
-- **Tests**: 2-3 heures
-- **Documentation**: 1-2 heures
-- **Total**: ~8-11 heures
+## 📋 Plan d'action
 
-## 🚨 Risques identifiés
+### Phase 1: Préparation
+1. ✅ Analyser les différences (FAIT)
+2. ✅ Vérifier compatibilité migrations (FAIT)
+3. ⏳ Créer branche de test pour merge
+4. ⏳ Merge `main` dans branche de test
 
-1. **Complexité de merge**: Les deux fonctionnalités touchent les mêmes fichiers
-2. **Tests nécessaires**: Vérifier que org + i18n fonctionnent ensemble
-3. **Migration données**: S'assurer que les données existantes sont compatibles
+### Phase 2: Résolution des conflits
+1. ⏳ Résoudre les 6 fichiers en conflit
+2. ⏳ Adapter les queries pour combiner organization + i18n
+3. ⏳ Vérifier que tous les endpoints fonctionnent
 
-## 📝 Prochaines étapes
+### Phase 3: Tests
+1. ⏳ Tests unitaires (organizations + i18n)
+2. ⏳ Tests d'intégration (ensemble)
+3. ⏳ Tests de migration (DB vide + existante)
+4. ⏳ Tests frontend (locale selector + organizations)
 
-1. ✅ Analyse complète terminée
-2. ⏳ Révision du rapport avec l'équipe
-3. ⏳ Décision sur l'approche de merge
-4. ⏳ Exécution du merge dans une branche de test
-5. ⏳ Tests et validation
-6. ⏳ Merge dans main et tag v1.0.0
+### Phase 4: Finalisation
+1. ⏳ Mise à jour VERSION → 1.0.0
+2. ⏳ Commit de merge
+3. ⏳ Tag v1.0.0
+4. ⏳ Documentation mise à jour
+
+## 🎯 Prochaines étapes
+
+1. **Créer une branche de test** pour le merge
+2. **Merger `main` dans la branche de test**
+3. **Résoudre les conflits** un par un
+4. **Tester exhaustivement** avant de merger dans `main`
+
+## 📝 Documents de référence
+
+- **Analyse détaillée**: `MERGE_ANALYSIS_V1.0.0_FINAL.md`
+- **Analyse originale**: `MERGE_ANALYSIS_V1.0.0.md`
 
 ---
 
-**Rapport détaillé**: Voir `MERGE_ANALYSIS_V1.0.0.md`
-
+**Date**: 2025-01-XX  
+**Auteur**: Analyse automatique  
+**Statut**: ✅ Prêt pour merge

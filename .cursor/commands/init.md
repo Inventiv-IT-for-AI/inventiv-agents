@@ -79,7 +79,17 @@ construire les URLs via apiUrl(path).
 
 - Types & contrats: src/lib/types.ts + hooks dédiés (src/hooks/useInstances.ts, useFinops.ts, useCatalog.ts) pour isoler fetch/DTO/transformations.
 
-# Pratiques importantes : logs structurés, idempotence migrations/seeds, séparation CQRS, adapters providers (mock/scaleway). 
+# Pratiques importantes : logs structurés, idempotence migrations/seeds, séparation CQRS, adapters providers (mock/scaleway).
+
+# Clean code / maintenabilité (important)
+- Ne pas “grossir” indéfiniment les fichiers d’entrée / fichiers pivots (`main.rs`, `page.tsx`, etc.).
+  Objectif: **code lisible, maintenable, testable**.
+- Appliquer le principe **SRP** (Single Responsibility Principle) : *un fichier / un module / une mission*.
+- Préférer **extraire** la logique dans:
+  - Rust: `mod`, services, handlers, modules dédiés + fonctions courtes.
+  - Frontend: composants `ui/*` ou `ia-widgets` (si réutilisable), composants feature, hooks, lib/utils.
+- Garder `main.rs` / `page.tsx` comme **orchestrateurs** (wiring, routing, composition), pas comme “fourre-tout”.
+- Ajouter des tests quand la logique est non-triviale (ou rendre la logique testable via séparation).
 
 # Termine par une carte mentale des flux: UI→API→Redis→Orchestrator→Worker, et des points d’extension.
 
