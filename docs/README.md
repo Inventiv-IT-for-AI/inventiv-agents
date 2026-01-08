@@ -13,6 +13,7 @@ These documents are **must-read** and must be kept up-to-date:
 - **[project_requirements.md](project_requirements.md)** - Project requirements and general specification
 - **[ui_design_system.md](ui_design_system.md)** - UI design system and component conventions
 - **[ia_widgets.md](ia_widgets.md)** - AI UI widgets documentation
+- **[IADATA_TABLE_GUIDE.md](IADATA_TABLE_GUIDE.md)** - IADataTable component user guide
 - **[engineering_guidelines.md](engineering_guidelines.md)** - Code quality and best practices
 - **[testing.md](testing.md)** - Testing strategies and test plans
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** - Contribution guidelines

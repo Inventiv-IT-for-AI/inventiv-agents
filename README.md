@@ -12,7 +12,7 @@
 
 **Why it's useful**: Enables standardized deployment and scaling of LLM models (vLLM), with integrated financial tracking and granular control over cloud resources.
 
-📘 **Detailed documentation**: [Architecture](docs/architecture.md) | [Domain Design & Data Model](docs/domain_design_and_data_model.md) | [General Specifications](docs/specification.md) | [UI Design System](docs/ui_design_system.md) | [`ia-widgets`](docs/ia_widgets.md) | [Engineering Guidelines](docs/engineering_guidelines.md) | [State Machine & Progress](docs/STATE_MACHINE_AND_PROGRESS.md) | [Agent Version Management](docs/AGENT_VERSION_MANAGEMENT.md) | [Storage Management](docs/STORAGE_MANAGEMENT.md) | [Scaleway Provisioning](docs/SCALEWAY_PROVISIONING.md) | [CI/CD](docs/CI_CD.md) | [Documentation Index](docs/README.md)
+📘 **Detailed documentation**: [Architecture](docs/architecture.md) | [Domain Design & Data Model](docs/domain_design_and_data_model.md) | [General Specifications](docs/project_requirements.md) | [UI Design System](docs/ui_design_system.md) | [`ia-widgets`](docs/ia_widgets.md) | [Engineering Guidelines](docs/engineering_guidelines.md) | [State Machine & Progress](docs/STATE_MACHINE_AND_PROGRESS.md) | [Agent Version Management](docs/AGENT_VERSION_MANAGEMENT.md) | [Storage Management](docs/STORAGE_MANAGEMENT.md) | [Scaleway Provisioning](docs/SCALEWAY_PROVISIONING.md) | [CI/CD](docs/CI_CD.md) | [Documentation Index](docs/README.md)
 
 ## Key Features
 
@@ -367,7 +367,7 @@ psql "postgresql://postgres:password@localhost:5432/llminfra" -f seeds/catalog_s
 - **Terminator**: Cleanup of instances in `terminating`
 - **Watch-dog**: Detection of "orphan" instances (deleted by provider)
 
-**Handlers**: `services::*` + state machine (see [docs/specification_generale.md](docs/specification_generale.md))
+**Handlers**: `services::*` + state machine (see [docs/project_requirements.md](docs/project_requirements.md))
 
 ## API (inventiv-api)
 

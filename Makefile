@@ -22,6 +22,8 @@ MOCK_RUNTIME_WATCH_LOG ?= .mock_runtime_watch.log
 
 # UI host port (computed from PORT_OFFSET by default)
 UI_HOST_PORT ?= $(shell off="$(PORT_OFFSET)"; if [ -z "$$off" ]; then off=0; fi; echo $$((3000 + $$off)))
+# DB host port (computed from PORT_OFFSET by default)
+DB_HOST_PORT ?= $(shell off="$(PORT_OFFSET)"; if [ -z "$$off" ]; then off=0; fi; echo $$((5432 + $$off)))
 
 # Container promotion (immutable tags)
 IMAGE_TAG ?= $(GIT_SHA)
@@ -255,8 +257,8 @@ nuke: dev-delete
 
 ui:
 	@$(MAKE) check-dev-env
-	@echo "🖥️  UI (Docker) on http://localhost:$(UI_HOST_PORT)  [PORT_OFFSET=$(PORT_OFFSET)]"
-	@ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" UI_HOST_PORT=$(UI_HOST_PORT) PORT_OFFSET=$(PORT_OFFSET) \
+	@echo "🖥️  UI (Docker) on http://localhost:$(UI_HOST_PORT)  [PORT_OFFSET=$(PORT_OFFSET), DB_PORT=$(DB_HOST_PORT)]"
+	@ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" UI_HOST_PORT=$(UI_HOST_PORT) PORT_OFFSET=$(PORT_OFFSET) DB_HOST_PORT="$(DB_HOST_PORT)" \
 	  $(COMPOSE_LOCAL) --profile ui up -d --remove-orphans frontend
 
 .PHONY: ui-down
@@ -341,16 +343,16 @@ mock-runtime-watch-down:
 # All-in-one local stack (control-plane + UI + local mock worker).
 .PHONY: local-up local-down
 local-up:
-	@echo "🚀 LOCAL up (api+orchestrator+db+redis + ui)  [PORT_OFFSET=$(PORT_OFFSET)]"
+	@echo "🚀 LOCAL up (api+orchestrator+db+redis + ui)  [PORT_OFFSET=$(PORT_OFFSET), DB_PORT=$(DB_HOST_PORT)]"
 	@$(MAKE) check-dev-env
-	@ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" UI_HOST_PORT="$(UI_HOST_PORT)" PORT_OFFSET="$(PORT_OFFSET)" \
+	@ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" UI_HOST_PORT="$(UI_HOST_PORT)" PORT_OFFSET="$(PORT_OFFSET)" DB_HOST_PORT="$(DB_HOST_PORT)" \
 	  $(COMPOSE_LOCAL) --profile ui up -d --build --remove-orphans
 	@# Mock provider now manages runtimes automatically (no external watcher needed)
 
 local-down:
-	@echo "🛑 LOCAL down (stop all local services)  [PORT_OFFSET=$(PORT_OFFSET)]"
+	@echo "🛑 LOCAL down (stop all local services)  [PORT_OFFSET=$(PORT_OFFSET), DB_PORT=$(DB_HOST_PORT)]"
 	@$(MAKE) check-dev-env
-	@ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" UI_HOST_PORT="$(UI_HOST_PORT)" PORT_OFFSET="$(PORT_OFFSET)" \
+	@ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" UI_HOST_PORT="$(UI_HOST_PORT)" PORT_OFFSET="$(PORT_OFFSET)" DB_HOST_PORT="$(DB_HOST_PORT)" \
 	  $(COMPOSE_LOCAL) --profile ui stop >/dev/null 2>&1 || true
 	@# Mock provider manages runtimes, but we can do a best-effort cleanup of orphaned runtimes
 	@docker ps -a --filter "name=mockrt-" --format "{{.Names}}" | xargs -r docker rm -f >/dev/null 2>&1 || true
@@ -410,7 +412,7 @@ api-unexpose:
 dev-create:
 	@echo "🚀 DEV create (docker-compose.yml, hot reload)"
 	@$(MAKE) check-dev-env
-	ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" PORT_OFFSET="$(PORT_OFFSET)" \
+	ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" PORT_OFFSET="$(PORT_OFFSET)" DB_HOST_PORT="$(DB_HOST_PORT)" \
 	  $(COMPOSE_LOCAL) up -d --build --remove-orphans
 
 dev-create-edge:
@@ -418,7 +420,7 @@ dev-create-edge:
 
 dev-start:
 	@$(MAKE) check-dev-env
-	ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" PORT_OFFSET="$(PORT_OFFSET)" \
+	ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" PORT_OFFSET="$(PORT_OFFSET)" DB_HOST_PORT="$(DB_HOST_PORT)" \
 	  $(COMPOSE_LOCAL) up -d --remove-orphans
 
 dev-start-edge:
@@ -426,7 +428,7 @@ dev-start-edge:
 
 dev-stop:
 	@$(MAKE) check-dev-env
-	$(COMPOSE_LOCAL) stop
+	PORT_OFFSET="$(PORT_OFFSET)" DB_HOST_PORT="$(DB_HOST_PORT)" $(COMPOSE_LOCAL) stop
 
 dev-delete:
 	@$(MAKE) check-dev-env
@@ -453,11 +455,11 @@ dev-delete:
 
 dev-ps:
 	@$(MAKE) check-dev-env
-	$(COMPOSE_LOCAL) ps
+	PORT_OFFSET="$(PORT_OFFSET)" DB_HOST_PORT="$(DB_HOST_PORT)" $(COMPOSE_LOCAL) ps
 
 dev-logs:
 	@$(MAKE) check-dev-env
-	$(COMPOSE_LOCAL) logs -f --tail=200
+	PORT_OFFSET="$(PORT_OFFSET)" DB_HOST_PORT="$(DB_HOST_PORT)" $(COMPOSE_LOCAL) logs -f --tail=200
 
 dev-cert:
 	@$(MAKE) edge-cert

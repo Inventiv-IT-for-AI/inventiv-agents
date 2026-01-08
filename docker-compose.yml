@@ -10,11 +10,11 @@ services:
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=llminfra
+      - POSTGRES_DB=${POSTGRES_DB:-inventiv-agents}
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - db_data_${PORT_OFFSET:-0}:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "${DB_HOST_PORT:-5432}:5432"
 
   # --- LOCAL WORKER TEST (NO GPU) ---
   # Lightweight fake vLLM that serves GET /v1/models for readiness checks.
@@ -108,7 +108,7 @@ services:
       # Docker socket: allow orchestrator to manage mock runtimes via docker compose
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
-      - DATABASE_URL=postgresql://postgres:password@db:5432/llminfra
+      - DATABASE_URL=postgresql://postgres:password@db:5432/${POSTGRES_DB:-inventiv-agents}
       - REDIS_URL=redis://redis:6379
       - CARGO_TARGET_DIR=/app/target/inventiv-orchestrator
       # Enable optional provider implementations via Cargo features (dev/test only).
@@ -165,7 +165,7 @@ services:
       - ${SECRETS_DIR:-./deploy/secrets}:/run/secrets:ro
     environment:
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=postgresql://postgres:password@db:5432/llminfra
+      - DATABASE_URL=postgresql://postgres:password@db:5432/${POSTGRES_DB:-inventiv-agents}
       - CARGO_TARGET_DIR=/app/target/inventiv-api
       - AUTO_SEED_CATALOG=1
       - SEED_CATALOG_PATH=/app/seeds/catalog_seeds.sql
@@ -215,7 +215,7 @@ services:
       - .:/app # Source code mount for hot reload
     environment:
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=postgresql://postgres:password@db:5432/llminfra
+      - DATABASE_URL=postgresql://postgres:password@db:5432/${POSTGRES_DB:-inventiv-agents}
       - CARGO_TARGET_DIR=/app/target/inventiv-finops
       - RUST_LOG=debug
     depends_on:
@@ -224,5 +224,8 @@ services:
 
 volumes:
   redis_data:
-  db_data:
+  # DB volumes isolated by PORT_OFFSET (one per worktree)
+  db_data_0:        # Default worktree (PORT_OFFSET=0)
+  db_data_10000:    # Worktree with PORT_OFFSET=10000
+  db_data_20000:    # Worktree with PORT_OFFSET=20000
   ui_node_modules:

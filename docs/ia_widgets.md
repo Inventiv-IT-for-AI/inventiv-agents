@@ -1,65 +1,63 @@
 # `ia-widgets` (Inventiv UI widgets)
 
-Package interne monorepo qui regroupe les **composants UI réutilisables** (cross-feature, potentiellement cross-projets).
+Internal monorepo package that groups **reusable UI components** (cross-feature, potentially cross-projects).
 
-## Emplacement
+## Location
 
 - Source: `inventiv-ui/ia-widgets`
-- Utilisation principale: `inventiv-frontend`
+- Main usage: `inventiv-frontend`
 
-## Règles de naming
+## Naming Rules
 
-- Tous les composants exposés par le package suivent le préfixe **`IA*`**
-  - Exemple: `AIToggle`, `IADataTable`
-- Objectif: identifier immédiatement les composants “portable UI” et éviter les noms “app-specific” (`Inventiv*`, `Active*`, etc.)
+- All components exposed by the package follow the **`IA*`** prefix
+  - Example: `AIToggle`, `IADataTable`
+- Goal: immediately identify "portable UI" components and avoid "app-specific" names (`Inventiv*`, `Active*`, etc.)
 
-## Import / usage
+## Import / Usage
 
-Dans `inventiv-frontend`, on importe depuis le package:
+In `inventiv-frontend`, import from the package:
 
 - `import { IADataTable, AIToggle } from "ia-widgets";`
 
-## Contenu actuel
+## Current Content
 
-- **`AIToggle`**: toggle compact (accent sky) pour états “active/inactive”.
-- **`IADataTable`**: table virtualisée (remote/local) avec:
-  - colonnes masquables/réordonnables/redimensionnables
-  - persistance localStorage par `listId`
-  - tri client/serveur
-- **`VirtualizedRemoteList`**, `useAvailableHeight`: utilitaires internes mais exposés car utilisés par d’autres composants.
+- **`AIToggle`**: compact toggle (sky accent) for "active/inactive" states.
+- **`IADataTable`**: virtualized table (remote/local) with:
+  - hideable/reorderable/resizable columns
+  - localStorage persistence by `listId`
+  - client/server sorting
+- **`VirtualizedRemoteList`**, `useAvailableHeight`: internal utilities but exposed as they're used by other components.
 
-## Relation avec `ia-designsys`
+## Relationship with `ia-designsys`
 
-- **`ia-designsys`** contient les primitives UI (Button/Dialog/Input/Select/Tabs…).
-- **`ia-widgets`** contient des widgets plus haut niveau et réutilisables, qui s’appuient sur `ia-designsys` (et/ou sur des primitives Radix/shadcn).
+- **`ia-designsys`** contains UI primitives (Button/Dialog/Input/Select/Tabs…).
+- **`ia-widgets`** contains higher-level reusable widgets that rely on `ia-designsys` (and/or Radix/shadcn primitives).
 
-## Quand ajouter un composant à `ia-widgets` ?
+## When to Add a Component to `ia-widgets`?
 
-✅ Ajoute dans `ia-widgets` si:
-- utilisé (ou prévu) dans **plusieurs écrans/features**
-- pattern stable (pas une expérimentation)
-- utile hors du projet (ou hors module)
+✅ Add to `ia-widgets` if:
+- used (or planned) in **multiple screens/features**
+- stable pattern (not an experiment)
+- useful outside the project (or outside the module)
 
-❌ Laisse dans `inventiv-frontend` si:
-- très spécifique à une feature (ex: UI monitoring très custom)
-- dépend fortement de l’API métier du projet
+❌ Keep in `inventiv-frontend` if:
+- very specific to a feature (e.g., very custom monitoring UI)
+- strongly depends on the project's business API
 
-## Process d’ajout (convention)
+## Addition Process (Convention)
 
-1. Valider le besoin + style (avec l’équipe) **avant** d’implémenter un nouveau widget.
-2. Implémenter dans `inventiv-ui/ia-widgets/src/*`
-3. Exporter dans `inventiv-ui/ia-widgets/src/index.ts`
-4. S’assurer que le composant:
-   - respecte les tokens (background/foreground/muted/border)
-   - gère focus/disabled/loading
-   - ne “hardcode” pas des styles app-specific
+1. Validate the need + style (with the team) **before** implementing a new widget.
+2. Implement in `inventiv-ui/ia-widgets/src/*`
+3. Export in `inventiv-ui/ia-widgets/src/index.ts`
+4. Ensure the component:
+   - respects tokens (background/foreground/muted/border)
+   - handles focus/disabled/loading
+   - doesn't "hardcode" app-specific styles
 
-## Notes techniques (types)
+## Technical Notes (Types)
 
-Aujourd’hui, `inventiv-frontend` transpile le code TS du package (workspaces monorepo).
+Today, `inventiv-frontend` transpiles the TS code of the package (monorepo workspaces).
 
-## Dev loop (auto-refresh)
+## Dev Loop (Auto-refresh)
 
-Nous faisons des itérations fréquentes sur `ia-widgets`. En dev Docker (`make ui`), on installe au **root** (npm workspaces) et Next tourne en **mode webpack** afin d’avoir un **watch/HMR fiable** sur les changements du package.
-
-
+We make frequent iterations on `ia-widgets`. In Docker dev (`make ui`), we install at the **root** (npm workspaces) and Next runs in **webpack mode** to have reliable **watch/HMR** on package changes.
