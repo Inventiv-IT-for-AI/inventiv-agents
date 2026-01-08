@@ -2,7 +2,33 @@ FROM rust:latest
 WORKDIR /app
 
 # Needed by orchestrator for SSH bootstrap fallback installs.
-RUN apt-get update && apt-get install -y openssh-client && rm -rf /var/lib/apt/lists/*
+# Also install Docker CLI for Mock provider runtime management (via Docker socket).
+# Install Scaleway CLI for Block Storage volume attachment (required for L4/L40S instances).
+RUN apt-get update && \
+    apt-get install -y openssh-client curl ca-certificates && \
+    # Install Docker CLI (static binary, works on any arch)
+    ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "amd64" ]; then \
+        DOCKER_ARCH="x86_64"; \
+    elif [ "$ARCH" = "arm64" ]; then \
+        DOCKER_ARCH="aarch64"; \
+    else \
+        DOCKER_ARCH="x86_64"; \
+    fi && \
+    curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-27.4.0.tgz" | \
+    tar -xz --strip-components=1 -C /usr/local/bin docker/docker && \
+    chmod +x /usr/local/bin/docker && \
+    # Install Docker Compose plugin v2
+    mkdir -p /usr/local/lib/docker/cli-plugins && \
+    curl -fsSL "https://github.com/docker/compose/releases/download/v2.27.1/docker-compose-linux-${DOCKER_ARCH}" -o /usr/local/lib/docker/cli-plugins/docker-compose && \
+    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose && \
+    # Install Scaleway CLI (required for Block Storage volume attachment)
+    # Scaleway CLI handles synchronization between Block Storage API and Instance API
+    SCW_ARCH=$(if [ "$ARCH" = "amd64" ]; then echo "amd64"; elif [ "$ARCH" = "arm64" ]; then echo "arm64"; else echo "amd64"; fi) && \
+    SCW_VERSION="2.49.0" && \
+    curl -fsSL "https://github.com/scaleway/scaleway-cli/releases/download/v${SCW_VERSION}/scaleway-cli_${SCW_VERSION}_linux_${SCW_ARCH}" -o /usr/local/bin/scw && \
+    chmod +x /usr/local/bin/scw && \
+    rm -rf /var/lib/apt/lists/*
 
 # Install cargo-watch for hot reload
 RUN cargo install cargo-watch
@@ -11,12 +37,14 @@ RUN cargo install cargo-watch
 COPY Cargo.toml Cargo.lock ./
 COPY inventiv-api/Cargo.toml ./inventiv-api/
 COPY inventiv-common/Cargo.toml ./inventiv-common/
+COPY inventiv-providers/Cargo.toml ./inventiv-providers/
 COPY inventiv-orchestrator/Cargo.toml ./inventiv-orchestrator/
 COPY inventiv-finops/Cargo.toml ./inventiv-finops/
 
 # Create dummy source files and build dependencies (caching layer)
-RUN mkdir -p inventiv-api/src inventiv-common/src inventiv-orchestrator/src inventiv-finops/src && \
+RUN mkdir -p inventiv-api/src inventiv-common/src inventiv-providers/src inventiv-orchestrator/src inventiv-finops/src && \
     echo "fn main() {}" > inventiv-api/src/main.rs && \
+    echo "" > inventiv-providers/src/lib.rs && \
     echo "fn main() {}" > inventiv-orchestrator/src/main.rs && \
     echo "fn main() {}" > inventiv-finops/src/main.rs && \
     echo "" > inventiv-common/src/lib.rs && \

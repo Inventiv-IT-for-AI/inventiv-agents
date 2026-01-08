@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type MouseEvent } from "react";
 import { formatDistanceToNow, parseISO } from "date-fns";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,8 +10,7 @@ import { RefreshCcw, Eye } from "lucide-react";
 import { apiUrl } from "@/lib/api";
 import { displayOrDash, formatEur } from "@/lib/utils";
 import type { Instance } from "@/lib/types";
-import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
-import { InventivDataTable, type DataTableSortState, type InventivDataTableColumn } from "@/components/shared/InventivDataTable";
+import { IADataTable, type DataTableSortState, type IADataTableColumn, type LoadRangeResult } from "ia-widgets";
 export default function Traces() {
     const [refreshTick, setRefreshTick] = useState(0);
     const [sort, setSort] = useState<DataTableSortState>(null);
@@ -52,7 +51,7 @@ export default function Traces() {
         [sort]
     );
 
-    const columns = useMemo<InventivDataTableColumn<Instance>[]>(() => {
+    const columns = useMemo<IADataTableColumn<Instance>[]>(() => {
         return [
             {
                 id: "id",
@@ -137,7 +136,7 @@ export default function Traces() {
                     <Button
                         variant="ghost"
                         size="icon"
-                        onClick={(e) => {
+                        onClick={(e: MouseEvent<HTMLButtonElement>) => {
                             e.stopPropagation();
                             openDetailsModal(row);
                         }}
@@ -171,7 +170,7 @@ export default function Traces() {
                     <CardTitle>Archived Instances</CardTitle>
                 </CardHeader>
                 <CardContent>
-                    <InventivDataTable<Instance>
+                    <IADataTable<Instance>
                         listId="traces:archived_instances"
                         title="Archived Instances"
                         dataKey={JSON.stringify({ refreshTick, sort })}

@@ -1,38 +1,53 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-const SESSION_COOKIE = process.env.SESSION_COOKIE_NAME ?? "inventiv_session";
+export function middleware(request: NextRequest) {
+  const sessionCookie = process.env.SESSION_COOKIE_NAME ?? "inventiv_session";
+  const token = request.cookies.get(sessionCookie)?.value;
 
-export function middleware(req: NextRequest) {
-  const { pathname } = req.nextUrl;
+  const pathname = request.nextUrl.pathname;
 
-  // Allow Next internals & static assets
+  // Debug logging (always enabled for now to debug cookie issue)
+  console.log("[Middleware] Path:", pathname);
+  console.log("[Middleware] Cookie name:", sessionCookie);
+  console.log("[Middleware] Cookie value:", token ? "present" : "missing");
+  const allCookies = Array.from(request.cookies.getAll());
+  console.log("[Middleware] All cookies:", allCookies.map(c => `${c.name}=${c.value.substring(0, 20)}...`));
+  console.log("[Middleware] Cookie header:", request.headers.get("cookie"));
+
+  // Allow access to login page, forgot password, reset password, and API routes
   if (
-    pathname.startsWith("/_next") ||
-    pathname.startsWith("/api") ||
-    pathname === "/favicon.ico"
+    pathname.startsWith("/login") ||
+    pathname.startsWith("/forgot-password") ||
+    pathname.startsWith("/reset-password") ||
+    pathname.startsWith("/api")
   ) {
     return NextResponse.next();
   }
 
-  // Public route
-  if (pathname === "/login") {
-    return NextResponse.next();
-  }
-
-  const token = req.cookies.get(SESSION_COOKIE)?.value;
+  // Protect all other routes - redirect to login if no token
   if (!token) {
-    const url = req.nextUrl.clone();
-    url.pathname = "/login";
-    url.searchParams.set("next", pathname);
-    return NextResponse.redirect(url);
+    const loginUrl = new URL("/login", request.url);
+    // Preserve the original path for redirect after login
+    if (pathname !== "/" && !pathname.startsWith("/login")) {
+      loginUrl.searchParams.set("redirect", pathname);
+    }
+    return NextResponse.redirect(loginUrl);
   }
 
   return NextResponse.next();
 }
 
 export const config = {
-  matcher: ["/((?!.*\\.).*)"],
+  matcher: [
+    /*
+     * Match all request paths except for the ones starting with:
+     * - api (API routes)
+     * - _next/static (static files)
+     * - _next/image (image optimization files)
+     * - favicon.ico (favicon file)
+     */
+    "/((?!api|_next/static|_next/image|favicon.ico).*)",
+  ],
 };
-
 

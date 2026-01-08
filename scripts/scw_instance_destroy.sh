@@ -46,6 +46,11 @@ if [[ -z "${SCW_SECRET_KEY}" && -f ".env" ]]; then
   SCW_SECRET_KEY="${SCW_SECRET_KEY:-${SCALEWAY_SECRET_KEY:-}}"
 fi
 if [[ -z "${SCW_SECRET_KEY}" ]]; then
+  if [[ -f "./deploy/secrets/scaleway_secret_key" ]]; then
+    SCW_SECRET_KEY="$(cat ./deploy/secrets/scaleway_secret_key)"
+  fi
+fi
+if [[ -z "${SCW_SECRET_KEY}" ]]; then
   echo "Missing Scaleway secret key in env file or .env (SCW_SECRET_KEY or SCALEWAY_SECRET_KEY)" >&2
   exit 2
 fi
@@ -99,6 +104,35 @@ fi
 
 echo "==> Found server id: ${SERVER_ID}"
 
+# Get server details to find attached volumes
+echo "==> Checking for attached Block Storage volumes..."
+S_JSON="$(api GET "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/servers/${SERVER_ID}")" || true
+VOLUMES_JSON="$(printf '%s' "${S_JSON}" | python3 -c '
+import json,sys
+try:
+    data = json.load(sys.stdin)
+    server = data.get("server", {})
+    volumes = server.get("volumes", {})
+    # Extract Block Storage volumes (sbs_volume)
+    sbs_volumes = []
+    for slot, vol in volumes.items():
+        vol_type = vol.get("volume_type", "")
+        vol_id = vol.get("id", "")
+        if vol_type == "sbs_volume" and vol_id:
+            sbs_volumes.append(vol_id)
+    print("\n".join(sbs_volumes))
+except:
+    print("")
+')"
+
+if [[ -n "${VOLUMES_JSON}" ]]; then
+  echo "${VOLUMES_JSON}" | while IFS= read -r VOL_ID; do
+    if [[ -n "${VOL_ID}" ]]; then
+      echo "==> Found Block Storage volume: ${VOL_ID}"
+    fi
+  done
+fi
+
 if [[ -n "${FLEX_IP_ADDR}" ]]; then
   echo "==> Detaching flexible IP ${FLEX_IP_ADDR} (keep reserved)"
   IPS_JSON="$(api GET "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/ips")"
@@ -148,5 +182,34 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 
-echo "✅ Destroy done (server deleted, IP kept)"
+# Delete Block Storage volumes after server is deleted
+if [[ -n "${VOLUMES_JSON}" ]]; then
+  echo "==> Deleting Block Storage volumes..."
+  echo "${VOLUMES_JSON}" | while IFS= read -r VOL_ID; do
+    if [[ -n "${VOL_ID}" ]]; then
+      echo "==> Deleting Block Storage volume: ${VOL_ID}"
+      # Try Block Storage API first (for SBS volumes)
+      BLOCK_DELETE_CODE="$(curl -sS -o /dev/null -w "%{http_code}" \
+        -X DELETE \
+        -H "X-Auth-Token: ${SCW_SECRET_KEY}" \
+        "https://api.scaleway.com/block/v1/zones/${SCW_ZONE}/volumes/${VOL_ID}" || true)"
+      if [[ "${BLOCK_DELETE_CODE}" == "204" || "${BLOCK_DELETE_CODE}" == "200" ]]; then
+        echo "✅ Block Storage volume ${VOL_ID} deleted"
+      else
+        # Try Instance API as fallback (for local volumes)
+        INSTANCE_DELETE_CODE="$(curl -sS -o /dev/null -w "%{http_code}" \
+          -X DELETE \
+          -H "X-Auth-Token: ${SCW_SECRET_KEY}" \
+          "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/volumes/${VOL_ID}" || true)"
+        if [[ "${INSTANCE_DELETE_CODE}" == "204" || "${INSTANCE_DELETE_CODE}" == "200" ]]; then
+          echo "✅ Volume ${VOL_ID} deleted via Instance API"
+        else
+          echo "⚠️  Failed to delete volume ${VOL_ID} (HTTP ${BLOCK_DELETE_CODE}/${INSTANCE_DELETE_CODE})"
+        fi
+      fi
+    fi
+  done
+fi
+
+echo "✅ Destroy done (server deleted, volumes deleted, IP kept)"
 

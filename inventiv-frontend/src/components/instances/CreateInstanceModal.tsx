@@ -1,17 +1,19 @@
 "use client";
 
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, type ChangeEvent } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { CheckCircle, Search, Microchip } from "lucide-react";
+import { Search, Microchip } from "lucide-react";
 import { apiUrl } from "@/lib/api";
 import { Provider, Region, Zone, InstanceType, LlmModel } from "@/lib/types";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatEur } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { IARequestAccepted } from "ia-widgets";
+import { IAAlert, IAAlertDescription, IAAlertTitle } from "ia-designsys";
 
 type CreateInstanceModalProps = {
     open: boolean;
@@ -31,6 +33,7 @@ export function CreateInstanceModal({
     allZones,
 }: CreateInstanceModalProps) {
     const [deployStep, setDeployStep] = useState<"form" | "submitting" | "success">("form");
+    const [errorMsg, setErrorMsg] = useState<string | null>(null);
     type Combo = {
         key: string; // `${zoneId}:${typeId}`
         provider: Provider | null;
@@ -50,6 +53,7 @@ export function CreateInstanceModal({
 
     const [models, setModels] = useState<LlmModel[]>([]);
     const [selectedModelId, setSelectedModelId] = useState<string>("");
+    const [recommendedDataVolume, setRecommendedDataVolume] = useState<number | null>(null);
     const selectedModel = useMemo(() => {
         if (!selectedModelId) return null;
         return models.find((m) => m.id === selectedModelId) ?? null;
@@ -157,15 +161,7 @@ export function CreateInstanceModal({
         const qs = selectedProviderCode !== "all" ? `?provider_code=${encodeURIComponent(selectedProviderCode)}` : "";
 
         const run = async () => {
-            // Fetch models (active only) once per open.
-            if (models.length === 0) {
-                const mres = await fetch(apiUrl("models?active=true"));
-                const mdata = mres.ok ? ((await mres.json()) as LlmModel[]) : [];
-                if (!cancelled) {
-                    setModels(mdata);
-                    if (!selectedModelId && mdata.length > 0) setSelectedModelId(mdata[0].id);
-                }
-            }
+            // Models will be fetched based on selected instance type (see useEffect below)
 
             const combos: Combo[] = [];
             for (const z of candidateZones) {
@@ -206,15 +202,89 @@ export function CreateInstanceModal({
             cancelled = true;
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open, selectedProviderCode, selectedProviderId, selectedRegionId, selectedZoneId, zones, providers, regions, models.length, selectedModelId, typesByZoneRef]);
+    }, [open, selectedProviderCode, selectedProviderId, selectedRegionId, selectedZoneId, zones, providers, regions, typesByZoneRef]);
+
+    // Fetch compatible models when an instance type is selected
+    useEffect(() => {
+        if (!open) return;
+        let cancelled = false;
+
+        const fetchModels = async () => {
+            if (selectedCombo?.type?.id) {
+                // Fetch only models compatible with the selected instance type
+                const mres = await fetch(apiUrl(`instance_types/${selectedCombo.type.id}/models`));
+                const mdata = mres.ok ? ((await mres.json()) as LlmModel[]) : [];
+                if (!cancelled) {
+                    setModels(mdata);
+                    // Reset selected model if it's not in the compatible list
+                    if (selectedModelId && !mdata.some((m) => m.id === selectedModelId)) {
+                        setSelectedModelId(mdata.length > 0 ? mdata[0].id : "");
+                    } else if (!selectedModelId && mdata.length > 0) {
+                        setSelectedModelId(mdata[0].id);
+                    }
+                }
+            } else {
+                // No instance type selected: fetch all active models
+                const mres = await fetch(apiUrl("models?active=true"));
+                const mdata = mres.ok ? ((await mres.json()) as LlmModel[]) : [];
+                if (!cancelled) {
+                    setModels(mdata);
+                    if (!selectedModelId && mdata.length > 0) setSelectedModelId(mdata[0].id);
+                }
+            }
+        };
+
+        void fetchModels().catch((e) => console.error("Failed to fetch models", e));
+        return () => {
+            cancelled = true;
+        };
+    }, [open, selectedCombo?.type?.id, selectedModelId]);
+
+    // Fetch recommended data volume when a model is selected
+    useEffect(() => {
+        if (!open || !selectedModelId) {
+            setRecommendedDataVolume(null);
+            return;
+        }
+        let cancelled = false;
+
+        const fetchRecommendedDataVolume = async () => {
+            try {
+                // Optionally include provider_id if a provider is selected
+                const providerId = selectedCombo?.provider?.id;
+                const url = providerId
+                    ? apiUrl(`models/${selectedModelId}/recommended-data-volume?provider_id=${providerId}`)
+                    : apiUrl(`models/${selectedModelId}/recommended-data-volume`);
+                
+                const res = await fetch(url);
+                if (res.ok && !cancelled) {
+                    const data = await res.json();
+                    setRecommendedDataVolume(data.recommended_data_volume_gb);
+                } else if (!cancelled) {
+                    setRecommendedDataVolume(null);
+                }
+            } catch (error) {
+                console.error("Failed to fetch recommended data volume:", error);
+                if (!cancelled) {
+                    setRecommendedDataVolume(null);
+                }
+            }
+        };
+
+        void fetchRecommendedDataVolume();
+        return () => {
+            cancelled = true;
+        };
+    }, [open, selectedModelId, selectedCombo?.provider?.id]);
 
     const handleDeploy = async () => {
+        setErrorMsg(null);
         if (!selectedCombo) {
-            alert("Please select all required fields");
+            setErrorMsg("Merci de sélectionner un Provider/Region/Zone + un type d’instance.");
             return;
         }
         if (!selectedModelId) {
-            alert("Please select a model");
+            setErrorMsg("Merci de sélectionner un modèle.");
             return;
         }
 
@@ -245,18 +315,19 @@ export function CreateInstanceModal({
                 }, 2000);
             } else {
                 const msg = data?.message || data?.status || "Deployment failed!";
-                alert(msg);
-                handleClose();
+                setDeployStep("form");
+                setErrorMsg(String(msg));
             }
         } catch (e) {
             console.error(e);
-            alert("Error deploying instance.");
-            handleClose();
+            setDeployStep("form");
+            setErrorMsg("Erreur lors de la création de l’instance.");
         }
     };
 
     const handleClose = () => {
         setDeployStep("form");
+        setErrorMsg(null);
         setSelectedProviderCode("all");
         setSelectedRegionId("all");
         setSelectedZoneId("all");
@@ -276,12 +347,15 @@ export function CreateInstanceModal({
                 </DialogHeader>
 
                 {deployStep === "success" ? (
-                    <div className="flex flex-col items-center justify-center py-6 space-y-4 text-green-600 animate-in fade-in zoom-in duration-300">
-                        <CheckCircle className="h-16 w-16" />
-                        <span className="text-xl font-bold">Demande de création prise en compte</span>
-                    </div>
+                    <IARequestAccepted title="Demande de création prise en compte" tone="success" />
                 ) : (
                     <div className="grid gap-6 py-4">
+                        {errorMsg ? (
+                            <IAAlert variant="destructive">
+                                <IAAlertTitle>Impossible de créer l’instance</IAAlertTitle>
+                                <IAAlertDescription>{errorMsg}</IAAlertDescription>
+                            </IAAlert>
+                        ) : null}
                         {/* Filters + Types cards */}
                         <div className="grid gap-3">
                             <div className="flex flex-col gap-2">
@@ -291,7 +365,7 @@ export function CreateInstanceModal({
                                         className="pl-9"
                                         placeholder="Rechercher (ex: H100, L40S, RENDER...)"
                                         value={typeQuery}
-                                        onChange={(e) => setTypeQuery(e.target.value)}
+                                        onChange={(e: ChangeEvent<HTMLInputElement>) => setTypeQuery(e.target.value)}
                                         disabled={deployStep === "submitting"}
                                     />
                                 </div>
@@ -502,10 +576,15 @@ export function CreateInstanceModal({
                                 <div className="text-xs text-muted-foreground">
                                     VRAM req: <span className="font-mono text-foreground">{selectedModel.required_vram_gb}GB</span>
                                     {" • "}ctx: <span className="font-mono text-foreground">{selectedModel.context_length}</span>
-                                    {selectedModel.data_volume_gb ? (
+                                    {(selectedModel.data_volume_gb || recommendedDataVolume !== null) ? (
                                         <>
                                             {" • "}disk:{" "}
-                                            <span className="font-mono text-foreground">{selectedModel.data_volume_gb}GB</span>
+                                            <span className="font-mono text-foreground">
+                                                {selectedModel.data_volume_gb ?? recommendedDataVolume ?? "-"}GB
+                                                {!selectedModel.data_volume_gb && recommendedDataVolume !== null && (
+                                                    <span className="text-muted-foreground/70 ml-1">(recommandé)</span>
+                                                )}
+                                            </span>
                                         </>
                                     ) : null}
                                 </div>

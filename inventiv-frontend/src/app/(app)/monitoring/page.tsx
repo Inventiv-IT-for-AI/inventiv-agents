@@ -10,8 +10,7 @@ import type { LucideIcon } from "lucide-react";
 import { Activity, CheckCircle, XCircle, Clock, Server, Zap, Cloud, Database, Archive, AlertTriangle, Copy, Check } from 'lucide-react';
 import { InstanceTimelineModal } from "@/components/instances/InstanceTimelineModal";
 import type { ActionLog, ActionType } from "@/lib/types";
-import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
-import { InventivDataTable, type InventivDataTableColumn, type DataTableSortState } from "@/components/shared/InventivDataTable";
+import { IADataTable, type IADataTableColumn, type DataTableSortState, type LoadRangeResult } from "ia-widgets";
 import { useRealtimeEvents } from "@/hooks/useRealtimeEvents";
 export default function MonitoringPage() {
     useRealtimeEvents();
@@ -217,7 +216,7 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
         [filterActionType, filterComponent, filterStatus, sort]
     );
 
-    const columns = useMemo<InventivDataTableColumn<ActionLog>[]>(() => {
+    const columns = useMemo<IADataTableColumn<ActionLog>[]>(() => {
         return [
             {
                 id: "time",
@@ -470,7 +469,7 @@ Metadata: ${log.metadata ? JSON.stringify(log.metadata, null, 2) : '-'}
             {/* Action Logs Table */}
             <Card>
                 <CardContent>
-                    <InventivDataTable<ActionLog>
+                    <IADataTable<ActionLog>
                         listId="monitoring:action_logs"
                         dataKey={queryKey}
                         title="Action Logs"

@@ -32,14 +32,40 @@ export type Instance = {
     storage_count?: number;
     storage_sizes_gb?: number[];
     storages?: InstanceStorageInfo[];
+    // --- Worker observability (from orchestrator heartbeats) ---
+    worker_status?: string | null;
+    worker_last_heartbeat?: string | null;
+    worker_queue_depth?: number | null;
+    worker_gpu_utilization?: number | null;
+    worker_metadata?: Record<string, unknown> | null;
+    worker_health_port?: number | null;
+    worker_vllm_port?: number | null;
+    // Progress percentage (0-100) towards operational state
+    progress_percent?: number | null;
 };
 
 export type InstanceStorageInfo = {
+    // Identifiants
+    id: string;
     provider_volume_id: string;
     name?: string | null;
     volume_type: string;
     size_gb?: number | null;
     is_boot: boolean;
+    
+    // Statut et cycle de vie
+    status: string;  // 'attached', 'detached', 'deleting', 'deleted'
+    delete_on_terminate: boolean;
+    
+    // Timestamps (historique complet)
+    created_at: string;
+    attached_at?: string | null;
+    deleted_at?: string | null;
+    reconciled_at?: string | null;
+    last_reconciliation?: string | null;
+    
+    // Erreurs et réconciliation
+    error_message?: string | null;
 };
 
 export type Provider = {
@@ -146,6 +172,91 @@ export type ApiKey = {
 };
 
 // -----------------------------
+// Organizations (multi-tenant MVP)
+// -----------------------------
+
+export type Organization = {
+    id: string;
+    name: string;
+    slug: string;
+    created_at: string;
+    role?: string | null;
+    member_count?: number;
+};
+
+export type OrganizationMember = {
+  user_id: string;
+  username: string;
+  email: string;
+  first_name?: string | null;
+  last_name?: string | null;
+  role: "owner" | "admin" | "manager" | "user" | string;
+  created_at: string;
+};
+
+export type OrganizationInvitation = {
+  id: string;
+  organization_id: string;
+  organization_name: string;
+  email: string;
+  role: "owner" | "admin" | "manager" | "user";
+  expires_at: string;
+  accepted_at?: string | null;
+  created_at: string;
+  invited_by_username?: string | null;
+};
+
+// -----------------------------
+// Workbench (persisted runs)
+// -----------------------------
+
+export type WorkbenchRun = {
+    id: string;
+    created_at: string;
+    started_at: string;
+    completed_at?: string | null;
+    deleted_at?: string | null;
+    created_by_user_id?: string | null;
+    created_via_api_key_id?: string | null;
+    organization_id?: string | null;
+    shared_with_org?: boolean;
+    project_id?: string | null;
+    title?: string | null;
+    model_id: string;
+    mode: string;
+    status: "in_progress" | "success" | "failed" | "cancelled" | string;
+    ttft_ms?: number | null;
+    duration_ms?: number | null;
+    error_message?: string | null;
+    metadata?: Record<string, unknown> | null;
+};
+
+export type WorkbenchProject = {
+    id: string;
+    created_at: string;
+    updated_at: string;
+    deleted_at?: string | null;
+    owner_user_id?: string | null;
+    organization_id?: string | null;
+    name: string;
+    shared_with_org: boolean;
+};
+
+export type WorkbenchMessage = {
+    id: string;
+    run_id: string;
+    message_index: number;
+    role: "system" | "user" | "assistant" | string;
+    content: string;
+    created_at: string;
+};
+
+export type WorkbenchRunWithMessages = {
+    run: WorkbenchRun;
+    messages: WorkbenchMessage[];
+};
+
+// -----------------------------
 // Runtime Models (in service / seen on workers)
 // -----------------------------
 
@@ -186,6 +297,41 @@ export type GpuActivityResponse = {
     window_s: number;
     generated_at: string;
     instances: GpuActivityInstanceSeries[];
+};
+
+export type SystemActivitySample = {
+    ts: string;
+    cpu_pct: number | null;
+    load1: number | null;
+    mem_pct: number | null;
+    disk_pct: number | null;
+    net_rx_mbps: number | null;
+    net_tx_mbps: number | null;
+};
+
+export type SystemActivityInstanceSeries = {
+    instance_id: string;
+    instance_name: string | null;
+    provider_name: string | null;
+    samples: SystemActivitySample[];
+};
+
+export type SystemActivityResponse = {
+    window_s: number;
+    generated_at: string;
+    instances: SystemActivityInstanceSeries[];
+};
+
+export type InstanceRequestMetrics = {
+    instance_id: string;
+    total_requests: number;
+    successful_requests: number;
+    failed_requests: number;
+    total_input_tokens: number;
+    total_output_tokens: number;
+    total_tokens: number;
+    first_request_at: string | null;
+    last_request_at: string | null;
 };
 
 export type ActionLog = {
@@ -399,4 +545,9 @@ export type FinopsCostsDashboardWindowResponse = {
     by_region_eur: FinopsRegionCostRow[];
     by_instance_type_eur: FinopsInstanceTypeCostRow[];
     by_instance_eur: FinopsInstanceCostRow[];
+};
+
+export type FinopsCostsDashboardSeriesPoint = {
+    bucket: string;
+    amount_eur: number;
 };

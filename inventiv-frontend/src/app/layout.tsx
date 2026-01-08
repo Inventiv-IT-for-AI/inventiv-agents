@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono, Noto_Sans_Arabic } from "next/font/google";
+import { Rubik, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import { I18nProvider } from "@/i18n/I18nProvider";
+import { AppProviders } from "@/components/AppProviders";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const inventivSans = Rubik({
+  variable: "--font-rubik",
   subsets: ["latin"],
+  weight: ["300", "400", "500", "700", "900"],
 });
 
 const geistMono = Geist_Mono({
@@ -13,10 +14,16 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-const notoArabic = Noto_Sans_Arabic({
-  variable: "--font-noto-arabic",
-  subsets: ["arabic"],
+/*
+ * Note: we keep Geist Mono for code/ids/tables, but we align the main UI font with inventiv-it.fr (Rubik).
+ */
+
+/* Legacy (kept disabled)
+const geistSans = Geist({
+  variable: "--font-geist-sans",
+  subsets: ["latin"],
 });
+*/
 
 export const metadata: Metadata = {
   title: "Inventiv Agents",
@@ -29,11 +36,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" dir="ltr" suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} ${notoArabic.variable} antialiased`}
+        className={`${inventivSans.variable} ${geistMono.variable} antialiased`}
       >
-        <I18nProvider initialLocale={null}>{children}</I18nProvider>
+        <AppProviders>{children}</AppProviders>
       </body>
     </html>
   );

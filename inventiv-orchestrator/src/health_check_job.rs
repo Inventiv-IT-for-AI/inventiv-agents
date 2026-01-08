@@ -4,16 +4,17 @@ use crate::health_check_flow::check_and_transition_instance;
 use crate::logger;
 use crate::provider_manager::ProviderManager;
 
-/// job-health-check: processes BOOTING instances and transitions them to READY/STARTUP_FAILED.
+/// job-health-check: processes BOOTING/INSTALLING/STARTING instances and transitions them to READY/STARTUP_FAILED.
 /// Uses SKIP LOCKED claiming so multiple orchestrators can run safely.
 pub async fn run(pool: Pool<Postgres>) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
-    println!("🏥 job-health-check started (checking BOOTING instances)");
+    println!("🏥 job-health-check started (checking BOOTING/INSTALLING/STARTING instances)");
 
     loop {
         interval.tick().await;
 
-        // Claim BOOTING instances even if IP is missing. If IP is missing, we try to fetch it from provider.
+        // Claim BOOTING/INSTALLING/STARTING instances even if IP is missing. If IP is missing, we try to fetch it from provider.
+        #[allow(clippy::type_complexity)]
         let booting_instances: Result<
             Vec<(
                 uuid::Uuid,
@@ -38,7 +39,7 @@ pub async fn run(pool: Pool<Postgres>) {
                        i.health_check_failures
                 FROM instances i
                 JOIN zones z ON i.zone_id = z.id
-                WHERE i.status = 'booting'
+                WHERE i.status IN ('booting', 'installing', 'starting')
                   AND i.provider_instance_id IS NOT NULL
                   AND (i.last_health_check IS NULL OR i.last_health_check < NOW() - INTERVAL '10 seconds')
                 ORDER BY i.last_health_check NULLS FIRST
@@ -57,7 +58,7 @@ pub async fn run(pool: Pool<Postgres>) {
         match booting_instances {
             Ok(instances) if !instances.is_empty() => {
                 println!(
-                    "🏥 job-health-check: checking {} booting instance(s)...",
+                    "🏥 job-health-check: checking {} booting/installing/starting instance(s)...",
                     instances.len()
                 );
 
@@ -74,13 +75,27 @@ pub async fn run(pool: Pool<Postgres>) {
                 {
                     let db_clone = pool.clone();
                     tokio::spawn(async move {
-                        let created_at =
-                            created_at.unwrap_or_else(|| sqlx::types::chrono::Utc::now());
+                        let created_at = created_at.unwrap_or_else(sqlx::types::chrono::Utc::now);
                         let boot_started_at = boot_started_at.unwrap_or(created_at);
 
                         // If IP is missing, try to fetch it from provider first (bounded by reqwest timeout).
                         if ip.is_none() {
                             if let Some(pid) = provider_instance_id.as_deref() {
+                                // Get organization_id from instance (required)
+                                let org_id: Option<uuid::Uuid> = sqlx::query_scalar(
+                                    "SELECT organization_id FROM instances WHERE id = $1"
+                                )
+                                .bind(id)
+                                .fetch_optional(&db_clone)
+                                .await
+                                .ok()
+                                .flatten();
+
+                                let Some(org_id) = org_id else {
+                                    eprintln!("❌ [Health Check] Instance {} missing organization_id", id);
+                                    return;
+                                };
+
                                 let provider_code: String =
                                     sqlx::query_scalar("SELECT code FROM providers WHERE id = $1")
                                         .bind(provider_id)
@@ -90,10 +105,16 @@ pub async fn run(pool: Pool<Postgres>) {
                                         .unwrap_or_else(|| {
                                             ProviderManager::current_provider_name()
                                         });
-                                let provider =
-                                    ProviderManager::get_provider(&provider_code, db_clone.clone());
-                                let Some(provider) = provider else {
-                                    return;
+
+                                let provider = match ProviderManager::get_provider(
+                                    &provider_code,
+                                    org_id,
+                                    db_clone.clone(),
+                                )
+                                .await
+                                {
+                                    Ok(p) => p,
+                                    Err(_) => return,
                                 };
                                 let start = std::time::Instant::now();
                                 let log_id = logger::log_event_with_metadata(
@@ -134,12 +155,20 @@ pub async fn run(pool: Pool<Postgres>) {
                                     Ok(None) => {
                                         if let Some(lid) = log_id {
                                             let dur = start.elapsed().as_millis() as i32;
-                                            logger::log_event_complete(
+                                            // Not an error: providers can legitimately return no IP yet.
+                                            // Mark as success but keep message for observability.
+                                            logger::log_event_complete_with_metadata(
                                                 &db_clone,
                                                 lid,
-                                                "failed",
+                                                "success",
                                                 dur,
                                                 Some("IP not available yet"),
+                                                Some(serde_json::json!({
+                                                    "ip_available": false,
+                                                    "zone": zone,
+                                                    "server_id": pid,
+                                                    "source": "job-health-check"
+                                                })),
                                             )
                                             .await
                                             .ok();
@@ -169,34 +198,126 @@ pub async fn run(pool: Pool<Postgres>) {
                                             if let Some(lid) = retry_log {
                                                 let dur = retry_start.elapsed().as_millis() as i32;
                                                 match &retry_res {
-                                                    Ok(true) => logger::log_event_complete(
-                                                        &db_clone,
-                                                        lid,
-                                                        "success",
-                                                        dur,
-                                                        Some("Poweron retried"),
-                                                    )
-                                                    .await
-                                                    .ok(),
-                                                    Ok(false) => logger::log_event_complete(
-                                                        &db_clone,
-                                                        lid,
-                                                        "failed",
-                                                        dur,
-                                                        Some("Provider returned false"),
-                                                    )
-                                                    .await
-                                                    .ok(),
-                                                    Err(e) => logger::log_event_complete(
-                                                        &db_clone,
-                                                        lid,
-                                                        "failed",
-                                                        dur,
-                                                        Some(&e.to_string()),
-                                                    )
-                                                    .await
-                                                    .ok(),
-                                                };
+                                                    Ok(true) => {
+                                                        logger::log_event_complete(
+                                                            &db_clone,
+                                                            lid,
+                                                            "success",
+                                                            dur,
+                                                            Some("Poweron retried"),
+                                                        )
+                                                        .await
+                                                        .ok();
+                                                    }
+                                                    Ok(false) => {
+                                                        // Check if instance is in transitional state (normal retry)
+                                                        let instance_state = provider
+                                                            .get_server_state(&zone, pid)
+                                                            .await
+                                                            .ok()
+                                                            .flatten();
+                                                        let is_retry = instance_state
+                                                            .as_deref()
+                                                            .map(|s| {
+                                                                matches!(
+                                                                    s,
+                                                                    "starting"
+                                                                        | "booting"
+                                                                        | "stopped"
+                                                                        | "stopped_in_place"
+                                                                )
+                                                            })
+                                                            .unwrap_or(false);
+
+                                                        if is_retry {
+                                                            let state_str = instance_state
+                                                                .as_deref()
+                                                                .unwrap_or("starting");
+                                                            logger::log_event_complete(
+                                                                &db_clone,
+                                                                lid,
+                                                                "retry",
+                                                                dur,
+                                                                Some(&format!("Instance is {} - retrying poweron", state_str)),
+                                                            )
+                                                            .await
+                                                            .ok();
+                                                        } else {
+                                                            logger::log_event_complete(
+                                                                &db_clone,
+                                                                lid,
+                                                                "failed",
+                                                                dur,
+                                                                Some("Provider returned false"),
+                                                            )
+                                                            .await
+                                                            .ok();
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        let err_msg = e.to_string();
+                                                        // Check if error indicates instance is in transitional state
+                                                        let mut is_retry = err_msg
+                                                            .contains("current state: starting")
+                                                            || err_msg
+                                                                .contains("current state: booting")
+                                                            || err_msg
+                                                                .contains("current state: stopped");
+
+                                                        if !is_retry {
+                                                            // Also check actual instance state
+                                                            if let Ok(Some(state)) = provider
+                                                                .get_server_state(&zone, pid)
+                                                                .await
+                                                            {
+                                                                let state_lower =
+                                                                    state.to_ascii_lowercase();
+                                                                if matches!(
+                                                                    state_lower.as_str(),
+                                                                    "starting"
+                                                                        | "booting"
+                                                                        | "stopped"
+                                                                        | "stopped_in_place"
+                                                                ) {
+                                                                    is_retry = true;
+                                                                }
+                                                            }
+                                                        }
+
+                                                        if is_retry {
+                                                            let retry_msg = if err_msg
+                                                                .contains("current state:")
+                                                            {
+                                                                err_msg.split("current state: ").nth(1)
+                                                                    .and_then(|s| s.split_whitespace().next())
+                                                                    .map(|s| format!("Instance is {} - retrying poweron", s))
+                                                                    .unwrap_or_else(|| "Instance is starting - retrying poweron".to_string())
+                                                            } else {
+                                                                "Instance is in transitional state - retrying poweron".to_string()
+                                                            };
+
+                                                            logger::log_event_complete(
+                                                                &db_clone,
+                                                                lid,
+                                                                "retry",
+                                                                dur,
+                                                                Some(&retry_msg),
+                                                            )
+                                                            .await
+                                                            .ok();
+                                                        } else {
+                                                            logger::log_event_complete(
+                                                                &db_clone,
+                                                                lid,
+                                                                "failed",
+                                                                dur,
+                                                                Some(&err_msg),
+                                                            )
+                                                            .await
+                                                            .ok();
+                                                        }
+                                                    }
+                                                }
                                             }
 
                                             // If retry indicates out-of-stock, fail fast and cleanup to avoid infinite booting.

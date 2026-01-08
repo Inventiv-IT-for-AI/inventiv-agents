@@ -1,0 +1,23 @@
+[package]
+name = "inventiv-providers"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+mock = []
+scaleway = []
+
+[dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.6", features = ["v4", "serde"] }
+
+# Optional provider deps (kept always-on for now to avoid Cargo optional-deps churn in this refactor)
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1.0", features = ["full"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "migrate", "bigdecimal"] }
+
+

@@ -22,10 +22,15 @@ pub async fn run(pool: Pool<Postgres>, redis_client: redis::Client) {
 
         match requeue_stale_provisioning(&pool, &redis_client).await {
             Ok(count) if count > 0 => {
-                println!("🔁 job-provisioning: re-queued {} instance(s)", count)
+                eprintln!(
+                    "🔁 [job-provisioning] Re-queued {} stale instance(s)",
+                    count
+                )
             }
-            Ok(_) => {}
-            Err(e) => eprintln!("❌ job-provisioning error: {:?}", e),
+            Ok(_) => {
+                // Silent - no stale instances found (this is normal)
+            }
+            Err(e) => eprintln!("❌ [job-provisioning] Error: {:?}", e),
         }
     }
 }
@@ -72,12 +77,20 @@ async fn requeue_stale_provisioning(
     }
 
     let claimed_len = claimed.len();
+    eprintln!(
+        "🔁 [job-provisioning] Found {} stale instance(s) to re-queue",
+        claimed_len
+    );
 
     for (instance_id, zone, instance_type, retry_count) in claimed {
         let db = pool.clone();
         let redis = redis_client.clone();
         tokio::spawn(async move {
             let correlation_id = Some(format!("requeue-{}-{}", instance_id, retry_count));
+            eprintln!(
+                "🔁 [job-provisioning] Re-queuing instance {} (zone={}, type={}, retry={})",
+                instance_id, zone, instance_type, retry_count
+            );
             let start = std::time::Instant::now();
             let log_id = logger::log_event_with_metadata(
                 &db,
@@ -95,6 +108,10 @@ async fn requeue_stale_provisioning(
             .await
             .ok();
 
+            eprintln!(
+                "🔵 [job-provisioning] Calling process_provisioning for instance {}",
+                instance_id
+            );
             services::process_provisioning(
                 db.clone(),
                 redis,
@@ -104,6 +121,10 @@ async fn requeue_stale_provisioning(
                 correlation_id,
             )
             .await;
+            eprintln!(
+                "🔵 [job-provisioning] process_provisioning completed for instance {}",
+                instance_id
+            );
 
             if let Some(lid) = log_id {
                 let dur = start.elapsed().as_millis() as i32;

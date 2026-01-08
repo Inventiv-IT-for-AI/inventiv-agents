@@ -1,0 +1,48 @@
+services:
+  # One runtime per mock instance (Option A): each runtime gets its own Docker IP on the control-plane network.
+  # The worker-agent shares the same network namespace/IP as mock-vllm (like a real VM: one IP, multiple ports).
+  mock-vllm:
+    # Use python:3.11-slim with mounted volume (same approach as docker-compose.yml)
+    # This avoids requiring a pre-built image and works when running from orchestrator container
+    image: python:3.11-slim
+    command: ["python", "-u", "/app/mock_vllm.py"]
+    environment:
+      - MODEL_ID=${MOCK_VLLM_MODEL_ID:-demo-model}
+      - PORT=8000
+      - VLLM_NUM_REQUESTS_WAITING=${MOCK_VLLM_REQUESTS_WAITING:-7}
+      - VLLM_NUM_REQUESTS_RUNNING=${MOCK_VLLM_REQUESTS_RUNNING:-1}
+    volumes:
+      # Mount the mock_vllm.py script from the project root
+      # Path is relative to the working directory (set via cmd.current_dir in mock.rs)
+      - ./inventiv-worker-mock/mock_vllm.py:/app/mock_vllm.py:ro
+    networks:
+      - controlplane
+
+  worker-agent:
+    build:
+      context: ./inventiv-worker
+      dockerfile: Dockerfile.agent
+    # Same IP as mock-vllm: vLLM on :8000, health/metrics on :8080.
+    network_mode: "service:mock-vllm"
+    environment:
+      - CONTROL_PLANE_URL=http://api:8003
+      - WORKER_AUTH_TOKEN=${WORKER_AUTH_TOKEN:-dev-worker-token}
+      - INSTANCE_ID=${INSTANCE_ID:?INSTANCE_ID is required}
+      - MODEL_ID=${MOCK_VLLM_MODEL_ID:-demo-model}
+      # Enable synthetic GPU metrics in mock runtimes (no nvidia-smi in local/docker).
+      - WORKER_SIMULATE_GPU_COUNT=${WORKER_SIMULATE_GPU_COUNT:-1}
+      - WORKER_SIMULATE_GPU_VRAM_MB=${WORKER_SIMULATE_GPU_VRAM_MB:-24576}
+      - VLLM_BASE_URL=http://127.0.0.1:8000
+      - WORKER_HEALTH_PORT=8080
+      - WORKER_VLLM_PORT=8000
+      - WORKER_HEARTBEAT_INTERVAL_S=5
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - mock-vllm
+
+networks:
+  controlplane:
+    external: true
+    name: ${CONTROLPLANE_NETWORK_NAME:?CONTROLPLANE_NETWORK_NAME is required (e.g. inventiv-agents-worker-fixes_default)}
+
+

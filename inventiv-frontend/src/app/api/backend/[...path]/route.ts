@@ -57,6 +57,9 @@ async function proxy(req: NextRequest, ctx: { params: Promise<{ path?: string[] 
   const { path = [] } = await ctx.params;
   const url = buildTargetUrl(req, path);
   const method = req.method.toUpperCase();
+  console.log("[Proxy] Request:", method, url);
+  console.log("[Proxy] API_INTERNAL_URL:", process.env.API_INTERNAL_URL);
+  console.log("[Proxy] NEXT_PUBLIC_API_URL:", process.env.NEXT_PUBLIC_API_URL);
 
   // Retry only for idempotent methods on transient network failures.
   const maxAttempts = method === "GET" || method === "HEAD" ? 2 : 1;
@@ -64,16 +67,14 @@ async function proxy(req: NextRequest, ctx: { params: Promise<{ path?: string[] 
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      // IMPORTANT:
-      // Avoid streaming bodies (ReadableStream) because Node/undici may require
-      // `duplex: "half"` which is not always available in our TS build environment.
-      // Buffering here is fine for our control-plane JSON payload sizes.
-      const hasBody = method !== "GET" && method !== "HEAD";
-      const body = hasBody ? await req.arrayBuffer() : undefined;
+      const body = method === "GET" || method === "HEAD" ? undefined : req.body;
       const upstream = await fetch(url, {
         method,
         headers: filterHeaders(req),
-        body: body ? new Uint8Array(body) : undefined,
+        body,
+        // Next.js 15+ requires duplex option when sending a body.
+        // `RequestDuplex` is not available in all TS lib.dom versions, so keep this cast minimal.
+        ...(body ? ({ duplex: "half" } as unknown as { duplex: "half" }) : {}),
         // Never cache proxied API calls.
         cache: "no-store",
         redirect: "manual",
@@ -87,21 +88,41 @@ async function proxy(req: NextRequest, ctx: { params: Promise<{ path?: string[] 
 
       // Explicitly copy Set-Cookie headers from upstream to response
       // This ensures cookies are properly forwarded to the browser
-      const h: any = upstream.headers as any;
-      const setCookieHeaders: string[] | undefined =
-        typeof h.getSetCookie === "function" ? h.getSetCookie() : undefined;
-      if (Array.isArray(setCookieHeaders) && setCookieHeaders.length > 0) {
+      // Try both getSetCookie() (Next.js 15+) and manual header reading
+      const setCookieHeaders = upstream.headers.getSetCookie();
+      const setCookieHeaderRaw = upstream.headers.get("set-cookie");
+      
+      console.log("[Proxy] Set-Cookie headers from upstream (getSetCookie):", setCookieHeaders);
+      console.log("[Proxy] Set-Cookie header raw:", setCookieHeaderRaw);
+      
+      // Use getSetCookie() if available (Next.js 15+)
+      if (setCookieHeaders && setCookieHeaders.length > 0) {
         for (const cookie of setCookieHeaders) {
-          response.headers.append("set-cookie", cookie);
+          response.headers.append("Set-Cookie", cookie);
+          console.log("[Proxy] Added Set-Cookie to response:", cookie.substring(0, 50) + "...");
+        }
+      } 
+      // Fallback: manually read set-cookie header if getSetCookie() doesn't work
+      else if (setCookieHeaderRaw) {
+        // Split multiple Set-Cookie headers (they can be comma-separated or multiple headers)
+        const cookies = setCookieHeaderRaw.split(/\s*,\s*(?=[^=]+=)/);
+        for (const cookie of cookies) {
+          response.headers.append("Set-Cookie", cookie.trim());
+          console.log("[Proxy] Added Set-Cookie to response (fallback):", cookie.substring(0, 50) + "...");
         }
       } else {
-        const setCookie = upstream.headers.get("set-cookie");
-        if (setCookie) response.headers.set("set-cookie", setCookie);
+        console.warn("[Proxy] No Set-Cookie header found in upstream response!");
       }
 
       return response;
     } catch (e) {
       lastErr = e;
+      console.error(`[Proxy] Error on attempt ${attempt}/${maxAttempts}:`, e);
+      console.error(`[Proxy] Error details:`, {
+        message: e instanceof Error ? e.message : String(e),
+        stack: e instanceof Error ? e.stack : undefined,
+        target: url,
+      });
       // small backoff
       if (attempt < maxAttempts) {
         await new Promise((r) => setTimeout(r, 50));
@@ -110,6 +131,7 @@ async function proxy(req: NextRequest, ctx: { params: Promise<{ path?: string[] 
     }
   }
 
+  console.error(`[Proxy] All attempts failed. Last error:`, lastErr);
   return new Response(
     JSON.stringify({
       error: "proxy_error",

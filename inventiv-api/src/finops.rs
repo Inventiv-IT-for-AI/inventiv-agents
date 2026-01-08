@@ -536,6 +536,7 @@ fn window_to_minutes(window: &str) -> Option<i64> {
         "minute" | "1m" => Some(1),
         "hour" | "1h" => Some(60),
         "day" | "1d" => Some(60 * 24),
+        "week_7d" | "week" | "1w" | "7d" => Some(60 * 24 * 7),
         "month_30d" | "30d" => Some(60 * 24 * 30),
         "year_365d" | "365d" => Some(60 * 24 * 365),
         _ => None,
@@ -838,6 +839,88 @@ pub struct CostsDashboardWindowResponse {
     pub by_region_eur: Vec<RegionCostRow>,
     pub by_instance_type_eur: Vec<InstanceTypeCostRow>,
     pub by_instance_eur: Vec<InstanceCostRow>,
+}
+
+#[derive(Serialize, sqlx::FromRow)]
+pub struct CostsDashboardSeriesPoint {
+    pub bucket: chrono::DateTime<chrono::Utc>,
+    pub amount_eur: f64,
+}
+
+#[derive(Deserialize)]
+pub struct CostsDashboardSeriesParams {
+    pub window: Option<String>, // "hour" | "day" | "week_7d" | "month_30d" | "year_365d" (aliases: 1h/1d/1w/30d/365d)
+    pub limit_points: Option<i64>,
+}
+
+pub async fn get_costs_dashboard_series(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<CostsDashboardSeriesParams>,
+) -> Json<Vec<CostsDashboardSeriesPoint>> {
+    let db = &state.db;
+    let window_label = params.window.clone().unwrap_or_else(|| "hour".to_string());
+    let window_minutes = window_to_minutes(&window_label)
+        .unwrap_or(60)
+        .clamp(1, 60 * 24 * 365);
+    let limit_points = params.limit_points.unwrap_or(180).clamp(30, 400);
+
+    let bucket_end: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT MAX(bucket_minute) FROM finops.cost_actual_minute")
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten()
+            .flatten();
+
+    let Some(bucket_end) = bucket_end else {
+        return Json(vec![]);
+    };
+
+    let bucket_start = bucket_end - chrono::Duration::minutes((window_minutes - 1).max(0));
+
+    // Choose an aggregation interval that keeps the number of points reasonable.
+    // We use an allowlist of intervals to keep SQL injection impossible.
+    let interval_sql = if window_minutes <= 60 {
+        "interval '1 minute'"
+    } else if window_minutes <= 60 * 24 {
+        // 1 day -> 15-min bins (96 pts)
+        "interval '15 minutes'"
+    } else if window_minutes <= 60 * 24 * 7 {
+        // 1 week -> 1h bins (168 pts)
+        "interval '1 hour'"
+    } else if window_minutes <= 60 * 24 * 31 {
+        // 1 month -> 6h bins (~120 pts)
+        "interval '6 hours'"
+    } else {
+        // 1 year -> 1 day bins (365 pts)
+        "interval '1 day'"
+    };
+
+    // Use date_bin for stable binning (PG14+). Timescale is PG14-compatible here.
+    let sql = format!(
+        r#"
+        SELECT
+          date_bin({interval_sql}, bucket_minute, 'epoch'::timestamptz) as bucket,
+          COALESCE(SUM(amount_eur)::float8, 0) as amount_eur
+        FROM finops.cost_actual_minute
+        WHERE bucket_minute >= $1 AND bucket_minute <= $2
+          AND provider_id IS NULL
+          AND instance_id IS NULL
+        GROUP BY 1
+        ORDER BY 1 ASC
+        LIMIT $3
+        "#
+    );
+
+    let rows: Vec<CostsDashboardSeriesPoint> = sqlx::query_as(&sql)
+        .bind(bucket_start)
+        .bind(bucket_end)
+        .bind(limit_points)
+        .fetch_all(db)
+        .await
+        .unwrap_or_default();
+
+    Json(rows)
 }
 
 pub async fn get_costs_dashboard_window(

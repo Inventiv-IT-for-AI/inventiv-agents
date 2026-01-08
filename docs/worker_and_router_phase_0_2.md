@@ -19,11 +19,14 @@ Sur chaque VM GPU provisionnée par l’orchestrator, un conteneur Worker doit:
 
 ### Endpoints (MVP)
 - `GET /healthz` (liveness): le process répond
-- `GET /readyz` (readiness): modèle chargé + vLLM prêt (pas juste “port ouvert”)
+- `GET /readyz` (readiness): modèle chargé + vLLM prêt (pas juste "port ouvert")
+- `GET /info` (agent info): version, build date, checksum SHA256, état vLLM
 - `GET /metrics` (Prometheus): GPU util, queue depth, req/s, ttft, p95, etc.
 - vLLM OpenAI-compatible:
   - `POST /v1/chat/completions`
   - `POST /v1/completions`
+
+> **Voir** : [docs/AGENT_VERSION_MANAGEMENT.md](AGENT_VERSION_MANAGEMENT.md) pour les détails sur la gestion de version et l'intégrité de l'agent.
 
 ### Variables d’environnement (proposition)
 - **Identity**

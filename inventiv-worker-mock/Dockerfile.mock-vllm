@@ -1,0 +1,13 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Copy the mock vLLM script
+COPY mock_vllm.py /app/mock_vllm.py
+
+# Expose the port
+EXPOSE 8000
+
+# Run the mock vLLM server
+CMD ["python", "-u", "/app/mock_vllm.py"]
+

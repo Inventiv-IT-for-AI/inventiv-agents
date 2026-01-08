@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub mod bus;
+pub mod worker_storage;
 pub mod worker_target;
 
 // --- Enums ---
@@ -11,12 +12,15 @@ pub mod worker_target;
 #[sqlx(type_name = "instance_status", rename_all = "snake_case")]
 pub enum InstanceStatus {
     Provisioning, // Request sent to provider
-    Booting,      // Instance is up, installing/loading
-    Ready,        // Healthy and serving traffic
-    Draining,     // Stopping, finishing current requests
-    Terminating,  // Termination requested, waiting provider deletion
-    Terminated,   // Destroyed
-    Archived,     // Archived (hidden from active list)
+    Booting,      // Instance en cours de création, pas encore démarrée
+    Installing,   // Instance up, mais Worker en cours d'installation
+    Starting, // Instance up et running, mais Worker encore en finalisation (download de model, warming, etc.)
+    Ready,    // Healthy and serving traffic
+    Draining, // Stopping, finishing current requests
+    Terminating, // Termination requested, waiting provider deletion
+    Terminated, // Destroyed
+    Archived, // Archived (hidden from active list)
+    Unavailable, // Instance inaccessible ou indisponible, à reconnecter et diagnostiquer pour repasser en Ready ou à décommissioner
     ProvisioningFailed,
     StartupFailed,
     Failed, // Error state
@@ -61,7 +65,7 @@ pub struct Zone {
     pub is_active: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow, utoipa::ToSchema)]
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow, utoipa::ToSchema, Default)]
 pub struct InstanceType {
     pub id: Uuid,
     pub provider_id: Uuid,
@@ -92,6 +96,7 @@ pub struct LlmModel {
     #[sqlx(default)]
     pub data_volume_gb: Option<i64>,
     #[sqlx(default)]
+    #[serde(skip)]
     pub metadata: sqlx::types::Json<serde_json::Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -112,6 +117,7 @@ pub struct Instance {
     pub status: InstanceStatus,
     pub created_at: DateTime<Utc>,
     pub terminated_at: Option<DateTime<Utc>>,
+    #[serde(skip)]
     pub gpu_profile: sqlx::types::Json<InstanceType>, // Snapshot using InstanceType struct
 
     // Deletion tracking fields for orphaned instance detection

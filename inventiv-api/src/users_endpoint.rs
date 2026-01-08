@@ -18,12 +18,17 @@ pub struct UserResponse {
     pub id: Uuid,
     pub username: String,
     pub email: String,
-    pub role: String,
+    pub role: String, // User's global role (admin, user, etc.)
     pub first_name: Option<String>,
     pub last_name: Option<String>,
     pub locale_code: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    // Organization context (nullable - user may not be in any org)
+    pub organization_id: Option<Uuid>,
+    pub organization_name: Option<String>,
+    pub organization_slug: Option<String>,
+    pub organization_role: Option<String>, // Role in the organization (owner, admin, manager, user)
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -54,7 +59,11 @@ pub struct UsersSearchQuery {
     pub limit: Option<i64>,
     /// Search in username/email (ILIKE).
     pub q: Option<String>,
-    /// Sort field allowlist: username|email|role|created_at|updated_at
+    /// Filter by organization ID (UUID)
+    pub organization_id: Option<Uuid>,
+    /// Filter by organization role (owner|admin|manager|user)
+    pub organization_role: Option<String>,
+    /// Sort field allowlist: username|email|role|created_at|updated_at|organization_name|organization_role
     pub sort_by: Option<String>,
     /// "asc" | "desc"
     pub sort_dir: Option<String>,
@@ -123,36 +132,81 @@ pub async fn search_users(
         .filter(|s| !s.is_empty())
         .map(|s| format!("%{}%", s));
 
-    let total_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+    let org_role_filter: Option<String> = params
+        .organization_role
+        .as_deref()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty());
+
+    // Count total users (distinct)
+    let total_count: i64 = sqlx::query_scalar("SELECT COUNT(DISTINCT id) FROM users")
         .fetch_one(&state.db)
         .await
         .unwrap_or(0);
 
-    let filtered_count: i64 = sqlx::query_scalar(
+    // Count filtered user-organization pairs
+    let mut count_qb: QueryBuilder<Postgres> = QueryBuilder::new(
         r#"
         SELECT COUNT(*)
         FROM users u
-        WHERE ($1::text IS NULL OR u.username ILIKE $1 OR u.email ILIKE $1)
+        LEFT JOIN organization_memberships om ON om.user_id = u.id
+        LEFT JOIN organizations o ON o.id = om.organization_id
+        WHERE 1=1
         "#,
-    )
-    .bind(q_like.as_deref())
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(0);
+    );
+    if q_like.is_some() {
+        count_qb.push(" AND (u.username ILIKE ");
+        count_qb.push_bind(q_like.as_deref());
+        count_qb.push(" OR u.email ILIKE ");
+        count_qb.push_bind(q_like.as_deref());
+        count_qb.push(")");
+    }
+    if let Some(org_id) = params.organization_id {
+        count_qb.push(" AND o.id = ");
+        count_qb.push_bind(org_id);
+    }
+    if org_role_filter.is_some() {
+        count_qb.push(" AND om.role = ");
+        count_qb.push_bind(org_role_filter.as_deref());
+    }
+
+    let filtered_count: i64 = count_qb
+        .build_query_scalar()
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0);
 
     let order_by = match params.sort_by.as_deref() {
-        Some("email") => "email",
-        Some("role") => "role",
-        Some("created_at") => "created_at",
-        Some("updated_at") => "updated_at",
-        _ => "username",
+        Some("email") => "u.email",
+        Some("role") => "u.role",
+        Some("created_at") => "u.created_at",
+        Some("updated_at") => "u.updated_at",
+        Some("organization_name") => "o.name",
+        Some("organization_role") => "om.role",
+        _ => "u.username",
     };
     let dir = dir_sql(params.sort_dir.as_deref());
 
+    // Build main query: one row per user-organization pair
+    // Users without organizations appear once with NULL organization fields
     let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
         r#"
-        SELECT id, username, email, role, first_name, last_name, created_at, updated_at
+        SELECT 
+            u.id,
+            u.username,
+            u.email,
+            u.role,
+            u.first_name,
+            u.last_name,
+            u.created_at,
+            u.updated_at,
+            o.id as organization_id,
+            o.name as organization_name,
+            o.slug as organization_slug,
+            om.role as organization_role
         FROM users u
+        LEFT JOIN organization_memberships om ON om.user_id = u.id
+        LEFT JOIN organizations o ON o.id = om.organization_id
         WHERE 1=1
         "#,
     );
@@ -163,11 +217,21 @@ pub async fn search_users(
         qb.push_bind(q_like.as_deref());
         qb.push(")");
     }
+    if let Some(org_id) = params.organization_id {
+        qb.push(" AND o.id = ");
+        qb.push_bind(org_id);
+    }
+    if org_role_filter.is_some() {
+        qb.push(" AND om.role = ");
+        qb.push_bind(org_role_filter.as_deref());
+    }
     qb.push(" ORDER BY ");
     qb.push(order_by);
     qb.push(" ");
     qb.push(dir);
-    qb.push(", id ");
+    qb.push(", u.id ");
+    qb.push(dir);
+    qb.push(", o.id ");
     qb.push(dir);
     qb.push(" LIMIT ");
     qb.push_bind(limit);

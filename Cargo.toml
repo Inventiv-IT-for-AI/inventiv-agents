@@ -4,5 +4,6 @@ members = [
     "inventiv-orchestrator",
     "inventiv-common",
     "inventiv-finops",
+    "inventiv-providers",
 ]
 resolver = "2"

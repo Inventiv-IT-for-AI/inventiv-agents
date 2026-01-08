@@ -1,18 +1,20 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { apiUrl } from "@/lib/api";
 import {
     FinopsCostsDashboardSummaryResponse,
     FinopsCostsDashboardWindowResponse,
+    FinopsCostsDashboardSeriesPoint,
 } from "@/lib/types";
 
 export function useFinopsCosts() {
     const [summary, setSummary] = useState<FinopsCostsDashboardSummaryResponse | null>(null);
-    const [window, setWindow] = useState<string>("hour");
+    const [window, setWindow] = useState<string>("hour"); // "hour" | "day" | "week_7d" | "month_30d" | "year_365d"
     const [breakdown, setBreakdown] = useState<FinopsCostsDashboardWindowResponse | null>(null);
+    const [series, setSeries] = useState<FinopsCostsDashboardSeriesPoint[] | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
-    const fetchAll = async () => {
+    const fetchAll = useCallback(async () => {
         try {
             setLoading(true);
             const [summaryRes, breakdownRes] = await Promise.all([
@@ -39,19 +41,41 @@ export function useFinopsCosts() {
         } finally {
             setLoading(false);
         }
-    };
+    }, [window]);
+
+    const fetchSeries = useCallback(async () => {
+        try {
+            const res = await fetch(
+                apiUrl(`finops/dashboard/costs/series?window=${encodeURIComponent(window)}&limit_points=220`)
+            );
+            if (!res.ok) {
+                setSeries(null);
+                return;
+            }
+            const data = (await res.json()) as FinopsCostsDashboardSeriesPoint[];
+            setSeries(Array.isArray(data) ? data : null);
+        } catch (err) {
+            console.error("FinOps series fetch error:", err);
+            setSeries(null);
+        }
+    }, [window]);
 
     useEffect(() => {
         fetchAll(); // initial
-        const interval = setInterval(fetchAll, 10000); // every 10s
+        fetchSeries();
+        const interval = setInterval(() => {
+            fetchAll();
+            fetchSeries();
+        }, 10000); // every 10s
         return () => clearInterval(interval);
-    }, [window]);
+    }, [window, fetchAll, fetchSeries]);
 
     return {
         summary,
         window,
         setWindow,
         breakdown,
+        series,
         loading,
         error,
         refresh: fetchAll,

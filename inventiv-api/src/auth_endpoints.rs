@@ -1,6 +1,6 @@
 use axum::{
-    extract::State,
-    http::{header, StatusCode},
+    extract::{Path, State},
+    http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
 };
@@ -44,7 +44,10 @@ pub struct MeResponse {
     pub role: String,
     pub first_name: Option<String>,
     pub last_name: Option<String>,
-    pub locale_code: String,
+    pub current_organization_id: Option<uuid::Uuid>,
+    pub current_organization_name: Option<String>,
+    pub current_organization_slug: Option<String>,
+    pub current_organization_role: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -54,7 +57,9 @@ struct MeRow {
     role: String,
     first_name: Option<String>,
     last_name: Option<String>,
-    locale_code: String,
+    current_organization_id: Option<uuid::Uuid>,
+    current_organization_name: Option<String>,
+    current_organization_slug: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,7 +68,6 @@ pub struct UpdateMeRequest {
     pub email: Option<String>,
     pub first_name: Option<String>,
     pub last_name: Option<String>,
-    pub locale_code: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +78,7 @@ pub struct ChangePasswordRequest {
 
 pub async fn login(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> impl IntoResponse {
     let login = req.email.trim().to_ascii_lowercase();
@@ -105,6 +110,7 @@ pub async fn login(
     .flatten();
 
     let Some(u) = row else {
+        tracing::debug!("Login failed: no user found for login={}", login);
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error":"invalid_credentials"})),
@@ -112,10 +118,49 @@ pub async fn login(
             .into_response();
     };
 
+    tracing::debug!("Login successful for user_id={}, email={}", u.id, u.email);
+
+    // 1. Get user's last used organization (or None for Personal mode)
+    let default_org_id = auth::get_user_last_org(&state.db, u.id)
+        .await
+        .ok()
+        .flatten();
+
+    // 2. Resolve organization role if org_id exists
+    let org_role = if let Some(org_id) = default_org_id {
+        // Use a helper function from organizations module
+        // We'll need to make get_membership_role public or create a wrapper
+        let role_str: Option<String> = sqlx::query_scalar(
+            r#"
+            SELECT role
+            FROM organization_memberships
+            WHERE organization_id = $1 AND user_id = $2
+            "#,
+        )
+        .bind(org_id)
+        .bind(u.id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
+        role_str
+    } else {
+        None
+    };
+
+    // 3. Create session in DB
+    let session_id = uuid::Uuid::new_v4();
+    let ip_address = auth::extract_ip_address(&headers);
+    let user_agent = auth::extract_user_agent(&headers);
+
+    // 4. Generate JWT first (we need it to hash it)
     let auth_user = auth::AuthUser {
         user_id: u.id,
         email: u.email.clone(),
         role: u.role.clone(),
+        session_id: session_id.to_string(),
+        current_organization_id: default_org_id,
+        current_organization_role: org_role.clone(),
     };
     let token = match auth::sign_session_jwt(&auth_user) {
         Ok(t) => t,
@@ -128,6 +173,44 @@ pub async fn login(
         }
     };
 
+    // 5. Store session in DB with token hash
+    let token_hash = auth::hash_session_token(&token);
+    match auth::create_session(
+        &state.db,
+        session_id,
+        u.id,
+        default_org_id,
+        org_role.clone(),
+        ip_address.clone(),
+        user_agent.clone(),
+        token_hash,
+    )
+    .await
+    {
+        Ok(_) => {
+            tracing::debug!(
+                "Session created successfully: session_id={}, user_id={}",
+                session_id,
+                u.id
+            );
+        }
+        Err(e) => {
+            tracing::error!("Failed to create session: {}", e);
+            tracing::error!(
+                "Session creation failed for user_id={}, session_id={}, org_id={:?}",
+                u.id,
+                session_id,
+                default_org_id
+            );
+            // Continue login even if session creation fails
+            // The session will be created on next request if needed, or user can retry login
+            tracing::warn!(
+                "Continuing login despite session creation failure - user can still authenticate"
+            );
+        }
+    }
+
+    // 6. Return JWT in cookie
     let cookie = auth::session_cookie_value(&token);
     let mut resp = Json(LoginResponse {
         user_id: u.id,
@@ -141,7 +224,15 @@ pub async fn login(
     resp
 }
 
-pub async fn logout() -> impl IntoResponse {
+pub async fn logout(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
+) -> impl IntoResponse {
+    // Revoke session in DB
+    if let Ok(session_id) = uuid::Uuid::parse_str(&user.session_id) {
+        auth::revoke_session(&state.db, session_id).await.ok();
+    }
+
     let cookie = auth::clear_session_cookie_value();
     let mut resp = Json(json!({"status":"ok"})).into_response();
     resp.headers_mut().insert(header::SET_COOKIE, cookie);
@@ -152,11 +243,17 @@ pub async fn me(
     State(state): State<Arc<AppState>>,
     axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
 ) -> impl IntoResponse {
-    let row: Option<MeRow> = sqlx::query_as(
+    // Get user data from database
+    let row: Option<(String, String, String, Option<String>, Option<String>)> = sqlx::query_as(
         r#"
-        SELECT username, email, role, first_name, last_name, locale_code
-        FROM users
-        WHERE id = $1
+        SELECT
+          u.username,
+          u.email,
+          u.role,
+          u.first_name,
+          u.last_name
+        FROM users u
+        WHERE u.id = $1
         LIMIT 1
         "#,
     )
@@ -166,7 +263,7 @@ pub async fn me(
     .ok()
     .flatten();
 
-    let Some(r) = row else {
+    let Some((username, email, role, first_name, last_name)) = row else {
         // Session token refers to a user that no longer exists (e.g. DB reset).
         // Treat as unauthorized and clear cookie so the UI can re-login cleanly.
         let mut resp = (
@@ -179,14 +276,40 @@ pub async fn me(
         return resp;
     };
 
+    // Get organization info if current_organization_id is set (from JWT/session)
+    let (org_name, org_slug) = if let Some(org_id) = user.current_organization_id {
+        let org_row: Option<(String, String)> = sqlx::query_as(
+            r#"
+            SELECT name, slug
+            FROM organizations
+            WHERE id = $1
+            LIMIT 1
+            "#,
+        )
+        .bind(org_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
+
+        org_row
+            .map(|(name, slug)| (Some(name), Some(slug)))
+            .unwrap_or((None, None))
+    } else {
+        (None, None)
+    };
+
     Json(MeResponse {
         user_id: user.user_id,
-        username: r.username,
-        email: r.email,
-        role: r.role,
-        first_name: r.first_name,
-        last_name: r.last_name,
-        locale_code: r.locale_code,
+        username,
+        email,
+        role,
+        first_name,
+        last_name,
+        current_organization_id: user.current_organization_id,
+        current_organization_name: org_name,
+        current_organization_slug: org_slug,
+        current_organization_role: user.current_organization_role,
     })
     .into_response()
 }
@@ -212,10 +335,6 @@ pub async fn update_me(
         .last_name
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    let locale_code = req
-        .locale_code
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
 
     let res = sqlx::query(
         r#"
@@ -224,7 +343,6 @@ pub async fn update_me(
             email = COALESCE($3, email),
             first_name = COALESCE($4, first_name),
             last_name = COALESCE($5, last_name),
-            locale_code = COALESCE($6, locale_code),
             updated_at = NOW()
         WHERE id = $1
         "#,
@@ -234,7 +352,6 @@ pub async fn update_me(
     .bind(email)
     .bind(first_name)
     .bind(last_name)
-    .bind(locale_code)
     .execute(&state.db)
     .await;
 
@@ -263,14 +380,6 @@ pub async fn update_me(
                 )
                     .into_response();
             }
-            // Foreign key violation for locale_code
-            if code.as_deref() == Some("23503") {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error":"invalid_locale","message":"unknown_locale"})),
-                )
-                    .into_response();
-            }
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error":"db_error","message": e.to_string()})),
@@ -280,11 +389,16 @@ pub async fn update_me(
     }
 
     // Return refreshed profile
-    let row: Option<MeRow> = sqlx::query_as(
+    let row: Option<(String, String, String, Option<String>, Option<String>)> = sqlx::query_as(
         r#"
-        SELECT username, email, role, first_name, last_name, locale_code
-        FROM users
-        WHERE id = $1
+        SELECT
+          u.username,
+          u.email,
+          u.role,
+          u.first_name,
+          u.last_name
+        FROM users u
+        WHERE u.id = $1
         LIMIT 1
         "#,
     )
@@ -295,16 +409,44 @@ pub async fn update_me(
     .flatten();
 
     match row {
-        Some(r) => Json(MeResponse {
-            user_id: user.user_id,
-            username: r.username,
-            email: r.email,
-            role: r.role,
-            first_name: r.first_name,
-            last_name: r.last_name,
-            locale_code: r.locale_code,
-        })
-        .into_response(),
+        Some((username, email, role, first_name, last_name)) => {
+            // Get organization info if current_organization_id is set (from JWT/session)
+            let (org_name, org_slug) = if let Some(org_id) = user.current_organization_id {
+                let org_row: Option<(String, String)> = sqlx::query_as(
+                    r#"
+                    SELECT name, slug
+                    FROM organizations
+                    WHERE id = $1
+                    LIMIT 1
+                    "#,
+                )
+                .bind(org_id)
+                .fetch_optional(&state.db)
+                .await
+                .ok()
+                .flatten();
+
+                org_row
+                    .map(|(name, slug)| (Some(name), Some(slug)))
+                    .unwrap_or((None, None))
+            } else {
+                (None, None)
+            };
+
+            Json(MeResponse {
+                user_id: user.user_id,
+                username,
+                email,
+                role,
+                first_name,
+                last_name,
+                current_organization_id: user.current_organization_id,
+                current_organization_name: org_name,
+                current_organization_slug: org_slug,
+                current_organization_role: user.current_organization_role,
+            })
+            .into_response()
+        }
         None => {
             let mut resp = (
                 StatusCode::UNAUTHORIZED,
@@ -394,5 +536,185 @@ pub async fn change_password(
             Json(json!({"error":"db_error","message": e.to_string()})),
         )
             .into_response(),
+    }
+}
+
+// ============================================================================
+// Session Management Endpoints
+// ============================================================================
+
+#[derive(Debug, Serialize)]
+pub struct SessionResponse {
+    pub session_id: uuid::Uuid,
+    pub current_organization_id: Option<uuid::Uuid>,
+    pub current_organization_name: Option<String>,
+    pub organization_role: Option<String>,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub last_used_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+    pub is_current: bool,
+}
+
+#[derive(sqlx::FromRow)]
+struct SessionRow {
+    id: uuid::Uuid,
+    current_organization_id: Option<uuid::Uuid>,
+    current_organization_name: Option<String>,
+    organization_role: Option<String>,
+    ip_address: Option<String>,
+    user_agent: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    last_used_at: chrono::DateTime<chrono::Utc>,
+    expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// List all active sessions for the current user
+pub async fn list_sessions(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
+) -> impl IntoResponse {
+    let current_session_id = match uuid::Uuid::parse_str(&user.session_id) {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"invalid_session_id"})),
+            )
+                .into_response();
+        }
+    };
+
+    let rows: Vec<SessionRow> = match sqlx::query_as(
+        r#"
+        SELECT 
+            us.id,
+            us.current_organization_id,
+            o.name as current_organization_name,
+            us.organization_role,
+            us.ip_address::text as ip_address,
+            us.user_agent,
+            us.created_at,
+            us.last_used_at,
+            us.expires_at
+        FROM user_sessions us
+        LEFT JOIN organizations o ON o.id = us.current_organization_id
+        WHERE us.user_id = $1
+          AND us.revoked_at IS NULL
+          AND us.expires_at > NOW()
+        ORDER BY us.last_used_at DESC
+        "#,
+    )
+    .bind(user.user_id)
+    .fetch_all(&state.db)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!("Failed to fetch sessions: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"db_error","message": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let sessions: Vec<SessionResponse> = rows
+        .into_iter()
+        .map(|row| SessionResponse {
+            session_id: row.id,
+            current_organization_id: row.current_organization_id,
+            current_organization_name: row.current_organization_name,
+            organization_role: row.organization_role,
+            ip_address: row.ip_address,
+            user_agent: row.user_agent,
+            created_at: row.created_at,
+            last_used_at: row.last_used_at,
+            expires_at: row.expires_at,
+            is_current: row.id == current_session_id,
+        })
+        .collect();
+
+    Json(sessions).into_response()
+}
+
+/// Revoke a specific session
+pub async fn revoke_session_endpoint(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<auth::AuthUser>,
+    Path(session_id): Path<uuid::Uuid>,
+) -> impl IntoResponse {
+    // Verify that session_id belongs to user_id (security check)
+    let session_user_id: Option<uuid::Uuid> = match sqlx::query_scalar(
+        r#"
+        SELECT user_id 
+        FROM user_sessions 
+        WHERE id = $1 
+          AND revoked_at IS NULL
+        "#,
+    )
+    .bind(session_id)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(id)) => Some(id),
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error":"session_not_found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!("Failed to verify session ownership: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"db_error","message": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    if session_user_id != Some(user.user_id) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"forbidden","message":"session_does_not_belong_to_user"})),
+        )
+            .into_response();
+    }
+
+    // Prevent revoking the current session (user should use logout instead)
+    let current_session_id = match uuid::Uuid::parse_str(&user.session_id) {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"invalid_session_id"})),
+            )
+                .into_response();
+        }
+    };
+
+    if session_id == current_session_id {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"cannot_revoke_current_session","message":"use_logout_endpoint_instead"})),
+        )
+            .into_response();
+    }
+
+    // Revoke the session
+    match auth::revoke_session(&state.db, session_id).await {
+        Ok(_) => Json(json!({"status":"ok","message":"session_revoked"})).into_response(),
+        Err(e) => {
+            tracing::error!("Failed to revoke session: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"db_error","message": e.to_string()})),
+            )
+                .into_response()
+        }
     }
 }

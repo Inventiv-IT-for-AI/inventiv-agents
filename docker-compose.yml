@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # --- INFRA ---
   redis:
@@ -12,9 +10,11 @@ services:
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=llminfra
+      - POSTGRES_DB=${POSTGRES_DB:-inventiv-agents}
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - db_data_${PORT_OFFSET:-0}:/var/lib/postgresql/data
+    ports:
+      - "${DB_HOST_PORT:-5432}:5432"
 
   # --- LOCAL WORKER TEST (NO GPU) ---
   # Lightweight fake vLLM that serves GET /v1/models for readiness checks.
@@ -23,12 +23,17 @@ services:
     profiles: ["worker-local"]
     command: ["python", "-u", "/app/mock_vllm.py"]
     environment:
-      - MODEL_ID=demo-model
+      - MODEL_ID=${MOCK_VLLM_MODEL_ID:-demo-model}
       - PORT=8000
+      # Expose minimal vLLM-style Prometheus metrics for agent parsing (queue depth, running).
+      - VLLM_NUM_REQUESTS_WAITING=${MOCK_VLLM_REQUESTS_WAITING:-7}
+      - VLLM_NUM_REQUESTS_RUNNING=${MOCK_VLLM_REQUESTS_RUNNING:-1}
     volumes:
-      - ./inventiv-worker/mock_vllm.py:/app/mock_vllm.py:ro
+      - ./inventiv-worker-mock/mock_vllm.py:/app/mock_vllm.py:ro
     ports:
       - "${MOCK_VLLM_HOST_PORT:-18000}:8000"
+      # Expose worker-agent health endpoints too (same network namespace via worker-agent network_mode).
+      - "${WORKER_AGENT_HOST_PORT:-18080}:8080"
 
   # Agent-only worker (no vLLM) for local testing.
   worker-agent:
@@ -36,19 +41,23 @@ services:
       context: ./inventiv-worker
       dockerfile: Dockerfile.agent
     profiles: ["worker-local"]
+    # Share the same network namespace/IP as mock-vllm so the instance has a single IP
+    # with multiple ports (like a real VM: vLLM on :8000 + health/metrics on :8080).
+    network_mode: "service:mock-vllm"
     environment:
       - CONTROL_PLANE_URL=http://api:8003
-      # Leave empty to exercise bootstrap-per-worker flow.
-      - WORKER_AUTH_TOKEN=${WORKER_AUTH_TOKEN:-}
+      # Use a deterministic token for local/dev (avoid bootstrap special-cases).
+      - WORKER_AUTH_TOKEN=${WORKER_AUTH_TOKEN:-dev-worker-token}
       - INSTANCE_ID=${INSTANCE_ID:-}
-      - MODEL_ID=demo-model
+      - MODEL_ID=${MOCK_VLLM_MODEL_ID:-demo-model}
+      # Enable synthetic GPU metrics for local mock (no nvidia-smi in docker).
+      - WORKER_SIMULATE_GPU_COUNT=${WORKER_SIMULATE_GPU_COUNT:-1}
+      - WORKER_SIMULATE_GPU_VRAM_MB=${WORKER_SIMULATE_GPU_VRAM_MB:-24576}
       - VLLM_BASE_URL=http://mock-vllm:8000
       - WORKER_HEALTH_PORT=8080
       - WORKER_HEARTBEAT_INTERVAL_S=5
       - PYTHONUNBUFFERED=1
       # INSTANCE_ID must be provided at runtime (docker compose run -e INSTANCE_ID=...)
-    ports:
-      - "${WORKER_AGENT_HOST_PORT:-18080}:8080"
     depends_on:
       - mock-vllm
       - orchestrator
@@ -59,17 +68,21 @@ services:
   frontend:
     image: node:20-alpine
     profiles: ["ui"]
-    working_dir: /app
-    command: ["sh", "-lc", "npm install && npm run dev -- --hostname 0.0.0.0 --port 3000"]
+    working_dir: /repo
+    # Monorepo workspaces: install once at repo root; run Next from the frontend workspace.
+    # Use webpack dev server for reliable watch/HMR across workspaces.
+    command: ["sh", "-lc", "npm install --no-audit --no-fund && if [ ! -e node_modules/ia-designsys ] || [ ! -e node_modules/ia-widgets ]; then echo '🔧 Missing workspace links (ia-designsys/ia-widgets) in /repo/node_modules → forcing reinstall'; npm install --no-audit --no-fund --force; fi && if [ -e inventiv-frontend/node_modules/ia-widgets ] || [ -e inventiv-frontend/node_modules/ia-designsys ]; then echo '🧹 Removing shadowed workspace copies in inventiv-frontend/node_modules (would hide monorepo packages)'; rm -rf inventiv-frontend/node_modules/ia-widgets inventiv-frontend/node_modules/ia-designsys; fi && echo \"ℹ️  ia-widgets resolves to: $(node -e 'process.chdir(\"inventiv-frontend\"); console.log(require.resolve(\"ia-widgets\"))')\" && npm -w inventiv-frontend run dev -- --webpack --hostname 0.0.0.0 --port 3000"]
     environment:
       # Frontend server-side proxy target (docker network)
       - API_INTERNAL_URL=http://api:8003
-      # Improve file watching reliability on macOS/docker bind mounts
+      # Improve file watching reliability on macOS/Windows with Docker bind mounts
+      # Also helps on Linux in some cases
       - CHOKIDAR_USEPOLLING=1
       - WATCHPACK_POLLING=true
       - NODE_ENV=development
     volumes:
-      - ./inventiv-frontend:/app
+      - .:/repo
+      - ui_node_modules:/repo/node_modules
     ports:
       - "${UI_HOST_PORT:-3000}:3000"
     depends_on:
@@ -82,19 +95,33 @@ services:
       dockerfile: Dockerfile.rust
       args:
         SERVICE_NAME: inventiv-orchestrator
-    command: cargo watch -w inventiv-orchestrator -w inventiv-common -w sqlx-migrations -x "run --release -p inventiv-orchestrator"
+    command:
+      [
+        "sh",
+        "-c",
+        "echo '🔍 Checking compilation before starting...' && FEAT=\"\"; if [ -n \"$$ORCHESTRATOR_FEATURES\" ]; then FEAT=\"--features $$ORCHESTRATOR_FEATURES\"; fi && cargo check --package inventiv-orchestrator --release $$FEAT && echo '✅ Compilation check passed, starting with cargo watch...' && cargo watch -w inventiv-orchestrator -w inventiv-common -w sqlx-migrations -x \"run --release -p inventiv-orchestrator $$FEAT\"",
+      ]
     volumes:
       - .:/app # Source code mount for hot reload
       # Secrets (dev/staging/prod): allow reading tokens from files without baking them into env.
       - ${SECRETS_DIR:-./deploy/secrets}:/run/secrets:ro
+      # Docker socket: allow orchestrator to manage mock runtimes via docker compose
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
-      - DATABASE_URL=postgresql://postgres:password@db:5432/llminfra
+      - DATABASE_URL=postgresql://postgres:password@db:5432/${POSTGRES_DB:-inventiv-agents}
       - REDIS_URL=redis://redis:6379
       - CARGO_TARGET_DIR=/app/target/inventiv-orchestrator
+      # Enable optional provider implementations via Cargo features (dev/test only).
+      - ORCHESTRATOR_FEATURES=${ORCHESTRATOR_FEATURES:-provider-scaleway,provider-mock}
       - PROVIDER=${PROVIDER:-scaleway}
+      # Mock provider runtime management (Docker compose)
+      - PROJECT_ROOT=/app
+      - CONTROLPLANE_NETWORK_NAME=${CONTROLPLANE_NETWORK_NAME:-inventiv-agents-worker-fixes_default}
       - SCALEWAY_PROJECT_ID=${SCALEWAY_PROJECT_ID:-}
       - SCALEWAY_ACCESS_KEY=${SCALEWAY_ACCESS_KEY:-}
+      - SCALEWAY_ACCESS_KEY_FILE=${SCALEWAY_ACCESS_KEY_FILE:-/run/secrets/scaleway_access_key}
       - SCALEWAY_SECRET_KEY=${SCALEWAY_SECRET_KEY:-}
+      - SCALEWAY_ORGANIZATION_ID=${SCALEWAY_ORGANIZATION_ID:-}
       - SCALEWAY_SSH_PUBLIC_KEY_FILE=/app/.ssh/llm-studio-key.pub
       - WORKER_AUTH_TOKEN=${WORKER_AUTH_TOKEN:-dev-worker-token}
       - WORKER_HEALTH_PORT=${WORKER_HEALTH_PORT:-8080}
@@ -124,21 +151,43 @@ services:
       dockerfile: Dockerfile.rust
       args:
         SERVICE_NAME: inventiv-api
-    command: cargo watch -w inventiv-api -w inventiv-common -w sqlx-migrations -x "run --release -p inventiv-api"
+    # Build check before starting: fail fast if compilation fails
+    command: >
+      sh -c "
+        echo '🔍 Checking compilation before starting...' &&
+        cargo check --package inventiv-api --release &&
+        echo '✅ Compilation check passed, starting with cargo watch...' &&
+        cargo watch -w inventiv-api -w inventiv-common -w sqlx-migrations -x 'run --release -p inventiv-api'
+      "
     volumes:
       - .:/app # Source code mount for hot reload
       # Default admin password file (dev/local)
       - ${SECRETS_DIR:-./deploy/secrets}:/run/secrets:ro
     environment:
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=postgresql://postgres:password@db:5432/llminfra
+      - DATABASE_URL=postgresql://postgres:password@db:5432/${POSTGRES_DB:-inventiv-agents}
       - CARGO_TARGET_DIR=/app/target/inventiv-api
       - AUTO_SEED_CATALOG=1
       - SEED_CATALOG_PATH=/app/seeds/catalog_seeds.sql
       - BOOTSTRAP_DEFAULT_ADMIN=${BOOTSTRAP_DEFAULT_ADMIN:-1}
+      # If enabled, refresh the admin password on startup (useful when DB volume persists across runs/tests).
+      - BOOTSTRAP_UPDATE_ADMIN_PASSWORD=${BOOTSTRAP_UPDATE_ADMIN_PASSWORD:-0}
       - DEFAULT_ADMIN_USERNAME=${DEFAULT_ADMIN_USERNAME:-admin}
       - DEFAULT_ADMIN_EMAIL=${DEFAULT_ADMIN_EMAIL:-admin@inventiv.local}
       - DEFAULT_ADMIN_PASSWORD_FILE=${DEFAULT_ADMIN_PASSWORD_FILE:-/run/secrets/default_admin_password}
+      # Default organization bootstrap (inventiv-api)
+      - BOOTSTRAP_DEFAULT_ORGANIZATION=${BOOTSTRAP_DEFAULT_ORGANIZATION:-1}
+      - DEFAULT_ORGANIZATION_NAME=${DEFAULT_ORGANIZATION_NAME:-Inventiv IT}
+      - DEFAULT_ORGANIZATION_SLUG=${DEFAULT_ORGANIZATION_SLUG:-inventiv-it}
+      # SMTP Configuration (Scaleway Transactional Email)
+      - SMTP_SERVER=${SMTP_SERVER:-smtp.tem.scaleway.com}
+      - SMTP_PORT=${SMTP_PORT:-465}
+      - SMTP_USERNAME=${SMTP_USERNAME:-c4c36580-4e0d-4584-83c5-81917932768e}
+      - SMTP_PASSWORD_FILE=${SMTP_PASSWORD_FILE:-/run/secrets/scaleway_secret_key}
+      - SMTP_FROM_EMAIL=${SMTP_FROM_EMAIL:-noreply@inventiv-agents.fr}
+      - SMTP_FROM_NAME=${SMTP_FROM_NAME:-Inventiv Agents}
+      - SMTP_USE_TLS=${SMTP_USE_TLS:-1}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:13000}
       # Dev convenience: allow a global worker token for heartbeat auth.
       - WORKER_AUTH_TOKEN=${WORKER_AUTH_TOKEN:-dev-worker-token}
       - WORKER_AUTO_INSTALL=${WORKER_AUTO_INSTALL:-0}
@@ -154,12 +203,19 @@ services:
       dockerfile: Dockerfile.rust
       args:
         SERVICE_NAME: inventiv-finops
-    command: cargo watch -w inventiv-finops -w inventiv-common -w sqlx-migrations -x "run --release -p inventiv-finops"
+    # Build check before starting: fail fast if compilation fails
+    command: >
+      sh -c "
+        echo '🔍 Checking compilation before starting...' &&
+        cargo check --package inventiv-finops --release &&
+        echo '✅ Compilation check passed, starting with cargo watch...' &&
+        cargo watch -w inventiv-finops -w inventiv-common -w sqlx-migrations -x 'run --release -p inventiv-finops'
+      "
     volumes:
       - .:/app # Source code mount for hot reload
     environment:
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=postgresql://postgres:password@db:5432/llminfra
+      - DATABASE_URL=postgresql://postgres:password@db:5432/${POSTGRES_DB:-inventiv-agents}
       - CARGO_TARGET_DIR=/app/target/inventiv-finops
       - RUST_LOG=debug
     depends_on:
@@ -168,4 +224,8 @@ services:
 
 volumes:
   redis_data:
-  db_data:
+  # DB volumes isolated by PORT_OFFSET (one per worktree)
+  db_data_0:        # Default worktree (PORT_OFFSET=0)
+  db_data_10000:    # Worktree with PORT_OFFSET=10000
+  db_data_20000:    # Worktree with PORT_OFFSET=20000
+  ui_node_modules:

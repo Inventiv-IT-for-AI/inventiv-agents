@@ -15,6 +15,7 @@ set -euo pipefail
 # Writes on remote (chmod 600):
 #   scaleway_access_key
 #   scaleway_secret_key
+#   provider_settings_key
 #   llm-studio-key.pub
 #   ghcr_token
 #   default_admin_password
@@ -46,11 +47,17 @@ if [[ -z "${SECRETS_DIR}" ]]; then
   exit 2
 fi
 
+# Save SECRETS_DIR from env file before loading local .env (which may override it)
+SAVED_SECRETS_DIR="${SECRETS_DIR}"
+
 # Load local .env if present (local-only, gitignored) as a fallback source for secrets.
+# BUT: Don't override SECRETS_DIR from the env file, as it's environment-specific
 if [[ -f ".env" ]]; then
   set -a
   # shellcheck disable=SC1091
   source ".env" || true
+  # Restore SECRETS_DIR from env file (it's environment-specific, not local-dev-specific)
+  SECRETS_DIR="${SAVED_SECRETS_DIR}"
   set +a
 fi
 
@@ -64,21 +71,26 @@ if [[ -n "${SSH_ID_FILE}" ]]; then
 fi
 
 write_remote_file_from_stdin() {
-  local remote_path="$1"
-  ssh "${SSH_ID_ARGS[@]}" ${SSH_EXTRA_OPTS} "${REMOTE_SSH}" "set -euo pipefail; \
-    sudo mkdir -p '${SECRETS_DIR}'; \
-    sudo sh -c 'umask 077; cat > \"${remote_path}\"'; \
-    sudo chmod 600 '${remote_path}' \
+  local filename="$1"
+  # SECRETS_DIR is set in the calling script's environment - expand it here before passing to SSH
+  local secrets_dir_expanded="${SECRETS_DIR}"
+  ssh "${SSH_ID_ARGS[@]}" ${SSH_EXTRA_OPTS} "${REMOTE_SSH}" "set -euo pipefail
+    SECRETS_DIR=\"${secrets_dir_expanded}\"
+    REMOTE_FILE=\"\${SECRETS_DIR}/${filename}\"
+    sudo mkdir -p \"\${SECRETS_DIR}\"
+    sudo sh -c \"umask 077; cat > \\\"\${REMOTE_FILE}\\\"\"
+    sudo chmod 644 \"\${REMOTE_FILE}\"
+    sudo chown root:root \"\${REMOTE_FILE}\" || true
   "
 }
 
 upload_secret_file() {
   local name="$1"
   local local_path="$2"
-  local remote_path="${SECRETS_DIR}/${name}"
   if [[ -f "${local_path}" ]]; then
     echo "==> uploading ${name} from ${local_path}"
-    cat "${local_path}" | write_remote_file_from_stdin "${remote_path}"
+    # Pass just the filename, SECRETS_DIR will be expanded in write_remote_file_from_stdin
+    cat "${local_path}" | write_remote_file_from_stdin "${name}"
     return 0
   fi
   return 1
@@ -109,6 +121,11 @@ fi
 if ! upload_secret_file "scaleway_secret_key" "${LOCAL_SECRETS_DIR}/scaleway_secret_key"; then
   upload_secret_value "scaleway_secret_key" "${SCALEWAY_SECRET_KEY:-${SCW_SECRET_KEY:-}}"
 fi
+
+# 1bis) Provider settings encryption key (used to store encrypted provider credentials in DB).
+# Generate once and keep it stable per environment:
+#   openssl rand -base64 32 > deploy/secrets/provider_settings_key
+upload_secret_file "provider_settings_key" "${LOCAL_SECRETS_DIR}/provider_settings_key" || true
 
 # 2) SSH pub key used by orchestrator for worker provisioning
 if ! upload_secret_file "llm-studio-key.pub" "${LOCAL_SECRETS_DIR}/llm-studio-key.pub"; then

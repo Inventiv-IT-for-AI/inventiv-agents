@@ -1,41 +1,50 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { apiUrl } from "@/lib/api";
+import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from "react";
+import { apiRequest } from "@/lib/api";
+import type { Organization } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useI18n } from "@/i18n/I18nProvider";
-import { LOCALE_LABELS, normalizeLocale } from "@/i18n/i18n";
-import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
-import { InventivDataTable, type DataTableSortState, type InventivDataTableColumn } from "@/components/shared/InventivDataTable";
+import { IADataTable, type DataTableSortState, type IADataTableColumn, type LoadRangeResult } from "ia-widgets";
+import { IAAlert, IAAlertDescription, IAAlertTitle } from "ia-designsys";
+import { useSnackbar } from "ia-widgets";
+import { Building2 } from "lucide-react";
 
 type User = {
   id: string;
   username: string;
   email: string;
-  role: string;
+  role: string; // Global role (admin, user, etc.)
   first_name?: string | null;
   last_name?: string | null;
-  locale_code: string;
   created_at: string;
   updated_at: string;
+  // Organization context (nullable - user may not be in any org)
+  organization_id?: string | null;
+  organization_name?: string | null;
+  organization_slug?: string | null;
+  organization_role?: string | null; // Role in the organization (owner, admin, manager, user)
 };
 
 export default function UsersPage() {
-  const { t } = useI18n();
+  const snackbar = useSnackbar();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const [sort, setSort] = useState<DataTableSortState>(null);
-  const [locales, setLocales] = useState<Array<{ code: string; name: string; is_rtl?: boolean; is_active?: boolean }>>([]);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [selected, setSelected] = useState<User | null>(null);
+
+  // Filters
+  const [organizations, setOrganizations] = useState<Organization[]>([]);
+  const [filterOrganizationId, setFilterOrganizationId] = useState<string | null>(null);
+  const [filterOrganizationRole, setFilterOrganizationRole] = useState<string | null>(null);
 
   const [form, setForm] = useState({
     username: "admin",
@@ -44,30 +53,51 @@ export default function UsersPage() {
     role: "admin",
     first_name: "",
     last_name: "",
-    locale_code: "en-US",
   });
 
-  const fetchLocales = async () => {
+  const fetchUsers = async () => {
     try {
-      const res = await fetch(apiUrl("/locales"));
-      if (!res.ok) return;
-      const data = await res.json();
-      if (Array.isArray(data)) setLocales(data);
-    } catch {
-      // ignore
+      setLoading(true);
+      setError(null);
+      const res = await apiRequest("/users");
+      if (!res.ok) {
+        setError("Accès refusé (admin requis) ou erreur API");
+        return;
+      }
+    } catch (e) {
+      console.error(e);
+      setError("Erreur réseau");
+    } finally {
+      setLoading(false);
     }
   };
 
+  // Fetch organizations for filter
   useEffect(() => {
-    void fetchLocales();
+    const fetchOrgs = async () => {
+      try {
+        const res = await apiRequest("/organizations");
+        if (res.ok) {
+          const data = (await res.json()) as Organization[];
+          setOrganizations(Array.isArray(data) ? data : []);
+        }
+      } catch (e) {
+        console.error("Failed to fetch organizations:", e);
+      }
+    };
+    void fetchOrgs();
   }, []);
 
+  useEffect(() => {
+    void fetchUsers();
+  }, [refreshTick, filterOrganizationId, filterOrganizationRole]);
+
   const openCreate = () => {
-    setForm({ username: "admin", email: "", password: "", role: "admin", first_name: "", last_name: "", locale_code: "en-US" });
+    setForm({ username: "admin", email: "", password: "", role: "admin", first_name: "", last_name: "" });
     setCreateOpen(true);
   };
 
-  const openEdit = (u: User) => {
+  const openEdit = useCallback((u: User) => {
     setSelected(u);
     setForm({
       username: u.username,
@@ -76,69 +106,93 @@ export default function UsersPage() {
       role: u.role,
       first_name: u.first_name ?? "",
       last_name: u.last_name ?? "",
-      locale_code: normalizeLocale(u.locale_code),
     });
     setEditOpen(true);
-  };
+  }, []);
 
   const createUser = async () => {
-    const res = await fetch(apiUrl("/users"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        username: form.username,
-        email: form.email,
-        password: form.password,
-        role: form.role,
-        first_name: form.first_name || null,
-        last_name: form.last_name || null,
-        locale_code: normalizeLocale(form.locale_code),
-      }),
-    });
-    if (!res.ok) {
-      const msg = await res.text().catch(() => "");
-      alert(`Erreur création user (${res.status}) ${msg}`);
-      return;
+    try {
+      const res = await apiRequest("/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: form.username,
+          email: form.email,
+          password: form.password,
+          role: form.role,
+          first_name: form.first_name || null,
+          last_name: form.last_name || null,
+        }),
+      });
+      if (!res.ok) {
+        const msg = await res.text().catch(() => "");
+        const eMsg = `Erreur création user (${res.status})`;
+        setError(`${eMsg} ${msg}`);
+        snackbar.error(eMsg, { title: "Users", details: msg });
+        return;
+      }
+      setCreateOpen(false);
+      setRefreshTick((v) => v + 1);
+      snackbar.success("Utilisateur créé", { title: "Users" });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(`Erreur réseau ${msg}`);
+      snackbar.error("Erreur réseau", { title: "Users", details: msg });
     }
-    setCreateOpen(false);
-    setRefreshTick((v) => v + 1);
   };
 
   const saveUser = async () => {
     if (!selected) return;
-    const res = await fetch(apiUrl(`/users/${selected.id}`), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        username: form.username,
-        email: form.email,
-        role: form.role,
-        first_name: form.first_name || null,
-        last_name: form.last_name || null,
-        locale_code: normalizeLocale(form.locale_code),
-        ...(form.password.trim() ? { password: form.password } : {}),
-      }),
-    });
-    if (!res.ok) {
-      const msg = await res.text().catch(() => "");
-      alert(`Erreur update user (${res.status}) ${msg}`);
-      return;
+    try {
+      const res = await apiRequest(`/users/${selected.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: form.username,
+          email: form.email,
+          role: form.role,
+          first_name: form.first_name || null,
+          last_name: form.last_name || null,
+          ...(form.password.trim() ? { password: form.password } : {}),
+        }),
+      });
+      if (!res.ok) {
+        const msg = await res.text().catch(() => "");
+        const eMsg = `Erreur update user (${res.status})`;
+        setError(`${eMsg} ${msg}`);
+        snackbar.error(eMsg, { title: "Users", details: msg });
+        return;
+      }
+      setEditOpen(false);
+      setSelected(null);
+      setRefreshTick((v) => v + 1);
+      snackbar.success("Utilisateur mis à jour", { title: "Users" });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(`Erreur réseau ${msg}`);
+      snackbar.error("Erreur réseau", { title: "Users", details: msg });
     }
-    setEditOpen(false);
-    setSelected(null);
-    setRefreshTick((v) => v + 1);
   };
 
-  const deleteUser = async (u: User) => {
+  const deleteUser = useCallback(async (u: User) => {
     if (!confirm(`Supprimer l'utilisateur ${u.email} ?`)) return;
-    const res = await fetch(apiUrl(`/users/${u.id}`), { method: "DELETE" });
-    if (!res.ok && res.status !== 204) {
-      const msg = await res.text().catch(() => "");
-      alert(`Erreur suppression user (${res.status}) ${msg}`);
-      return;
+    try {
+      const res = await apiRequest(`/users/${u.id}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 204) {
+        const msg = await res.text().catch(() => "");
+        const eMsg = `Erreur suppression user (${res.status})`;
+        setError(`${eMsg} ${msg}`);
+        snackbar.error(eMsg, { title: "Users", details: msg });
+        return;
+      }
+      setRefreshTick((v) => v + 1);
+      snackbar.success("Utilisateur supprimé", { title: "Users" });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(`Erreur réseau ${msg}`);
+      snackbar.error("Erreur réseau", { title: "Users", details: msg });
     }
-    setRefreshTick((v) => v + 1);
-  };
+  }, [snackbar, setError, setRefreshTick]);
 
   type UsersSearchResponse = {
     offset: number;
@@ -153,16 +207,28 @@ export default function UsersPage() {
       const params = new URLSearchParams();
       params.set("offset", String(offset));
       params.set("limit", String(limit));
+      if (filterOrganizationId) {
+        params.set("organization_id", filterOrganizationId);
+      }
+      if (filterOrganizationRole) {
+        params.set("organization_role", filterOrganizationRole);
+      }
       if (sort) {
-        const by = ({ username: "username", email: "email", role: "role", created_at: "created_at", updated_at: "updated_at" } as Record<string, string>)[
-          sort.columnId
-        ];
+        const by = ({
+          username: "username",
+          email: "email",
+          role: "role",
+          created_at: "created_at",
+          updated_at: "updated_at",
+          organization_name: "organization_name",
+          organization_role: "organization_role",
+        } as Record<string, string>)[sort.columnId];
         if (by) {
           params.set("sort_by", by);
           params.set("sort_dir", sort.direction);
         }
       }
-      const res = await fetch(apiUrl(`/users/search?${params.toString()}`));
+      const res = await apiRequest(`/users/search?${params.toString()}`);
       if (!res.ok) {
         throw new Error(`users/search failed (${res.status})`);
       }
@@ -174,38 +240,70 @@ export default function UsersPage() {
         filteredCount: data.filtered_count,
       };
     },
-    [sort]
+    [sort, filterOrganizationId, filterOrganizationRole]
   );
 
-  const columns = useMemo<InventivDataTableColumn<User>[]>(() => {
+  const columns = useMemo<IADataTableColumn<User>[]>(() => {
     return [
-      { id: "username", label: t("usersPage.username"), width: 200, sortable: true, cell: ({ row }) => <span className="font-mono text-xs">{row.username}</span> },
-      { id: "email", label: t("usersPage.email"), width: 280, sortable: true, cell: ({ row }) => <span className="font-medium">{row.email}</span> },
+      { id: "username", label: "Username", width: 180, sortable: true, cell: ({ row }) => <span className="font-mono text-xs">{row.username}</span> },
+      { id: "email", label: "Email", width: 240, sortable: true, cell: ({ row }) => <span className="font-medium">{row.email}</span> },
       {
         id: "name",
-        label: t("usersPage.name"),
-        width: 220,
+        label: "Nom",
+        width: 180,
         sortable: false,
         cell: ({ row }) => <span>{`${row.first_name ?? ""} ${row.last_name ?? ""}`.trim() || "-"}</span>,
       },
-      { id: "role", label: t("usersPage.role"), width: 140, sortable: true, cell: ({ row }) => row.role },
+      { id: "role", label: "Rôle global", width: 120, sortable: true, cell: ({ row }) => <span className="text-xs">{row.role}</span> },
       {
-        id: "locale_code",
-        label: t("usersPage.locale"),
-        width: 160,
-        sortable: false,
-        cell: ({ row }) => <span className="font-mono text-xs">{LOCALE_LABELS[normalizeLocale(row.locale_code)] ?? row.locale_code}</span>,
+        id: "organization_name",
+        label: "Organisation",
+        width: 200,
+        sortable: true,
+        cell: ({ row }) => (
+          <div className="flex items-center gap-2">
+            {row.organization_name ? (
+              <>
+                <Building2 className="h-3 w-3 text-muted-foreground" />
+                <span className="text-sm">{row.organization_name}</span>
+              </>
+            ) : (
+              <span className="text-xs text-muted-foreground italic">Aucune</span>
+            )}
+          </div>
+        ),
+      },
+      {
+        id: "organization_role",
+        label: "Rôle org",
+        width: 120,
+        sortable: true,
+        cell: ({ row }) => {
+          if (!row.organization_role) return <span className="text-xs text-muted-foreground">-</span>;
+          const roleLabels: Record<string, string> = {
+            owner: "Owner",
+            admin: "Admin",
+            manager: "Manager",
+            user: "User",
+          };
+          const role = row.organization_role.toLowerCase();
+          return (
+            <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-primary/10 text-primary">
+              {roleLabels[role] || role}
+            </span>
+          );
+        },
       },
       {
         id: "created_at",
-        label: t("usersPage.createdAt"),
-        width: 200,
+        label: "Créé",
+        width: 180,
         sortable: true,
         cell: ({ row }) => <span className="font-mono text-xs">{new Date(row.created_at).toISOString().slice(0, 19).replace("T", " ")}</span>,
       },
       {
         id: "actions",
-        label: t("usersPage.actions"),
+        label: "Actions",
         width: 220,
         align: "right",
         disableReorder: true,
@@ -213,41 +311,98 @@ export default function UsersPage() {
         cell: ({ row }) => (
           <div className="flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
             <Button variant="outline" size="sm" onClick={() => openEdit(row)}>
-              {t("usersPage.edit")}
+              Edit
             </Button>
             <Button variant="destructive" size="sm" onClick={() => deleteUser(row)}>
-              {t("usersPage.delete")}
+              Delete
             </Button>
           </div>
         ),
       },
     ];
-  }, [deleteUser, openEdit, t]);
+  }, [deleteUser, openEdit]);
 
   return (
     <div className="p-8 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">{t("usersPage.title")}</h1>
-          <p className="text-muted-foreground">{t("usersPage.subtitle")}</p>
+          <h1 className="text-3xl font-bold tracking-tight">Users</h1>
+          <p className="text-muted-foreground">Créer / modifier / supprimer des users (admin).</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => setRefreshTick((v) => v + 1)} disabled={loading}>
-            {t("usersPage.refresh")}
+            Refresh
           </Button>
-          <Button onClick={openCreate}>{t("usersPage.create")}</Button>
+          <Button onClick={openCreate}>Créer un user</Button>
         </div>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>{t("usersPage.listTitle")}</CardTitle>
+          <CardTitle>Liste</CardTitle>
         </CardHeader>
         <CardContent>
-          {error ? <div className="text-sm text-red-600 mb-3">{error}</div> : null}
-          <InventivDataTable<User>
+          {/* Filters */}
+          <div className="mb-4 flex gap-4 items-end">
+            <div className="flex-1 grid gap-2">
+              <Label htmlFor="filter-org">Filtrer par Organisation</Label>
+              <Select
+                value={filterOrganizationId || "all"}
+                onValueChange={(value) => setFilterOrganizationId(value === "all" ? null : value)}
+              >
+                <SelectTrigger id="filter-org" className="w-full">
+                  <SelectValue placeholder="Toutes les organisations" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Toutes les organisations</SelectItem>
+                  {organizations.map((org) => (
+                    <SelectItem key={org.id} value={org.id}>
+                      {org.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex-1 grid gap-2">
+              <Label htmlFor="filter-role">Filtrer par Rôle org</Label>
+              <Select
+                value={filterOrganizationRole || "all"}
+                onValueChange={(value) => setFilterOrganizationRole(value === "all" ? null : value)}
+              >
+                <SelectTrigger id="filter-role" className="w-full">
+                  <SelectValue placeholder="Tous les rôles" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Tous les rôles</SelectItem>
+                  <SelectItem value="owner">Owner</SelectItem>
+                  <SelectItem value="admin">Admin</SelectItem>
+                  <SelectItem value="manager">Manager</SelectItem>
+                  <SelectItem value="user">User</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {(filterOrganizationId || filterOrganizationRole) && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setFilterOrganizationId(null);
+                  setFilterOrganizationRole(null);
+                }}
+              >
+                Réinitialiser
+              </Button>
+            )}
+          </div>
+
+          {error ? (
+            <IAAlert variant="destructive" className="mb-3">
+              <IAAlertTitle>Erreur</IAAlertTitle>
+              <IAAlertDescription>{error}</IAAlertDescription>
+            </IAAlert>
+          ) : null}
+          <IADataTable<User>
             listId="users:list"
-            title={t("usersPage.listTitle")}
+            title="Users"
             dataKey={JSON.stringify({ refreshTick, sort })}
             leftMeta={loading ? <span className="text-sm text-muted-foreground">Loading…</span> : undefined}
             autoHeight={true}
@@ -266,110 +421,80 @@ export default function UsersPage() {
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent showCloseButton={false}>
           <DialogHeader>
-            <DialogTitle>{t("usersPage.create")}</DialogTitle>
+            <DialogTitle>Créer un user</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3 py-2">
             <div className="grid gap-2">
-              <Label>{t("usersPage.username")}</Label>
-              <Input value={form.username} onChange={(e) => setForm((s) => ({ ...s, username: e.target.value }))} />
+              <Label>Username</Label>
+              <Input value={form.username} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, username: e.target.value }))} />
             </div>
             <div className="grid gap-2">
-              <Label>{t("usersPage.email")}</Label>
-              <Input value={form.email} onChange={(e) => setForm((s) => ({ ...s, email: e.target.value }))} />
+              <Label>Email</Label>
+              <Input value={form.email} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, email: e.target.value }))} />
             </div>
             <div className="grid gap-2">
-              <Label>{t("usersPage.password")}</Label>
-              <Input type="password" value={form.password} onChange={(e) => setForm((s) => ({ ...s, password: e.target.value }))} />
+              <Label>Mot de passe</Label>
+              <Input type="password" value={form.password} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, password: e.target.value }))} />
             </div>
             <div className="grid gap-2">
-              <Label>{t("usersPage.role")}</Label>
-              <Input value={form.role} onChange={(e) => setForm((s) => ({ ...s, role: e.target.value }))} />
+              <Label>Rôle</Label>
+              <Input value={form.role} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, role: e.target.value }))} />
             </div>
             <div className="grid gap-2">
               <Label>Prénom</Label>
-              <Input value={form.first_name} onChange={(e) => setForm((s) => ({ ...s, first_name: e.target.value }))} />
+              <Input value={form.first_name} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, first_name: e.target.value }))} />
             </div>
             <div className="grid gap-2">
               <Label>Nom</Label>
-              <Input value={form.last_name} onChange={(e) => setForm((s) => ({ ...s, last_name: e.target.value }))} />
-            </div>
-            <div className="grid gap-2">
-              <Label>{t("usersPage.locale")}</Label>
-              <Select value={form.locale_code} onValueChange={(v) => setForm((s) => ({ ...s, locale_code: normalizeLocale(v) }))}>
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder={LOCALE_LABELS[normalizeLocale(form.locale_code)] ?? form.locale_code} />
-                </SelectTrigger>
-                <SelectContent>
-                  {(locales.length ? locales.map((l) => l.code) : Object.keys(LOCALE_LABELS)).map((code) => (
-                    <SelectItem key={code} value={code}>
-                      {LOCALE_LABELS[normalizeLocale(code)] ?? code}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Input value={form.last_name} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, last_name: e.target.value }))} />
             </div>
           </div>
           <DialogFooter className="sm:justify-between">
             <Button variant="outline" onClick={() => setCreateOpen(false)}>
-              {t("usersPage.cancel")}
+              Annuler
             </Button>
-            <Button onClick={createUser}>{t("usersPage.create")}</Button>
+            <Button onClick={createUser}>Créer</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       {/* Edit dialog */}
-      <Dialog open={editOpen} onOpenChange={(o) => { setEditOpen(o); if (!o) setSelected(null); }}>
+      <Dialog open={editOpen} onOpenChange={(o: boolean) => { setEditOpen(o); if (!o) setSelected(null); }}>
         <DialogContent showCloseButton={false}>
           <DialogHeader>
-            <DialogTitle>{t("usersPage.edit")}</DialogTitle>
+            <DialogTitle>Modifier user</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3 py-2">
             <div className="grid gap-2">
-              <Label>{t("usersPage.username")}</Label>
-              <Input value={form.username} onChange={(e) => setForm((s) => ({ ...s, username: e.target.value }))} />
+              <Label>Username</Label>
+              <Input value={form.username} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, username: e.target.value }))} />
             </div>
             <div className="grid gap-2">
-              <Label>{t("usersPage.email")}</Label>
-              <Input value={form.email} onChange={(e) => setForm((s) => ({ ...s, email: e.target.value }))} />
+              <Label>Email</Label>
+              <Input value={form.email} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, email: e.target.value }))} />
             </div>
             <div className="grid gap-2">
-              <Label>{t("usersPage.passwordOptional")}</Label>
-              <Input type="password" value={form.password} onChange={(e) => setForm((s) => ({ ...s, password: e.target.value }))} />
+              <Label>Nouveau mot de passe (optionnel)</Label>
+              <Input type="password" value={form.password} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, password: e.target.value }))} />
             </div>
             <div className="grid gap-2">
-              <Label>{t("usersPage.role")}</Label>
-              <Input value={form.role} onChange={(e) => setForm((s) => ({ ...s, role: e.target.value }))} />
+              <Label>Rôle</Label>
+              <Input value={form.role} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, role: e.target.value }))} />
             </div>
             <div className="grid gap-2">
               <Label>Prénom</Label>
-              <Input value={form.first_name} onChange={(e) => setForm((s) => ({ ...s, first_name: e.target.value }))} />
+              <Input value={form.first_name} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, first_name: e.target.value }))} />
             </div>
             <div className="grid gap-2">
               <Label>Nom</Label>
-              <Input value={form.last_name} onChange={(e) => setForm((s) => ({ ...s, last_name: e.target.value }))} />
-            </div>
-            <div className="grid gap-2">
-              <Label>{t("usersPage.locale")}</Label>
-              <Select value={form.locale_code} onValueChange={(v) => setForm((s) => ({ ...s, locale_code: normalizeLocale(v) }))}>
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder={LOCALE_LABELS[normalizeLocale(form.locale_code)] ?? form.locale_code} />
-                </SelectTrigger>
-                <SelectContent>
-                  {(locales.length ? locales.map((l) => l.code) : Object.keys(LOCALE_LABELS)).map((code) => (
-                    <SelectItem key={code} value={code}>
-                      {LOCALE_LABELS[normalizeLocale(code)] ?? code}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Input value={form.last_name} onChange={(e: ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, last_name: e.target.value }))} />
             </div>
           </div>
           <DialogFooter className="sm:justify-between">
             <Button variant="outline" onClick={() => setEditOpen(false)}>
-              {t("usersPage.cancel")}
+              Annuler
             </Button>
-            <Button onClick={saveUser}>{t("usersPage.save")}</Button>
+            <Button onClick={saveUser}>Enregistrer</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

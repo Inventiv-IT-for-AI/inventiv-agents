@@ -5,7 +5,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -14,14 +14,14 @@ mod finops_events;
 mod health_check_job;
 mod logger;
 mod models;
-mod provider;
 mod provider_manager; // NEW
-mod providers; // NEW
 mod provisioning_job;
+mod recovery_job;
 mod services; // NEW
 mod terminator_job;
+mod volume_reconciliation_job;
 mod watch_dog_job;
-mod worker_storage;
+// worker_storage moved to inventiv-common
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres};
 use tokio::time::{sleep, Duration};
@@ -38,7 +38,16 @@ struct WorkerRegisterRequest {
     model_id: Option<String>,
     vllm_port: Option<i32>,
     health_port: Option<i32>,
+    /// Optional: worker-reported reachable IP (useful for local/dev, and for providers where the worker is best source of truth).
+    ip_address: Option<String>,
     metadata: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+struct AgentInfo {
+    version: Option<String>,
+    build_date: Option<String>,
+    checksum: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -50,6 +59,10 @@ struct WorkerHeartbeatRequest {
     queue_depth: Option<i32>,
     gpu_utilization: Option<f64>,
     gpu_mem_used_mb: Option<f64>,
+    /// Optional: worker-reported reachable IP.
+    ip_address: Option<String>,
+    /// Agent version/checksum information
+    agent_info: Option<AgentInfo>,
     metadata: Option<serde_json::Value>,
 }
 
@@ -139,7 +152,7 @@ async fn instance_bootstrap_allowed(
     // Allow bootstrap when:
     // - instance exists
     // - no token exists yet
-    // - and (provider is mock) OR client_ip matches instance.ip_address
+    // - and client_ip matches instance.ip_address
     let token_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM worker_auth_tokens WHERE instance_id = $1 AND revoked_at IS NULL)",
     )
@@ -170,10 +183,7 @@ async fn instance_bootstrap_allowed(
         return false;
     };
 
-    if provider_code_opt.as_deref() == Some("mock") {
-        return true;
-    }
-
+    let _ = provider_code_opt; // keep for future audit logging if needed
     let Some(ip) = ip_opt else {
         return false;
     };
@@ -292,9 +302,16 @@ async fn main() {
                         if let Ok(cmd) =
                             serde_json::from_value::<CommandProvision>(event_json.clone())
                         {
+                            let instance_id = cmd.instance_id.clone();
+                            eprintln!("📥 [Redis] Received CMD:PROVISION for instance {} (zone={}, type={})", 
+                                instance_id, cmd.zone, cmd.instance_type);
                             let pool = state_redis.db.clone();
                             let redis_client = state_redis.redis_client.clone();
                             tokio::spawn(async move {
+                                eprintln!(
+                                    "🔵 [Redis] Spawning process_provisioning task for instance {}",
+                                    instance_id
+                                );
                                 services::process_provisioning(
                                     pool,
                                     redis_client,
@@ -304,13 +321,23 @@ async fn main() {
                                     cmd.correlation_id,
                                 )
                                 .await;
+                                eprintln!("🔵 [Redis] process_provisioning task completed for instance {}", instance_id);
                             });
+                        } else {
+                            eprintln!(
+                                "⚠️ [Redis] Failed to parse CMD:PROVISION event: {}",
+                                payload
+                            );
                         }
                     }
                     "CMD:TERMINATE" => {
                         if let Ok(cmd) =
                             serde_json::from_value::<CommandTerminate>(event_json.clone())
                         {
+                            eprintln!(
+                                "📥 [Redis] Received CMD:TERMINATE for instance {}",
+                                cmd.instance_id
+                            );
                             let pool = state_redis.db.clone();
                             let redis_client = state_redis.redis_client.clone();
                             tokio::spawn(async move {
@@ -322,6 +349,11 @@ async fn main() {
                                 )
                                 .await;
                             });
+                        } else {
+                            eprintln!(
+                                "⚠️ [Redis] Failed to parse CMD:TERMINATE event: {}",
+                                payload
+                            );
                         }
                     }
                     "CMD:REINSTALL" => {
@@ -389,6 +421,19 @@ async fn main() {
         provisioning_job::run(db_prov, redis_prov).await;
     });
 
+    // job-recovery (recover stuck instances in various states)
+    let db_recovery = state.db.clone();
+    let redis_recovery = state.redis_client.clone();
+    tokio::spawn(async move {
+        recovery_job::run(db_recovery, redis_recovery).await;
+    });
+
+    // job-volume-reconciliation (reconcile volumes between DB and provider)
+    let db_volume_reconciliation = state.db.clone();
+    tokio::spawn(async move {
+        volume_reconciliation_job::run(db_volume_reconciliation).await;
+    });
+
     // 5. Start HTTP Server (Admin API - Simplified for internal health/debug only)
     let app = Router::new()
         .route("/", get(root))
@@ -453,7 +498,7 @@ async fn worker_register(
 
     // Either:
     // - authenticated (existing token or global token), OR
-    // - bootstrap (no token yet + IP matches instance/ip or provider=mock) -> issue token and return it.
+    // - bootstrap (no token yet + IP matches instance/ip) -> issue token and return it.
     let authed = verify_worker_auth(&state.db, &headers, payload.instance_id).await;
     let mut issued_token: Option<(String, String)> = None;
     if !authed {
@@ -483,8 +528,23 @@ async fn worker_register(
     }
 
     println!(
-        "🧩 worker_register: instance_id={} model_id={:?} health_port={:?} vllm_port={:?}",
-        payload.instance_id, payload.model_id, payload.health_port, payload.vllm_port
+        "🧩 [Worker] REGISTER: instance_id={} worker_id={:?} model_id={:?} health_port={:?} vllm_port={:?} ip={:?} client_ip={}",
+        payload.instance_id, payload.worker_id, payload.model_id, payload.health_port, payload.vllm_port, payload.ip_address, client_ip
+    );
+
+    // Log payload summary for debugging
+    let payload_summary = json!({
+        "instance_id": payload.instance_id,
+        "worker_id": payload.worker_id,
+        "model_id": payload.model_id,
+        "health_port": payload.health_port,
+        "vllm_port": payload.vllm_port,
+        "ip_address": payload.ip_address,
+        "has_metadata": payload.metadata.is_some()
+    });
+    println!(
+        "🔵 [Worker] REGISTER payload summary: {}",
+        serde_json::to_string(&payload_summary).unwrap_or_default()
     );
 
     let res = sqlx::query(
@@ -494,8 +554,30 @@ async fn worker_register(
             worker_model_id = COALESCE($2, worker_model_id),
             worker_vllm_port = COALESCE($3, worker_vllm_port),
             worker_health_port = COALESCE($4, worker_health_port),
-            worker_metadata = COALESCE($5, worker_metadata),
-            worker_last_heartbeat = NOW()
+            ip_address = CASE
+              WHEN ip_address IS NULL AND $5 IS NOT NULL AND btrim($5) <> '' THEN $5::inet
+              ELSE ip_address
+            END,
+            worker_metadata = COALESCE($6, worker_metadata),
+            worker_last_heartbeat = NOW(),
+            -- Generic recovery: if a worker shows up after we timed out, allow the instance to recover.
+            status = CASE
+              WHEN status = 'startup_failed' AND error_code = 'STARTUP_TIMEOUT' THEN 'booting'
+              ELSE status
+            END,
+            boot_started_at = CASE
+              WHEN (status = 'booting' AND (boot_started_at IS NULL OR error_code = 'WAITING_FOR_WORKER_HEARTBEAT')) THEN NOW()
+              WHEN (status = 'startup_failed' AND error_code = 'STARTUP_TIMEOUT') THEN NOW()
+              ELSE boot_started_at
+            END,
+            error_code = CASE
+              WHEN error_code IN ('WAITING_FOR_WORKER_HEARTBEAT', 'STARTUP_TIMEOUT') THEN NULL
+              ELSE error_code
+            END,
+            error_message = CASE
+              WHEN error_code IN ('WAITING_FOR_WORKER_HEARTBEAT', 'STARTUP_TIMEOUT') THEN NULL
+              ELSE error_message
+            END
         WHERE id = $1
         "#,
     )
@@ -503,6 +585,7 @@ async fn worker_register(
     .bind(payload.model_id)
     .bind(payload.vllm_port)
     .bind(payload.health_port)
+    .bind(payload.ip_address)
     .bind(payload.metadata)
     .execute(&state.db)
     .await;
@@ -546,13 +629,53 @@ async fn worker_heartbeat(
     }
 
     let status = payload.status.to_ascii_lowercase();
+
+    // Log agent info if present
+    if let Some(agent_info) = &payload.agent_info {
+        println!(
+            "📦 [Worker] AGENT INFO: instance_id={} version={:?} build_date={:?} checksum={:?}",
+            payload.instance_id,
+            agent_info.version,
+            agent_info.build_date,
+            agent_info.checksum.as_ref().map(|s| &s[..16]) // Log first 16 chars of checksum
+        );
+    }
+
     println!(
-        "💓 worker_heartbeat: instance_id={} status={} model_id={:?} gpu_util={:?}",
-        payload.instance_id, status, payload.model_id, payload.gpu_utilization
+        "💓 [Worker] HEARTBEAT: instance_id={} worker_id={:?} status={} model_id={:?} gpu_util={:?} queue_depth={:?} ip={:?}",
+        payload.instance_id, payload.worker_id, status, payload.model_id, payload.gpu_utilization, payload.queue_depth, payload.ip_address
+    );
+
+    // Log essential payload fields for debugging
+    let payload_summary = json!({
+        "instance_id": payload.instance_id,
+        "worker_id": payload.worker_id,
+        "status": status,
+        "model_id": payload.model_id,
+        "gpu_utilization": payload.gpu_utilization,
+        "gpu_mem_used_mb": payload.gpu_mem_used_mb,
+        "queue_depth": payload.queue_depth,
+        "ip_address": payload.ip_address,
+        "agent_info": payload.agent_info,
+        "has_metadata": payload.metadata.is_some()
+    });
+    println!(
+        "🔵 [Worker] HEARTBEAT payload summary: {}",
+        serde_json::to_string(&payload_summary).unwrap_or_default()
     );
 
     // We'll need metadata both for persistence on the instance row and for time-series sampling.
     let meta_clone = payload.metadata.clone();
+
+    // Merge agent_info into metadata for storage
+    let mut enriched_metadata = meta_clone.clone().unwrap_or(json!({}));
+    if let Some(agent_info) = &payload.agent_info {
+        enriched_metadata["agent_info"] = json!({
+            "version": agent_info.version.clone(),
+            "build_date": agent_info.build_date.clone(),
+            "checksum": agent_info.checksum.clone(),
+        });
+    }
 
     let res = sqlx::query(
         r#"
@@ -562,7 +685,29 @@ async fn worker_heartbeat(
             worker_model_id = COALESCE($3, worker_model_id),
             worker_queue_depth = COALESCE($4, worker_queue_depth),
             worker_gpu_utilization = COALESCE($5, worker_gpu_utilization),
-            worker_metadata = COALESCE($6, worker_metadata)
+            ip_address = CASE
+              WHEN ip_address IS NULL AND $6 IS NOT NULL AND btrim($6) <> '' THEN $6::inet
+              ELSE ip_address
+            END,
+            worker_metadata = COALESCE($7, worker_metadata),
+            -- Generic recovery: late heartbeats should be able to recover from startup timeouts.
+            status = CASE
+              WHEN status = 'startup_failed' AND error_code = 'STARTUP_TIMEOUT' THEN 'booting'
+              ELSE status
+            END,
+            boot_started_at = CASE
+              WHEN (status = 'booting' AND (boot_started_at IS NULL OR error_code = 'WAITING_FOR_WORKER_HEARTBEAT')) THEN NOW()
+              WHEN (status = 'startup_failed' AND error_code = 'STARTUP_TIMEOUT') THEN NOW()
+              ELSE boot_started_at
+            END,
+            error_code = CASE
+              WHEN error_code IN ('WAITING_FOR_WORKER_HEARTBEAT', 'STARTUP_TIMEOUT') THEN NULL
+              ELSE error_code
+            END,
+            error_message = CASE
+              WHEN error_code IN ('WAITING_FOR_WORKER_HEARTBEAT', 'STARTUP_TIMEOUT') THEN NULL
+              ELSE error_message
+            END
         WHERE id = $1
         "#,
     )
@@ -571,6 +716,7 @@ async fn worker_heartbeat(
     .bind(payload.model_id)
     .bind(payload.queue_depth)
     .bind(payload.gpu_utilization)
+    .bind(payload.ip_address.clone())
     .bind(meta_clone.clone())
     .execute(&state.db)
     .await;
@@ -578,17 +724,50 @@ async fn worker_heartbeat(
     // Insert time series GPU samples (nvtop-like dashboard).
     // Prefer per-GPU list in metadata.gpus, fallback to aggregate fields.
     // Best-effort only: do not fail heartbeat on metrics insert.
+    // Helper function to validate and clamp GPU metrics.
+    let validate_gpu_util = |v: Option<f64>| v.map(|x| x.clamp(0.0, 100.0));
+    let validate_temp = |v: Option<f64>| {
+        v.map(|x| {
+            // Accept temperatures between -50°C and 150°C (reasonable range for GPUs)
+            if (-50.0..=150.0).contains(&x) {
+                x
+            } else {
+                eprintln!(
+                    "⚠️ Invalid GPU temperature for instance {}: {}°C (clamping to valid range)",
+                    payload.instance_id, x
+                );
+                x.clamp(-50.0, 150.0)
+            }
+        })
+    };
+    let validate_power = |v: Option<f64>| v.map(|x| x.max(0.0)); // Power cannot be negative
+    let validate_vram = |v: Option<f64>| v.map(|x| x.max(0.0)); // VRAM cannot be negative
+
     if let Some(meta) = meta_clone.as_ref() {
         if let Some(gpus) = meta.get("gpus").and_then(|v| v.as_array()) {
             for g in gpus {
                 let idx = g.get("index").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                let util = g.get("gpu_utilization").and_then(|v| v.as_f64());
-                let used = g.get("gpu_mem_used_mb").and_then(|v| v.as_f64());
-                let total = g.get("gpu_mem_total_mb").and_then(|v| v.as_f64());
-                let temp = g.get("gpu_temp_c").and_then(|v| v.as_f64());
-                let power = g.get("gpu_power_w").and_then(|v| v.as_f64());
-                let power_limit = g.get("gpu_power_limit_w").and_then(|v| v.as_f64());
-                let _ = sqlx::query(
+                let util = validate_gpu_util(g.get("gpu_utilization").and_then(|v| v.as_f64()));
+                let used = validate_vram(g.get("gpu_mem_used_mb").and_then(|v| v.as_f64()));
+                let total = validate_vram(g.get("gpu_mem_total_mb").and_then(|v| v.as_f64()));
+                let temp = validate_temp(g.get("gpu_temp_c").and_then(|v| v.as_f64()));
+                let power = validate_power(g.get("gpu_power_w").and_then(|v| v.as_f64()));
+                let power_limit =
+                    validate_power(g.get("gpu_power_limit_w").and_then(|v| v.as_f64()));
+
+                // Validate VRAM used <= total if both are present
+                let used_final = match (used, total) {
+                    (Some(u), Some(t)) if u > t => {
+                        eprintln!(
+                            "⚠️ GPU {} VRAM used ({:.1}MB) > total ({:.1}MB) for instance {}, clamping",
+                            idx, u, t, payload.instance_id
+                        );
+                        Some(t)
+                    }
+                    _ => used,
+                };
+
+                if let Err(e) = sqlx::query(
                     r#"
                     INSERT INTO gpu_samples (instance_id, gpu_index, gpu_utilization, vram_used_mb, vram_total_mb, temp_c, power_w, power_limit_w)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -597,48 +776,174 @@ async fn worker_heartbeat(
                 .bind(payload.instance_id)
                 .bind(idx)
                 .bind(util)
-                .bind(used)
+                .bind(used_final)
                 .bind(total)
                 .bind(temp)
                 .bind(power)
                 .bind(power_limit)
                 .execute(&state.db)
-                .await;
+                .await
+                {
+                    eprintln!(
+                        "⚠️ Failed to insert gpu_samples for instance {} GPU {}: {}",
+                        payload.instance_id, idx, e
+                    );
+                }
             }
         } else {
             // Fallback aggregate
-            let total = meta.get("gpu_mem_total_mb").and_then(|v| v.as_f64());
-            let temp = meta.get("gpu_temp_c").and_then(|v| v.as_f64());
-            let power = meta.get("gpu_power_w").and_then(|v| v.as_f64());
-            let power_limit = meta.get("gpu_power_limit_w").and_then(|v| v.as_f64());
-            let _ = sqlx::query(
+            let total = validate_vram(meta.get("gpu_mem_total_mb").and_then(|v| v.as_f64()));
+            let temp = validate_temp(meta.get("gpu_temp_c").and_then(|v| v.as_f64()));
+            let power = validate_power(meta.get("gpu_power_w").and_then(|v| v.as_f64()));
+            let power_limit =
+                validate_power(meta.get("gpu_power_limit_w").and_then(|v| v.as_f64()));
+            let util = validate_gpu_util(payload.gpu_utilization);
+            let used = validate_vram(payload.gpu_mem_used_mb);
+
+            // Validate VRAM used <= total if both are present
+            let used_final = match (used, total) {
+                (Some(u), Some(t)) if u > t => {
+                    eprintln!(
+                        "⚠️ GPU aggregate VRAM used ({:.1}MB) > total ({:.1}MB) for instance {}, clamping",
+                        u, t, payload.instance_id
+                    );
+                    Some(t)
+                }
+                _ => used,
+            };
+
+            if let Err(e) = sqlx::query(
                 r#"
                 INSERT INTO gpu_samples (instance_id, gpu_index, gpu_utilization, vram_used_mb, vram_total_mb, temp_c, power_w, power_limit_w)
                 VALUES ($1, 0, $2, $3, $4, $5, $6, $7)
                 "#,
             )
             .bind(payload.instance_id)
-            .bind(payload.gpu_utilization)
-            .bind(payload.gpu_mem_used_mb)
+            .bind(util)
+            .bind(used_final)
             .bind(total)
             .bind(temp)
             .bind(power)
             .bind(power_limit)
             .execute(&state.db)
-            .await;
+            .await
+            {
+                eprintln!(
+                    "⚠️ Failed to insert gpu_samples (aggregate) for instance {}: {}",
+                    payload.instance_id, e
+                );
+            }
         }
     } else {
-        let _ = sqlx::query(
+        // No metadata, use payload fields only
+        let util = validate_gpu_util(payload.gpu_utilization);
+        let used = validate_vram(payload.gpu_mem_used_mb);
+
+        if let Err(e) = sqlx::query(
             r#"
             INSERT INTO gpu_samples (instance_id, gpu_index, gpu_utilization, vram_used_mb, vram_total_mb, temp_c, power_w, power_limit_w)
             VALUES ($1, 0, $2, $3, NULL, NULL, NULL, NULL)
             "#,
         )
         .bind(payload.instance_id)
-        .bind(payload.gpu_utilization)
-        .bind(payload.gpu_mem_used_mb)
+        .bind(util)
+        .bind(used)
         .execute(&state.db)
-        .await;
+        .await
+        {
+            eprintln!(
+                "⚠️ Failed to insert gpu_samples (minimal) for instance {}: {}",
+                payload.instance_id, e
+            );
+        }
+    }
+
+    // Insert time series system samples (CPU/Mem/Disk/Network) from metadata.system.
+    // Best-effort only: do not fail heartbeat on metrics insert.
+    // Helper functions to validate system metrics.
+    let validate_cpu_pct = |v: Option<f64>| v.map(|x| x.clamp(0.0, 100.0));
+    let validate_load = |v: Option<f64>| v.map(|x| x.max(0.0)); // Load cannot be negative
+    let validate_bytes = |v: Option<i64>| v.map(|x| x.max(0)); // Bytes cannot be negative
+    let validate_bps = |v: Option<f64>| v.map(|x| x.max(0.0)); // Network rates cannot be negative
+
+    if let Some(meta) = meta_clone.as_ref() {
+        if let Some(sys) = meta.get("system") {
+            let cpu = validate_cpu_pct(sys.get("cpu_usage_pct").and_then(|v| v.as_f64()));
+            let load1 = validate_load(sys.get("load1").and_then(|v| v.as_f64()));
+            let mem_used = validate_bytes(sys.get("mem_used_bytes").and_then(|v| v.as_i64()));
+            let mem_total = validate_bytes(sys.get("mem_total_bytes").and_then(|v| v.as_i64()));
+            let disk_used = validate_bytes(sys.get("disk_used_bytes").and_then(|v| v.as_i64()));
+            let disk_total = validate_bytes(sys.get("disk_total_bytes").and_then(|v| v.as_i64()));
+            let rx_bps = validate_bps(sys.get("net_rx_bps").and_then(|v| v.as_f64()));
+            let tx_bps = validate_bps(sys.get("net_tx_bps").and_then(|v| v.as_f64()));
+
+            // Validate used <= total for memory and disk
+            let mem_used_final = match (mem_used, mem_total) {
+                (Some(u), Some(t)) if u > t => {
+                    eprintln!(
+                        "⚠️ Memory used ({}) > total ({}) for instance {}, clamping",
+                        u, t, payload.instance_id
+                    );
+                    Some(t)
+                }
+                _ => mem_used,
+            };
+            let disk_used_final = match (disk_used, disk_total) {
+                (Some(u), Some(t)) if u > t => {
+                    eprintln!(
+                        "⚠️ Disk used ({}) > total ({}) for instance {}, clamping",
+                        u, t, payload.instance_id
+                    );
+                    Some(t)
+                }
+                _ => disk_used,
+            };
+
+            // Insert only when at least one meaningful field is present.
+            if cpu.is_some()
+                || load1.is_some()
+                || mem_used_final.is_some()
+                || mem_total.is_some()
+                || disk_used_final.is_some()
+                || disk_total.is_some()
+                || rx_bps.is_some()
+                || tx_bps.is_some()
+            {
+                if let Err(e) = sqlx::query(
+                    r#"
+                    INSERT INTO system_samples (
+                      instance_id,
+                      cpu_usage_pct,
+                      load1,
+                      mem_used_bytes,
+                      mem_total_bytes,
+                      disk_used_bytes,
+                      disk_total_bytes,
+                      net_rx_bps,
+                      net_tx_bps
+                    )
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                    "#,
+                )
+                .bind(payload.instance_id)
+                .bind(cpu)
+                .bind(load1)
+                .bind(mem_used_final)
+                .bind(mem_total)
+                .bind(disk_used_final)
+                .bind(disk_total)
+                .bind(rx_bps)
+                .bind(tx_bps)
+                .execute(&state.db)
+                .await
+                {
+                    eprintln!(
+                        "⚠️ Failed to insert system_samples for instance {}: {}",
+                        payload.instance_id, e
+                    );
+                }
+            }
+        }
     }
 
     match res {

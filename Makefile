@@ -7,8 +7,23 @@ GIT_SHA := $(shell git rev-parse --short=12 HEAD)
 #   make PORT_OFFSET=10000 up ui      -> UI on 13000 (no collisions)
 PORT_OFFSET ?= 0
 
+# Orchestrator Cargo features (dev/local).
+# We compile both Scaleway + Mock so the orchestrator can always operate on instances from either provider
+# (otherwise termination/reconciliation can get stuck with "Provider not configured").
+ORCHESTRATOR_FEATURES ?= provider-scaleway,provider-mock
+
+# Docker network name used by the control-plane compose project (api/orchestrator/db/redis).
+# Per-instance mock runtimes attach to this network so they can reach http://api:8003.
+CONTROLPLANE_NETWORK_NAME ?= $(shell echo "$$(basename "$$(pwd)")_default")
+
+# Background external watcher (host process) that auto-attaches mock runtimes for new mock instances.
+MOCK_RUNTIME_WATCH_PIDFILE ?= .mock_runtime_watch.pid
+MOCK_RUNTIME_WATCH_LOG ?= .mock_runtime_watch.log
+
 # UI host port (computed from PORT_OFFSET by default)
 UI_HOST_PORT ?= $(shell off="$(PORT_OFFSET)"; if [ -z "$$off" ]; then off=0; fi; echo $$((3000 + $$off)))
+# DB host port (computed from PORT_OFFSET by default)
+DB_HOST_PORT ?= $(shell off="$(PORT_OFFSET)"; if [ -z "$$off" ]; then off=0; fi; echo $$((5432 + $$off)))
 
 # Container promotion (immutable tags)
 IMAGE_TAG ?= $(GIT_SHA)
@@ -80,7 +95,10 @@ PRD_REMOTE_SSH ?=
 	prod-provision prod-destroy prod-bootstrap prod-secrets-sync prod-rebuild prod-create prod-update prod-start prod-stop prod-delete prod-status prod-logs prod-cert prod-renew prod-ghcr-token \
 	prod-cert-export prod-cert-import prod-reset-admin-password \
 	reset-admin-password \
-	test clean
+	docker-prune-old test test-worker-observability test-worker-observability-clean clean check fmt fmt-check clippy \
+	ui-install ui-lint ui-build security-check \
+	agent-version-bump agent-checksum agent-version-check \
+	ci-fast ci
 
 help:
 	@echo ""
@@ -91,6 +109,13 @@ help:
 	@echo "  IMAGE_TAG (default)=$(IMAGE_TAG)   | version tag=$(IMAGE_TAG_VERSION)   | latest tag=$(IMAGE_TAG_LATEST)"
 	@echo "  LOCAL_COMPOSE_FILE=$(LOCAL_COMPOSE_FILE)"
 	@echo "  DEPLOY_COMPOSE_FILE=$(DEPLOY_COMPOSE_FILE)"
+	@echo ""
+	@echo "## Agent version management"
+	@echo "  make agent-checksum              # Calculate SHA256 of agent.py"
+	@echo "  make agent-version-get           # Show current agent version"
+	@echo "  make agent-version-bump [VERSION=1.0.1] [BUILD_DATE=2026-01-03]"
+	@echo "  make agent-version-auto-bump    # Auto-increment patch version"
+	@echo "  make agent-version-check         # Verify version was updated if agent.py changed"
 	@echo ""
 	@echo "## Images (build/push/pull)"
 	@echo "  make images-build [IMAGE_TAG=<sha>]"
@@ -232,9 +257,106 @@ nuke: dev-delete
 
 ui:
 	@$(MAKE) check-dev-env
-	@echo "🖥️  UI (Docker) on http://localhost:$(UI_HOST_PORT)  [PORT_OFFSET=$(PORT_OFFSET)]"
-	@UI_HOST_PORT=$(UI_HOST_PORT) PORT_OFFSET=$(PORT_OFFSET) \
+	@echo "🖥️  UI (Docker) on http://localhost:$(UI_HOST_PORT)  [PORT_OFFSET=$(PORT_OFFSET), DB_PORT=$(DB_HOST_PORT)]"
+	@ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" UI_HOST_PORT=$(UI_HOST_PORT) PORT_OFFSET=$(PORT_OFFSET) DB_HOST_PORT="$(DB_HOST_PORT)" \
 	  $(COMPOSE_LOCAL) --profile ui up -d --remove-orphans frontend
+
+.PHONY: ui-down
+ui-down:
+	@$(MAKE) check-dev-env
+	@echo "🛑 Stopping UI (Docker)  [PORT_OFFSET=$(PORT_OFFSET)]"
+	@ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" UI_HOST_PORT=$(UI_HOST_PORT) PORT_OFFSET=$(PORT_OFFSET) \
+	  $(COMPOSE_LOCAL) --profile ui stop frontend >/dev/null 2>&1 || true
+	@echo "✅ UI (Docker) stopped"
+
+# Local “mock worker” stack (for observability + OpenAI proxy local tests).
+# It starts mock-vllm + worker-agent along with the rest of the stack.
+.PHONY: worker-local-up worker-local-down
+worker-local-up:
+	@echo "🤖 DEV worker-local up (mock-vllm + worker-agent)"
+	@$(MAKE) check-dev-env
+	@ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" PORT_OFFSET="$(PORT_OFFSET)" \
+	  $(COMPOSE_LOCAL) --profile worker-local up -d --build --remove-orphans
+
+worker-local-down:
+	@echo "🤖 DEV worker-local down (mock-vllm + worker-agent)"
+	@$(MAKE) check-dev-env
+	@ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" PORT_OFFSET="$(PORT_OFFSET)" \
+	  $(COMPOSE_LOCAL) --profile worker-local stop mock-vllm worker-agent >/dev/null 2>&1 || true
+	@echo "✅ worker-local stopped"
+
+# Attach the local worker-agent to a specific instance (required for Mock instances to leave BOOTING).
+# Usage:
+#   make worker-attach INSTANCE_ID=<uuid> [MOCK_VLLM_MODEL_ID=demo-model-...]
+.PHONY: worker-attach worker-detach
+worker-attach:
+	@$(MAKE) check-dev-env
+	@if [ -z "$(INSTANCE_ID)" ]; then \
+	  echo "❌ INSTANCE_ID is required (example: make worker-attach INSTANCE_ID=<uuid>)"; \
+	  exit 2; \
+	fi
+	@chmod +x ./scripts/mock_runtime_up.sh 2>/dev/null || true
+	@MID="$${MOCK_VLLM_MODEL_ID:-demo-model-$$(echo "$(INSTANCE_ID)" | tr -d '-' | cut -c1-12)}"; \
+	echo "🔗 Attaching mock runtime to INSTANCE_ID=$(INSTANCE_ID) (MOCK_VLLM_MODEL_ID=$${MID})"; \
+	INSTANCE_ID="$(INSTANCE_ID)" MOCK_VLLM_MODEL_ID="$${MID}" CONTROLPLANE_NETWORK_NAME="$(CONTROLPLANE_NETWORK_NAME)" \
+	  ./scripts/mock_runtime_up.sh
+
+worker-detach:
+	@$(MAKE) check-dev-env
+	@chmod +x ./scripts/mock_runtime_down.sh 2>/dev/null || true
+	@echo "🔌 Detaching mock runtime for INSTANCE_ID=$(INSTANCE_ID)"
+	@INSTANCE_ID="$(INSTANCE_ID)" CONTROLPLANE_NETWORK_NAME="$(CONTROLPLANE_NETWORK_NAME)" \
+	  ./scripts/mock_runtime_down.sh
+	@echo "✅ worker detached"
+
+.PHONY: mock-runtime-sync
+mock-runtime-sync:
+	@$(MAKE) check-dev-env
+	@chmod +x ./scripts/mock_runtime_sync.sh 2>/dev/null || true
+	@CONTROLPLANE_NETWORK_NAME="$(CONTROLPLANE_NETWORK_NAME)" ./scripts/mock_runtime_sync.sh
+
+.PHONY: mock-runtime-watch-up mock-runtime-watch-down
+mock-runtime-watch-up:
+	@$(MAKE) check-dev-env
+	@chmod +x ./scripts/mock_runtime_watch.sh 2>/dev/null || true
+	@if [ -f "$(MOCK_RUNTIME_WATCH_PIDFILE)" ] && kill -0 $$(cat "$(MOCK_RUNTIME_WATCH_PIDFILE)" 2>/dev/null) >/dev/null 2>&1; then \
+	  echo "👀 mock-runtime-watch already running (pid=$$(cat $(MOCK_RUNTIME_WATCH_PIDFILE)))"; \
+	  exit 0; \
+	fi
+	@rm -f "$(MOCK_RUNTIME_WATCH_PIDFILE)" >/dev/null 2>&1 || true
+	@echo "👀 starting mock-runtime-watch (logs: $(MOCK_RUNTIME_WATCH_LOG))"
+	@nohup env CONTROLPLANE_NETWORK_NAME="$(CONTROLPLANE_NETWORK_NAME)" WATCH_INTERVAL_S="$${WATCH_INTERVAL_S:-5}" \
+	  ./scripts/mock_runtime_watch.sh >"$(MOCK_RUNTIME_WATCH_LOG)" 2>&1 & echo $$! >"$(MOCK_RUNTIME_WATCH_PIDFILE)"
+	@echo "✅ mock-runtime-watch started (pid=$$(cat $(MOCK_RUNTIME_WATCH_PIDFILE)))"
+
+mock-runtime-watch-down:
+	@$(MAKE) check-dev-env
+	@if [ ! -f "$(MOCK_RUNTIME_WATCH_PIDFILE)" ]; then echo "ℹ️  mock-runtime-watch not running"; exit 0; fi
+	@PID=$$(cat "$(MOCK_RUNTIME_WATCH_PIDFILE)" 2>/dev/null || true); \
+	if [ -n "$$PID" ] && kill -0 $$PID >/dev/null 2>&1; then \
+	  echo "🛑 stopping mock-runtime-watch (pid=$$PID)"; \
+	  kill $$PID >/dev/null 2>&1 || true; \
+	fi
+	@rm -f "$(MOCK_RUNTIME_WATCH_PIDFILE)" >/dev/null 2>&1 || true
+	@echo "✅ mock-runtime-watch stopped"
+
+# All-in-one local stack (control-plane + UI + local mock worker).
+.PHONY: local-up local-down
+local-up:
+	@echo "🚀 LOCAL up (api+orchestrator+db+redis + ui)  [PORT_OFFSET=$(PORT_OFFSET), DB_PORT=$(DB_HOST_PORT)]"
+	@$(MAKE) check-dev-env
+	@ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" UI_HOST_PORT="$(UI_HOST_PORT)" PORT_OFFSET="$(PORT_OFFSET)" DB_HOST_PORT="$(DB_HOST_PORT)" \
+	  $(COMPOSE_LOCAL) --profile ui up -d --build --remove-orphans
+	@# Mock provider now manages runtimes automatically (no external watcher needed)
+
+local-down:
+	@echo "🛑 LOCAL down (stop all local services)  [PORT_OFFSET=$(PORT_OFFSET), DB_PORT=$(DB_HOST_PORT)]"
+	@$(MAKE) check-dev-env
+	@ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" UI_HOST_PORT="$(UI_HOST_PORT)" PORT_OFFSET="$(PORT_OFFSET)" DB_HOST_PORT="$(DB_HOST_PORT)" \
+	  $(COMPOSE_LOCAL) --profile ui stop >/dev/null 2>&1 || true
+	@# Mock provider manages runtimes, but we can do a best-effort cleanup of orphaned runtimes
+	@docker ps -a --filter "name=mockrt-" --format "{{.Names}}" | xargs -r docker rm -f >/dev/null 2>&1 || true
+	@echo "✅ LOCAL stopped"
 
 # Optional: run UI locally on host (kept for convenience / debugging).
 # Note: requires the API to be exposed on the host (not the default anymore).
@@ -242,18 +364,37 @@ ui:
 ui-local:
 	@$(MAKE) check-dev-env
 	@set -e; \
-	if [ ! -d "inventiv-frontend" ]; then \
-	  echo "❌ inventiv-frontend/ not found" >&2; exit 2; \
+	if [ ! -f "package.json" ]; then \
+	  echo "❌ package.json not found at repo root (run from repo root)" >&2; exit 2; \
 	fi; \
-	if [ ! -d "inventiv-frontend/node_modules" ]; then \
-	  echo "⚠️  inventiv-frontend/node_modules missing. Run:" >&2; \
-	  echo "   cd inventiv-frontend && npm install" >&2; \
+	echo "🖥️  UI (host) on http://localhost:$(UI_HOST_PORT)  [PORT_OFFSET=$(PORT_OFFSET)]"; \
+	echo "ℹ️  This uses npm workspaces. Installing at repo root..."; \
+	npm install --no-audit --no-fund; \
+	API_HOST_PORT=$$(echo $$((8003 + $(PORT_OFFSET)))); \
+	echo "ℹ️  Ensure API is reachable on http://localhost:$${API_HOST_PORT} (tip: make api-expose PORT_OFFSET=$(PORT_OFFSET))"; \
+	API_INTERNAL_URL="http://localhost:$${API_HOST_PORT}" \
+	  npm -w inventiv-frontend run dev -- --webpack --port $(UI_HOST_PORT)
+
+.PHONY: ui-local-down
+ui-local-down:
+	@$(MAKE) check-dev-env
+	@set -e; \
+	PORT="$(UI_HOST_PORT)"; \
+	echo "🛑 Stopping UI (host) on port $${PORT}  [PORT_OFFSET=$(PORT_OFFSET)]"; \
+	PIDS="$$(lsof -ti tcp:$${PORT} -sTCP:LISTEN 2>/dev/null || true)"; \
+	if [ -z "$${PIDS}" ]; then \
+	  echo "ℹ️  No process listening on port $${PORT}"; \
+	  exit 0; \
 	fi; \
-	if [ ! -f "inventiv-frontend/.env.local" ]; then \
-	  echo "NEXT_PUBLIC_API_URL=http://localhost:8003" > inventiv-frontend/.env.local; \
-	  echo "✅ Created inventiv-frontend/.env.local (NEXT_PUBLIC_API_URL=http://localhost:8003)"; \
+	echo "🔪 Killing PID(s): $${PIDS}"; \
+	kill $${PIDS} 2>/dev/null || true; \
+	sleep 0.2; \
+	PIDS2="$$(lsof -ti tcp:$${PORT} -sTCP:LISTEN 2>/dev/null || true)"; \
+	if [ -n "$${PIDS2}" ]; then \
+	  echo "⚠️  Still listening, force kill: $${PIDS2}"; \
+	  kill -9 $${PIDS2} 2>/dev/null || true; \
 	fi; \
-	cd inventiv-frontend && npm run dev -- --port $(UI_HOST_PORT)
+	echo "✅ UI (host) stopped (or was not running)"
 
 # Expose API on host loopback for local tunnels (cloudflared), without changing docker-compose.yml.
 # It starts a tiny socat container bound to 127.0.0.1:(8003+PORT_OFFSET) that forwards to api:8003 on the compose network.
@@ -271,33 +412,54 @@ api-unexpose:
 dev-create:
 	@echo "🚀 DEV create (docker-compose.yml, hot reload)"
 	@$(MAKE) check-dev-env
-	$(COMPOSE_LOCAL) up -d --build --remove-orphans
+	ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" PORT_OFFSET="$(PORT_OFFSET)" DB_HOST_PORT="$(DB_HOST_PORT)" \
+	  $(COMPOSE_LOCAL) up -d --build --remove-orphans
 
 dev-create-edge:
 	@$(MAKE) edge-create
 
 dev-start:
 	@$(MAKE) check-dev-env
-	$(COMPOSE_LOCAL) up -d --remove-orphans
+	ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" PORT_OFFSET="$(PORT_OFFSET)" DB_HOST_PORT="$(DB_HOST_PORT)" \
+	  $(COMPOSE_LOCAL) up -d --remove-orphans
 
 dev-start-edge:
 	@$(MAKE) edge-start
 
 dev-stop:
 	@$(MAKE) check-dev-env
-	$(COMPOSE_LOCAL) stop
+	PORT_OFFSET="$(PORT_OFFSET)" DB_HOST_PORT="$(DB_HOST_PORT)" $(COMPOSE_LOCAL) stop
 
 dev-delete:
 	@$(MAKE) check-dev-env
+	@echo "🧹 Cleaning up all inventiv containers..."
+	@docker ps -a --filter "name=inventiv" --format "{{.Names}}" | xargs -r docker rm -f >/dev/null 2>&1 || true
+	@docker ps -a --filter "name=mockrt-" --format "{{.Names}}" | xargs -r docker rm -f >/dev/null 2>&1 || true
+	@docker ps -a --filter "name=inventiv-api-loopback" --format "{{.Names}}" | xargs -r docker rm -f >/dev/null 2>&1 || true
+	@echo "🧹 Cleaning up volumes..."
+	@docker volume ls --filter "name=mockrt-" --format "{{.Name}}" | xargs -r docker volume rm >/dev/null 2>&1 || true
+	@echo "🧹 Stopping compose services..."
+	@$(COMPOSE_LOCAL) down -v >/dev/null 2>&1 || true
+	@echo "🧹 Cleaning up orphaned networks..."
+	@NETWORK_NAME="$(CONTROLPLANE_NETWORK_NAME)"; \
+	if docker network inspect "$$NETWORK_NAME" >/dev/null 2>&1; then \
+	  docker network inspect "$$NETWORK_NAME" --format '{{range .Containers}}{{.Name}} {{end}}' | \
+	  xargs -r docker stop >/dev/null 2>&1 || true; \
+	  docker network rm "$$NETWORK_NAME" >/dev/null 2>&1 || true; \
+	fi
+	@docker network prune -f >/dev/null 2>&1 || true
+	@echo "✅ Cleanup complete"
+	@echo "🧹 Cleaning up docker-compose services..."
 	$(COMPOSE_LOCAL) down -v
+	@echo "✅ Cleanup complete"
 
 dev-ps:
 	@$(MAKE) check-dev-env
-	$(COMPOSE_LOCAL) ps
+	PORT_OFFSET="$(PORT_OFFSET)" DB_HOST_PORT="$(DB_HOST_PORT)" $(COMPOSE_LOCAL) ps
 
 dev-logs:
 	@$(MAKE) check-dev-env
-	$(COMPOSE_LOCAL) logs -f --tail=200
+	PORT_OFFSET="$(PORT_OFFSET)" DB_HOST_PORT="$(DB_HOST_PORT)" $(COMPOSE_LOCAL) logs -f --tail=200
 
 dev-cert:
 	@$(MAKE) edge-cert
@@ -503,7 +665,14 @@ stg-destroy:
 
 stg-cert:
 	@$(MAKE) check-stg-env
-	REMOTE_SSH=$(STG_REMOTE_SSH) REMOTE_DIR=$(REMOTE_DIR) EDGE_ENABLED=1 \
+	@set -e; \
+	HOST=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $$REMOTE_HOST'); \
+	PORT=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_PORT:-22}'); \
+	USER=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${REMOTE_USER:-}'); \
+	KEY=$$(bash -lc 'set -a; source $(STG_ENV_FILE); set +a; echo $${SSH_IDENTITY_FILE:-}'); \
+	REMOTE=$${STG_REMOTE_SSH:-$${USER:+$$USER@$$HOST}}; \
+	if [ -z "$$REMOTE" ]; then REMOTE=$$(SSH_IDENTITY_FILE="$$KEY" ./scripts/ssh_detect_user.sh $$HOST $$PORT); fi; \
+	SSH_IDENTITY_FILE="$$KEY" REMOTE_SSH=$$REMOTE REMOTE_DIR=$(REMOTE_DIR) EDGE_ENABLED=1 \
 	  ./scripts/deploy_remote.sh staging cert
 
 stg-renew:
@@ -683,5 +852,266 @@ prod-renew:
 test:
 	cargo test --workspace
 
+# Integration test (mock provider): API -> Orchestrator -> Worker -> API (observability + OpenAI proxy)
+.PHONY: test-worker-observability
+test-worker-observability:
+	@chmod +x ./scripts/test_worker_observability_mock.sh 2>/dev/null || true
+	@RESET_VOLUMES=0 PORT_OFFSET=$(PORT_OFFSET) ./scripts/test_worker_observability_mock.sh
+
+# Prune old/unused Docker resources for this compose project (default: older than 7 days).
+# Optional:
+# - OLDER_THAN_HOURS=168
+# - CLEAN_ALL_UNUSED_IMAGES_OLD=1 (more aggressive; affects other repos)
+.PHONY: docker-prune-old
+docker-prune-old:
+	@chmod +x ./scripts/docker_prune_project_old.sh 2>/dev/null || true
+	@COMPOSE_PROJECT_NAME=$$(basename "$$(pwd)") OLDER_THAN_HOURS=$${OLDER_THAN_HOURS:-168} CLEAN_ALL_UNUSED_IMAGES_OLD=$${CLEAN_ALL_UNUSED_IMAGES_OLD:-0} \
+	  ./scripts/docker_prune_project_old.sh
+
+# One-shot: prune old docker resources then run the mock observability E2E test.
+.PHONY: test-worker-observability-clean
+test-worker-observability-clean: docker-prune-old
+	@$(MAKE) test-worker-observability PORT_OFFSET=$(PORT_OFFSET)
+
+# Multi-instance integration test (mock provider): serial + parallel create/observability/terminate.
+.PHONY: test-worker-observability-multi
+test-worker-observability-multi:
+	@chmod +x ./scripts/test_worker_observability_mock_multi.sh 2>/dev/null || true
+	@PORT_OFFSET=$(PORT_OFFSET) N_SERIAL=$${N_SERIAL:-2} N_PARALLEL=$${N_PARALLEL:-2} \
+	  ./scripts/test_worker_observability_mock_multi.sh
+
+# Cargo check (fast compile-only)
+check:
+	cargo check --workspace
+
+# Rust formatting
+fmt:
+	cargo fmt --all
+
+fmt-check:
+	cargo fmt --all -- --check
+
+# Rust lint (deny warnings)
+clippy:
+	cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+# Frontend (monorepo) tasks
+ui-install:
+	npm ci --no-audit --no-fund
+
+ui-lint: ui-install
+	npm run lint:ui
+
+ui-build: ui-install
+	npm run build:ui
+
+# Security / hygiene checks (tracked files only)
+security-check:
+	@chmod +x ./scripts/check_no_private_keys.sh 2>/dev/null || true
+	@./scripts/check_no_private_keys.sh
+
+# CI presets
+ci-fast: security-check fmt-check clippy test ui-lint ui-build
+	@echo "✅ ci-fast OK"
+
+# Full local CI (today: same as ci-fast; smoke tests can be added later)
+ci: ci-fast
+	@echo "✅ ci OK"
+
 clean:
 	rm -rf target/
+
+# Agent version management
+AGENT_PY := inventiv-worker/agent.py
+AGENT_VERSION_REGEX := ^AGENT_VERSION = "([^"]+)"$$
+AGENT_BUILD_DATE_REGEX := ^AGENT_BUILD_DATE = "([^"]+)"$$
+
+# Calculate SHA256 checksum of agent.py
+.PHONY: agent-checksum
+agent-checksum:
+	@if [ ! -f "$(AGENT_PY)" ]; then \
+		echo "❌ $(AGENT_PY) not found"; \
+		exit 1; \
+	fi
+	@echo "📦 Calculating SHA256 checksum for $(AGENT_PY)..."
+	@if command -v sha256sum >/dev/null 2>&1; then \
+		sha256sum "$(AGENT_PY)" | cut -d' ' -f1; \
+	elif command -v shasum >/dev/null 2>&1; then \
+		shasum -a 256 "$(AGENT_PY)" | cut -d' ' -f1; \
+	else \
+		echo "❌ Neither sha256sum nor shasum found"; \
+		exit 1; \
+	fi
+
+# Extract current agent version from agent.py
+.PHONY: agent-version-get
+agent-version-get:
+	@if [ ! -f "$(AGENT_PY)" ]; then \
+		echo "❌ $(AGENT_PY) not found"; \
+		exit 1; \
+	fi
+	@grep -m1 '^AGENT_VERSION' "$(AGENT_PY)" | sed -E 's/^[^"]*"([^"]+)".*/\1/' || echo "unknown"
+
+# Bump agent version (updates AGENT_VERSION and AGENT_BUILD_DATE)
+# Usage: make agent-version-bump [VERSION=1.0.1] [BUILD_DATE=2026-01-03]
+.PHONY: agent-version-bump
+agent-version-bump:
+	@if [ ! -f "$(AGENT_PY)" ]; then \
+		echo "❌ $(AGENT_PY) not found"; \
+		exit 1; \
+	fi
+	@CURRENT_VERSION=$$(grep -m1 '^AGENT_VERSION' "$(AGENT_PY)" | sed -E 's/^[^"]*"([^"]+)".*/\1/' || echo ""); \
+	CURRENT_DATE=$$(grep -m1 '^AGENT_BUILD_DATE' "$(AGENT_PY)" | sed -E 's/^[^"]*"([^"]+)".*/\1/' || echo ""); \
+	NEW_VERSION="$${VERSION:-$$CURRENT_VERSION}"; \
+	NEW_DATE="$${BUILD_DATE:-$$(date +%Y-%m-%d)}"; \
+	if [ -z "$$NEW_VERSION" ]; then \
+		echo "❌ Cannot determine version. Set VERSION=... or ensure AGENT_VERSION exists in $(AGENT_PY)"; \
+		exit 1; \
+	fi; \
+	echo "📝 Updating agent version: $$CURRENT_VERSION -> $$NEW_VERSION"; \
+	echo "📅 Build date: $$CURRENT_DATE -> $$NEW_DATE"; \
+	if [ "$$CURRENT_VERSION" = "$$NEW_VERSION" ] && [ "$$CURRENT_DATE" = "$$NEW_DATE" ]; then \
+		echo "ℹ️  Version and date unchanged, skipping update"; \
+		exit 0; \
+	fi; \
+	if command -v sed >/dev/null 2>&1; then \
+		if [ "$$(uname)" = "Darwin" ]; then \
+			sed -i '' "s/^AGENT_VERSION = \".*\"/AGENT_VERSION = \"$$NEW_VERSION\"/" "$(AGENT_PY)"; \
+			sed -i '' "s/^AGENT_BUILD_DATE = \".*\"/AGENT_BUILD_DATE = \"$$NEW_DATE\"/" "$(AGENT_PY)"; \
+		else \
+			sed -i "s/^AGENT_VERSION = \".*\"/AGENT_VERSION = \"$$NEW_VERSION\"/" "$(AGENT_PY)"; \
+			sed -i "s/^AGENT_BUILD_DATE = \".*\"/AGENT_BUILD_DATE = \"$$NEW_DATE\"/" "$(AGENT_PY)"; \
+		fi; \
+		echo "✅ Updated $(AGENT_PY)"; \
+		echo "   AGENT_VERSION = \"$$NEW_VERSION\""; \
+		echo "   AGENT_BUILD_DATE = \"$$NEW_DATE\""; \
+		echo ""; \
+		echo "📦 New SHA256 checksum:"; \
+		$(MAKE) agent-checksum; \
+	else \
+		echo "❌ sed command not found"; \
+		exit 1; \
+	fi
+
+# Auto-bump agent version based on git changes (increments patch version)
+# Usage: make agent-version-auto-bump
+.PHONY: agent-version-auto-bump
+agent-version-auto-bump:
+	@if [ ! -f "$(AGENT_PY)" ]; then \
+		echo "❌ $(AGENT_PY) not found"; \
+		exit 1; \
+	fi
+	@CURRENT_VERSION=$$(grep -m1 '^AGENT_VERSION' "$(AGENT_PY)" | sed -E 's/^[^"]*"([^"]+)".*/\1/' || echo "1.0.0"); \
+	MAJOR=$$(echo "$$CURRENT_VERSION" | cut -d. -f1); \
+	MINOR=$$(echo "$$CURRENT_VERSION" | cut -d. -f2); \
+	PATCH=$$(echo "$$CURRENT_VERSION" | cut -d. -f3); \
+	if [ -z "$$PATCH" ]; then PATCH=0; fi; \
+	NEW_PATCH=$$((PATCH + 1)); \
+	NEW_VERSION="$$MAJOR.$$MINOR.$$NEW_PATCH"; \
+	echo "🔄 Auto-bumping version: $$CURRENT_VERSION -> $$NEW_VERSION"; \
+	$(MAKE) agent-version-bump VERSION="$$NEW_VERSION"
+
+# Check if agent.py version needs to be updated (for CI)
+# Fails if agent.py was modified but version wasn't bumped
+.PHONY: agent-version-check
+agent-version-check:
+	@if [ ! -f "$(AGENT_PY)" ]; then \
+		echo "❌ $(AGENT_PY) not found"; \
+		exit 1; \
+	fi
+	@echo "🔍 Checking if agent.py version is up-to-date..."
+	@if ! git diff --quiet HEAD -- "$(AGENT_PY)" 2>/dev/null; then \
+		echo "⚠️  $(AGENT_PY) has uncommitted changes"; \
+		git diff HEAD -- "$(AGENT_PY)" | head -20; \
+		echo ""; \
+		echo "💡 Run 'make agent-version-auto-bump' to update version automatically"; \
+		exit 1; \
+	fi; \
+	if git diff --quiet HEAD~1 HEAD -- "$(AGENT_PY)" 2>/dev/null; then \
+		echo "✅ $(AGENT_PY) unchanged in last commit"; \
+		exit 0; \
+	fi; \
+	CURRENT_VERSION=$$(grep -m1 '^AGENT_VERSION' "$(AGENT_PY)" | sed -E 's/^[^"]*"([^"]+)".*/\1/' || echo ""); \
+	PREV_VERSION=$$(git show HEAD~1:"$(AGENT_PY)" 2>/dev/null | grep -m1 '^AGENT_VERSION' | sed -E 's/^[^"]*"([^"]+)".*/\1/' || echo ""); \
+	if [ -z "$$CURRENT_VERSION" ]; then \
+		echo "❌ AGENT_VERSION not found in $(AGENT_PY)"; \
+		exit 1; \
+	fi; \
+	if [ "$$CURRENT_VERSION" = "$$PREV_VERSION" ]; then \
+		echo "❌ $(AGENT_PY) was modified but AGENT_VERSION wasn't updated"; \
+		echo "   Current version: $$CURRENT_VERSION"; \
+		echo "   Previous version: $$PREV_VERSION"; \
+		echo ""; \
+		echo "💡 Run 'make agent-version-auto-bump' to update version automatically"; \
+		exit 1; \
+	fi; \
+	echo "✅ Version updated: $$PREV_VERSION -> $$CURRENT_VERSION"; \
+	CURRENT_DATE=$$(grep -m1 '^AGENT_BUILD_DATE' "$(AGENT_PY)" | sed -E 's/^[^"]*"([^"]+)".*/\1/' || echo ""); \
+	echo "   Build date: $$CURRENT_DATE"
+
+# ============================================================================
+# Tests
+# ============================================================================
+
+.PHONY: test-unit test-integration test-e2e test-all test-e2e-full
+test-unit: ## Run unit tests (in-memory, no Docker required)
+	@echo "🧪 Running unit tests..."
+	cd inventiv-api && cargo test --tests --lib
+
+test-integration: ## Run integration tests (requires DB/Redis on localhost)
+	@echo "🧪 Running integration tests..."
+	@echo "⚠️  Make sure DB and Redis are running: make up db redis"
+	cd inventiv-api && \
+		TEST_DATABASE_URL="postgresql://postgres:password@localhost:5432/llminfra" \
+		TEST_REDIS_URL="redis://localhost:6379/0" \
+		cargo test --test auth_test --test instances_test --test deployments_test
+
+test-e2e: ## Run E2E tests against real Docker containers (requires: make up)
+	@echo "🧪 Running E2E tests against Docker containers..."
+	@echo "⚠️  Make sure containers are running: make up"
+	@echo "⏳ Waiting 5 seconds for API to be ready..."
+	@sleep 5
+	@API_HOST_PORT=$$(echo $$((8003 + $(PORT_OFFSET)))); \
+	echo "🔍 Testing API on http://localhost:$$API_HOST_PORT (PORT_OFFSET=$(PORT_OFFSET))"; \
+	cd inventiv-api && \
+		TEST_API_URL="http://localhost:$$API_HOST_PORT" \
+		TEST_ADMIN_EMAIL="admin@inventiv.local" \
+		TEST_ADMIN_PASSWORD="$$(cat deploy/secrets-dev/default_admin_password 2>/dev/null || echo 'admin')" \
+		cargo test --test integration_e2e
+
+test-all: test-unit test-integration ## Run all tests (unit + integration, requires DB/Redis)
+	@echo "✅ All tests completed"
+
+test-e2e-full: ## Run full E2E test suite (starts containers, runs tests, stops containers)
+	@echo "🚀 Starting Docker containers..."
+	@$(MAKE) check-dev-env
+	@ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" PORT_OFFSET="$(PORT_OFFSET)" \
+		$(COMPOSE) -f $(LOCAL_COMPOSE_FILE) --env-file $(DEV_ENV_FILE) up -d --build db redis api orchestrator
+	@echo "⏳ Waiting 30 seconds for services to be ready..."
+	@sleep 30
+	@API_HOST_PORT=$$(echo $$((8003 + $(PORT_OFFSET)))); \
+	echo "🔌 Exposing API on localhost:$$API_HOST_PORT (PORT_OFFSET=$(PORT_OFFSET))..."; \
+	$(MAKE) api-expose; \
+	echo "🔍 Checking if API is ready..."; \
+	for i in 1 2 3 4 5 6; do \
+		if curl -s http://localhost:$$API_HOST_PORT/ > /dev/null 2>&1; then \
+			echo "✅ API is ready on port $$API_HOST_PORT!"; \
+			break; \
+		fi; \
+		echo "⏳ Waiting for API on port $$API_HOST_PORT... (attempt $$i/6)"; \
+		sleep 5; \
+		if [ $$i -eq 6 ]; then \
+			echo "❌ API is not ready after 30 seconds on port $$API_HOST_PORT. Check logs: make logs"; \
+			PORT_OFFSET=$(PORT_OFFSET) $(MAKE) api-unexpose || true; \
+			ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" PORT_OFFSET="$(PORT_OFFSET)" \
+				$(COMPOSE) -f $(LOCAL_COMPOSE_FILE) down; \
+			exit 1; \
+		fi; \
+	done
+	@echo "🧪 Running E2E tests..."
+	@$(MAKE) test-e2e || EXIT_CODE=$$?; \
+		echo "🛑 Stopping Docker containers..."; \
+		PORT_OFFSET=$(PORT_OFFSET) $(MAKE) api-unexpose || true; \
+		ORCHESTRATOR_FEATURES="$(ORCHESTRATOR_FEATURES)" PORT_OFFSET="$(PORT_OFFSET)" \
+			$(COMPOSE) -f $(LOCAL_COMPOSE_FILE) down; \
+		exit $$EXIT_CODE

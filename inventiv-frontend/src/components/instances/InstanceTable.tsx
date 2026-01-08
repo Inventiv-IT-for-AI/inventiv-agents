@@ -3,14 +3,13 @@
 import { formatDistanceToNow, parseISO } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import { Eye, Archive, Wrench } from "lucide-react";
-import { CopyButton } from "@/components/shared/CopyButton";
 import type { Instance } from "@/lib/types";
 import { displayOrDash, formatEur } from "@/lib/utils";
 import { apiUrl } from "@/lib/api";
-import type { LoadRangeResult } from "@/components/shared/VirtualizedRemoteList";
-import { InventivDataTable, type DataTableSortState, type InventivDataTableColumn } from "@/components/shared/InventivDataTable";
-import { useCallback, useMemo, useState } from "react";
+import { IADataTable, IACopyButton, type DataTableSortState, type IADataTableColumn, type LoadRangeResult } from "ia-widgets";
+import { useCallback, useMemo, useState, type MouseEvent } from "react";
 type InstanceTableProps = {
   onViewDetails: (instance: Instance) => void;
   onTerminate: (id: string) => void;
@@ -67,7 +66,7 @@ export function InstanceTable({
     [sort]
   );
 
-  const columns = useMemo<InventivDataTableColumn<Instance>[]>(() => {
+  const columns = useMemo<IADataTableColumn<Instance>[]>(() => {
     return [
       {
         id: "id",
@@ -151,6 +150,34 @@ export function InstanceTable({
         ),
       },
       {
+        id: "progress",
+        label: "Progress",
+        width: 180,
+        sortable: true,
+        cell: ({ row }) => {
+          // Only show progress for instances that are provisioning or booting
+          if (
+            row.progress_percent == null ||
+            row.status.toLowerCase() === "ready" ||
+            row.status.toLowerCase() === "terminated" ||
+            row.status.toLowerCase() === "terminating" ||
+            row.status.toLowerCase() === "archived" ||
+            row.status.toLowerCase().includes("failed")
+          ) {
+            return <span className="text-muted-foreground text-sm">—</span>;
+          }
+          
+          return (
+            <div className="flex items-center gap-2 w-full">
+              <Progress value={row.progress_percent} className="h-2 flex-1" />
+              <span className="text-xs text-muted-foreground font-mono min-w-[2.5rem] text-right">
+                {row.progress_percent}%
+              </span>
+            </div>
+          );
+        },
+      },
+      {
         id: "created",
         label: "Created",
         width: 170,
@@ -170,7 +197,7 @@ export function InstanceTable({
           row.ip_address ? (
             <div className="flex items-center gap-1 font-mono text-sm">
               <span className="truncate">{row.ip_address}</span>
-              <CopyButton text={row.ip_address} />
+              <IACopyButton text={row.ip_address} />
             </div>
           ) : (
             <span className="text-muted-foreground">-</span>
@@ -188,7 +215,7 @@ export function InstanceTable({
             <Button
               variant="ghost"
               size="icon"
-              onClick={(e) => {
+              onClick={(e: MouseEvent<HTMLButtonElement>) => {
                 e.stopPropagation();
                 onViewDetails(row);
               }}
@@ -201,7 +228,7 @@ export function InstanceTable({
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={(e) => {
+                  onClick={(e: MouseEvent<HTMLButtonElement>) => {
                     e.stopPropagation();
                     onReinstall(row.id);
                   }}
@@ -214,7 +241,7 @@ export function InstanceTable({
                 <Button
                   variant="destructive"
                   size="sm"
-                  onClick={(e) => {
+                  onClick={(e: MouseEvent<HTMLButtonElement>) => {
                     e.stopPropagation();
                     onTerminate(row.id);
                   }}
@@ -226,7 +253,7 @@ export function InstanceTable({
               <Button
                 variant="secondary"
                 size="icon"
-                onClick={(e) => {
+                onClick={(e: MouseEvent<HTMLButtonElement>) => {
                   e.stopPropagation();
                   onArchive(row.id);
                 }}
@@ -242,7 +269,7 @@ export function InstanceTable({
   }, [onArchive, onReinstall, onTerminate, onViewDetails]);
 
   return (
-    <InventivDataTable<Instance>
+    <IADataTable<Instance>
       listId="instances:table"
       title="Instances"
       reloadToken={refreshKey}

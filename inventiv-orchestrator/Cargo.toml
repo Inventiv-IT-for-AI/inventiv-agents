@@ -3,9 +3,16 @@ name = "inventiv-orchestrator"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Orchestrator core should be provider-agnostic. Provider implementations are opt-in.
+default = []
+provider-mock = ["inventiv-providers/mock"]
+provider-scaleway = ["inventiv-providers/scaleway"]
+
 [dependencies]
 inventiv-common = { path = "../inventiv-common" }
-axum = "0.7"
+inventiv-providers = { path = "../inventiv-providers", default-features = false }
+axum = "0.8"
 tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

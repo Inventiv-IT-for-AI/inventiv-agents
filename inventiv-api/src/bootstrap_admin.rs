@@ -128,3 +128,135 @@ pub async fn ensure_default_admin(db: &Pool<Postgres>) {
     .execute(db)
     .await;
 }
+
+pub async fn ensure_default_organization(db: &Pool<Postgres>) {
+    // Allow disabling in special cases, but default is enabled.
+    if !env_bool("BOOTSTRAP_DEFAULT_ORGANIZATION", true) {
+        return;
+    }
+
+    let org_name = env_string("DEFAULT_ORGANIZATION_NAME", "Inventiv IT");
+    let org_slug = env_string("DEFAULT_ORGANIZATION_SLUG", "inventiv-it");
+    let admin_username = env_string("DEFAULT_ADMIN_USERNAME", "admin").to_ascii_lowercase();
+
+    // Get admin user ID
+    let admin_user_id: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT id FROM users WHERE username = $1 LIMIT 1")
+            .bind(&admin_username)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
+
+    let Some(admin_id) = admin_user_id else {
+        eprintln!(
+            "[warn] BOOTSTRAP_DEFAULT_ORGANIZATION: admin user '{}' not found; skipping organization creation",
+            admin_username
+        );
+        return;
+    };
+
+    // Get or create organization "Inventiv IT" (idempotent)
+    let org_id: Option<uuid::Uuid> = sqlx::query_scalar(
+        r#"
+        INSERT INTO organizations (id, name, slug, created_by_user_id, created_at, updated_at)
+        VALUES (gen_random_uuid(), $1, $2, $3, NOW(), NOW())
+        ON CONFLICT (slug) DO UPDATE SET updated_at = NOW()
+        RETURNING id
+        "#,
+    )
+    .bind(&org_name)
+    .bind(&org_slug)
+    .bind(admin_id)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+
+    let org_uuid = if let Some(id) = org_id {
+        id
+    } else {
+        // Organization already exists, fetch its ID
+        match sqlx::query_scalar::<_, uuid::Uuid>(
+            "SELECT id FROM organizations WHERE slug = $1 LIMIT 1",
+        )
+        .bind(&org_slug)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        {
+            Some(id) => id,
+            None => {
+                eprintln!(
+                    "[error] BOOTSTRAP_DEFAULT_ORGANIZATION: failed to get or create organization '{}'",
+                    org_slug
+                );
+                return;
+            }
+        }
+    };
+
+    // Ensure admin is owner of this organization (idempotent)
+    // Check if membership already exists
+    let membership_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM organization_memberships WHERE organization_id = $1 AND user_id = $2)"
+    )
+    .bind(org_uuid)
+    .bind(admin_id)
+    .fetch_one(db)
+    .await
+    .unwrap_or(false);
+
+    if membership_exists {
+        // Update role to owner if needed
+        let rows_updated = sqlx::query(
+            r#"
+            UPDATE organization_memberships
+            SET role = 'owner'
+            WHERE organization_id = $1 AND user_id = $2 AND role != 'owner'
+            "#,
+        )
+        .bind(org_uuid)
+        .bind(admin_id)
+        .execute(db)
+        .await
+        .ok()
+        .map(|r| r.rows_affected())
+        .unwrap_or(0);
+
+        if rows_updated > 0 {
+            eprintln!(
+                "[info] Updated admin role to owner for default organization '{}' (slug: {})",
+                org_name, org_slug
+            );
+        } else {
+            eprintln!(
+                "[info] Default organization '{}' (slug: {}) already exists with admin as owner",
+                org_name, org_slug
+            );
+        }
+    } else {
+        // Create membership
+        let rows_inserted = sqlx::query(
+            r#"
+            INSERT INTO organization_memberships (organization_id, user_id, role, created_at)
+            VALUES ($1, $2, 'owner', NOW())
+            "#,
+        )
+        .bind(org_uuid)
+        .bind(admin_id)
+        .execute(db)
+        .await
+        .ok()
+        .map(|r| r.rows_affected())
+        .unwrap_or(0);
+
+        if rows_inserted > 0 {
+            eprintln!(
+                "[info] Created default organization '{}' (slug: {}) with admin as owner",
+                org_name, org_slug
+            );
+        }
+    }
+}

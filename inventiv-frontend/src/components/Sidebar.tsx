@@ -1,17 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import { LayoutDashboard, Box, Settings, Activity, Archive, BarChart3, Server, Users } from "lucide-react";
+import { usePathname } from "next/navigation";
+import { LayoutDashboard, Settings, Activity, Archive, BarChart3, Server, Users, Terminal, KeyRound, Cpu, MessageSquare, Building2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { apiUrl } from "@/lib/api";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useI18n } from "@/i18n/I18nProvider";
-import { LOCALE_LABELS, LocaleCode, normalizeLocale } from "@/i18n/i18n";
+import { Badge } from "@/components/ui/badge";
+import { useState, useEffect } from "react";
+import type { Me } from "@/components/account/AccountSection";
+import { AccountSection } from "@/components/account/AccountSection";
+import { FRONTEND_VERSION, getBackendVersion, type BackendVersionInfo } from "@/lib/version";
+import { useInstanceAccess } from "@/hooks/useInstanceAccess";
+import { useAdminDashboardAccess } from "@/hooks/useAdminDashboardAccess";
 
 interface SidebarLinkProps {
     href: string;
@@ -40,412 +39,133 @@ function SidebarLink({ href, icon: Icon, label, disabled }: SidebarLinkProps) {
 }
 
 export function Sidebar() {
-    const router = useRouter();
-    const { t, locale, setLocale } = useI18n();
-    const [menuOpen, setMenuOpen] = useState(false);
-    const [profileOpen, setProfileOpen] = useState(false);
-    const [me, setMe] = useState<{
-        user_id: string;
-        username: string;
-        email: string;
-        role: string;
-        first_name?: string | null;
-        last_name?: string | null;
-        locale_code?: string | null;
-    } | null>(null);
-
-    const [profileForm, setProfileForm] = useState({
-        username: "",
-        email: "",
-        first_name: "",
-        last_name: "",
-        locale_code: "en-US" as LocaleCode,
-    });
-
-    const [pwdForm, setPwdForm] = useState({
-        current_password: "",
-        new_password: "",
-        confirm_new_password: "",
-    });
-
-    const [profileSaving, setProfileSaving] = useState(false);
-    const [pwdSaving, setPwdSaving] = useState(false);
-    const [profileError, setProfileError] = useState<string | null>(null);
-    const [pwdError, setPwdError] = useState<string | null>(null);
-    const [pwdSuccess, setPwdSuccess] = useState<string | null>(null);
-
-    const [availableLocales, setAvailableLocales] = useState<
-        { code: string; name: string; native_name?: string | null; direction: string }[]
-    >([]);
-
-    const displayName = useMemo(() => {
-        if (!me) return "User";
-        const full = `${me.first_name ?? ""} ${me.last_name ?? ""}`.trim();
-        return full || me.username || me.email || "User";
-    }, [me]);
-
-    const initials = useMemo(() => {
-        const s = displayName.trim();
-        if (!s) return "U";
-        const parts = s.split(/\s+/).filter(Boolean);
-        if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-        return (parts[0][0] + parts[1][0]).toUpperCase();
-    }, [displayName]);
-
-    const fetchMe = useCallback(async () => {
-        const res = await fetch(apiUrl("/auth/me"));
-        if (!res.ok) {
-            // Session invalid/expired (or DB reset) -> redirect to login.
-            if (res.status === 401) {
-                router.replace("/login");
-            }
-            setMe(null);
-            return;
-        }
-        const data = await res.json();
-        setMe(data);
-        const nextLocale = normalizeLocale(data.locale_code);
-        setLocale(nextLocale);
-        setProfileForm({
-            username: data.username ?? (typeof data.email === "string" ? String(data.email).split("@")[0] : ""),
-            email: data.email ?? "",
-            first_name: data.first_name ?? "",
-            last_name: data.last_name ?? "",
-            locale_code: nextLocale,
-        });
-    }, [router, setLocale]);
+    const [meRole, setMeRole] = useState<string | null>(null);
+    const [backendVersion, setBackendVersion] = useState<BackendVersionInfo | null>(null);
+    const [showVersionDetails, setShowVersionDetails] = useState(false);
+    const isAdmin = meRole === "admin";
+    const instanceAccess = useInstanceAccess();
+    const adminDashboardAccess = useAdminDashboardAccess();
 
     useEffect(() => {
-        void fetchMe().catch(() => null);
-    }, [fetchMe]);
-
-    const fetchLocales = useCallback(async () => {
-        const res = await fetch(apiUrl("/locales"));
-        if (!res.ok) return;
-        const data = await res.json();
-        if (Array.isArray(data)) setAvailableLocales(data);
+        // Fetch backend version on mount
+        getBackendVersion().then(setBackendVersion).catch(() => {});
     }, []);
-
-    const logout = async () => {
-        try {
-            await fetch(apiUrl("/auth/logout"), { method: "POST" });
-        } finally {
-            router.replace("/login");
-        }
-    };
-
-    const saveProfile = async () => {
-        setProfileError(null);
-        setProfileSaving(true);
-        try {
-            const res = await fetch(apiUrl("/auth/me"), {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    username: profileForm.username,
-                    email: profileForm.email,
-                    first_name: profileForm.first_name || null,
-                    last_name: profileForm.last_name || null,
-                    locale_code: profileForm.locale_code,
-                }),
-            });
-            if (!res.ok) {
-                if (res.status === 401) {
-                    router.replace("/login");
-                    return;
-                }
-                const body = await res.json().catch(() => null);
-                const code = body?.error || body?.message;
-                setProfileError(
-                    code === "conflict" || code === "username_or_email_already_exists"
-                        ? t("account.conflict")
-                        : code === "session_invalid"
-                            ? t("account.sessionExpired")
-                            : code === "invalid_locale" || code === "unknown_locale"
-                                ? "Locale invalide"
-                                : t("account.updateError")
-                );
-                return;
-            }
-            const data = await res.json();
-            setMe(data);
-            setLocale(normalizeLocale(data.locale_code));
-        } catch (e) {
-            console.error(e);
-            setProfileError(t("account.networkError"));
-        } finally {
-            setProfileSaving(false);
-        }
-    };
-
-    const changePassword = async () => {
-        setPwdError(null);
-        setPwdSuccess(null);
-        if (!pwdForm.current_password.trim() || !pwdForm.new_password.trim()) {
-            setPwdError(t("account.fillAllFields"));
-            return;
-        }
-        if (pwdForm.new_password !== pwdForm.confirm_new_password) {
-            setPwdError(t("account.confirmMismatch"));
-            return;
-        }
-        setPwdSaving(true);
-        try {
-            const res = await fetch(apiUrl("/auth/me/password"), {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    current_password: pwdForm.current_password,
-                    new_password: pwdForm.new_password,
-                }),
-            });
-            if (!res.ok) {
-                if (res.status === 401) {
-                    router.replace("/login");
-                    return;
-                }
-                const body = await res.json().catch(() => null);
-                const code = body?.error || body?.message;
-                setPwdError(
-                    code === "invalid_current_password" || code === "current_password_invalid"
-                        ? "Mot de passe actuel incorrect"
-                        : code === "session_invalid"
-                            ? t("account.sessionExpired")
-                            : "Erreur lors du changement de mot de passe"
-                );
-                return;
-            }
-            setPwdForm({ current_password: "", new_password: "", confirm_new_password: "" });
-            setPwdSuccess(t("account.passwordUpdated"));
-        } catch (e) {
-            console.error(e);
-            setPwdError(t("account.networkError"));
-        } finally {
-            setPwdSaving(false);
-        }
-    };
 
     return (
         <div className="w-64 border-r min-h-screen bg-background text-foreground hidden md:flex flex-col">
             <div className="space-y-4 py-4 flex-1">
                 <div className="px-3 py-2">
-                    <h2 className="mb-2 px-4 text-lg font-semibold tracking-tight text-primary">
-                        Inventiv Agents
-                    </h2>
-                    <div className="space-y-1">
-                        <SidebarLink href="/" icon={LayoutDashboard} label={t("nav.dashboard")} />
-                        <SidebarLink href="/instances" icon={Server} label={t("nav.instances")} />
-                        <SidebarLink href="/monitoring" icon={BarChart3} label={t("nav.monitoring")} />
-                        <SidebarLink href="/models" icon={Box} label={t("nav.models")} />
-                        <SidebarLink href="/settings" icon={Settings} label={t("nav.settings")} />
-                        <SidebarLink href="/users" icon={Users} label={t("nav.users")} />
-                    </div>
-                </div>
-                <div className="px-3 py-2">
-                    <h2 className="mb-2 px-4 text-xs font-semibold tracking-tight text-muted-foreground uppercase">
-                        {t("nav.traces")}
-                    </h2>
-                    <div className="space-y-1">
-                        <SidebarLink href="/traces" icon={Archive} label={t("nav.traces")} />
-                    </div>
-                </div>
-                <div className="px-3 py-2">
-                    <h2 className="mb-2 px-4 text-xs font-semibold tracking-tight text-muted-foreground uppercase">
-                        {t("nav.system")}
-                    </h2>
-                    <div className="space-y-1">
-                        <Button variant="ghost" className="w-full justify-start" disabled>
-                            <Activity className="mr-2 h-4 w-4" />
-                            {t("nav.systemStatus")}
-                        </Button>
-                    </div>
-                </div>
-            </div>
-
-            {/* User chip (bottom) */}
-            <div className="p-3 border-t">
-                <Button
-                    variant="ghost"
-                    className="w-full justify-start"
-                    onClick={() => setMenuOpen(true)}
-                >
-                    <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center font-semibold text-xs mr-2">
-                        {initials}
-                    </div>
-                    <div className="min-w-0 flex-1 text-left">
-                        <div className="text-sm font-medium truncate">{displayName}</div>
-                        <div className="text-xs text-muted-foreground truncate">{me?.role ?? "user"}</div>
-                    </div>
-                </Button>
-            </div>
-
-            {/* Menu dialog */}
-            <Dialog open={menuOpen} onOpenChange={setMenuOpen}>
-                <DialogContent showCloseButton={false} className="sm:max-w-[420px]">
-                    <DialogHeader>
-                        <DialogTitle>{t("account.title")}</DialogTitle>
-                    </DialogHeader>
-                    <div className="grid gap-2 py-2">
-                        <Button
-                            variant="outline"
-                            onClick={() => {
-                                setMenuOpen(false);
-                                setProfileOpen(true);
-                                void fetchLocales().catch(() => null);
-                                setPwdError(null);
-                                setPwdSuccess(null);
-                                setProfileError(null);
-                            }}
-                        >
-                            {t("account.myProfile")}
-                        </Button>
-                        <Button
-                            variant="destructive"
-                            onClick={async () => {
-                                setMenuOpen(false);
-                                await logout();
-                            }}
-                        >
-                            {t("account.logout")}
-                        </Button>
-                    </div>
-                    <DialogFooter>
-                        <Button variant="outline" onClick={() => setMenuOpen(false)}>
-                            {t("account.close")}
-                        </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
-
-            {/* Profile dialog */}
-            <Dialog
-                open={profileOpen}
-                onOpenChange={(o) => {
-                    setProfileOpen(o);
-                    if (o) {
-                        void fetchMe().catch(() => null);
-                        void fetchLocales().catch(() => null);
-                    }
-                }}
-            >
-                <DialogContent showCloseButton={false} className="sm:max-w-[560px]">
-                    <DialogHeader>
-                        <DialogTitle>{t("account.profileTitle")}</DialogTitle>
-                    </DialogHeader>
-
-                    <div className="grid gap-6 py-2">
-                        <div className="grid gap-3">
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label className="text-right">Username</Label>
-                                <Input
-                                    className="col-span-3"
-                                    value={profileForm.username}
-                                    onChange={(e) => setProfileForm((s) => ({ ...s, username: e.target.value }))}
-                                />
-                            </div>
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label className="text-right">Email</Label>
-                                <Input
-                                    className="col-span-3"
-                                    value={profileForm.email}
-                                    onChange={(e) => setProfileForm((s) => ({ ...s, email: e.target.value }))}
-                                />
-                            </div>
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label className="text-right">Prénom</Label>
-                                <Input
-                                    className="col-span-3"
-                                    value={profileForm.first_name}
-                                    onChange={(e) => setProfileForm((s) => ({ ...s, first_name: e.target.value }))}
-                                />
-                            </div>
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label className="text-right">Nom</Label>
-                                <Input
-                                    className="col-span-3"
-                                    value={profileForm.last_name}
-                                    onChange={(e) => setProfileForm((s) => ({ ...s, last_name: e.target.value }))}
-                                />
-                            </div>
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label className="text-right">{t("account.locale")}</Label>
-                                <div className="col-span-3">
-                                    <Select
-                                        value={profileForm.locale_code}
-                                        onValueChange={(v) =>
-                                            setProfileForm((s) => ({ ...s, locale_code: normalizeLocale(v) }))
-                                        }
-                                    >
-                                        <SelectTrigger className="w-full">
-                                            <SelectValue placeholder={LOCALE_LABELS[locale]} />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            {(availableLocales.length
-                                                ? (availableLocales.map((l) => l.code) as string[])
-                                                : (Object.keys(LOCALE_LABELS) as string[])
-                                            ).map((code) => (
-                                                <SelectItem key={code} value={code}>
-                                                    {LOCALE_LABELS[normalizeLocale(code)] ?? code}
-                                                </SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
-                                </div>
-                            </div>
-                            {profileError ? <div className="text-sm text-red-600">{profileError}</div> : null}
-                            <div className="flex justify-end">
-                                <Button onClick={saveProfile} disabled={profileSaving}>
-                                    {profileSaving ? t("account.saving") : t("account.save")}
-                                </Button>
-                            </div>
-                        </div>
-
-                        <div className="border-t pt-4 grid gap-3">
-                            <div className="text-sm font-medium">{t("account.changePassword")}</div>
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label className="text-right">{t("account.currentPassword")}</Label>
-                                <Input
-                                    className="col-span-3"
-                                    type="password"
-                                    value={pwdForm.current_password}
-                                    onChange={(e) => setPwdForm((s) => ({ ...s, current_password: e.target.value }))}
-                                />
-                            </div>
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label className="text-right">{t("account.newPassword")}</Label>
-                                <Input
-                                    className="col-span-3"
-                                    type="password"
-                                    value={pwdForm.new_password}
-                                    onChange={(e) => setPwdForm((s) => ({ ...s, new_password: e.target.value }))}
-                                />
-                            </div>
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label className="text-right">{t("account.confirmPassword")}</Label>
-                                <Input
-                                    className="col-span-3"
-                                    type="password"
-                                    value={pwdForm.confirm_new_password}
-                                    onChange={(e) => setPwdForm((s) => ({ ...s, confirm_new_password: e.target.value }))}
-                                />
-                            </div>
-                            {pwdError ? <div className="text-sm text-red-600">{pwdError}</div> : null}
-                            {pwdSuccess ? <div className="text-sm text-green-600">{pwdSuccess}</div> : null}
-                            <div className="flex justify-end">
-                                <Button onClick={changePassword} disabled={pwdSaving}>
-                                    {pwdSaving ? t("account.updatingPassword") : t("account.updatePassword")}
-                                </Button>
-                            </div>
+                    <div className="mb-2 px-4">
+                        <h2 className="text-lg font-semibold tracking-tight text-primary">
+                            Inventiv Agents
+                        </h2>
+                        <div className="relative mt-0.5">
+                            <button
+                                type="button"
+                                className="group relative cursor-pointer"
+                                onMouseEnter={() => setShowVersionDetails(true)}
+                                onMouseLeave={() => setShowVersionDetails(false)}
+                                onClick={() => setShowVersionDetails(!showVersionDetails)}
+                                aria-label="Version information"
+                            >
+                                <Badge variant="secondary" className="text-[10px] font-mono px-1.5 py-0.5 h-4 leading-none opacity-70 hover:opacity-100 transition-opacity">
+                                    v{FRONTEND_VERSION}
+                                </Badge>
+                                {showVersionDetails && (
+                                    <div className="absolute left-0 top-5 z-50 w-56 rounded-md border bg-popover p-3 text-popover-foreground shadow-md animate-in fade-in-0 zoom-in-95">
+                                        <div className="space-y-1.5 text-xs">
+                                            <div className="font-semibold text-[10px] uppercase tracking-wide text-muted-foreground mb-2">
+                                                Version Info
+                                            </div>
+                                            <div className="flex justify-between items-center">
+                                                <span className="text-muted-foreground">Frontend:</span>
+                                                <span className="font-mono font-medium">{FRONTEND_VERSION}</span>
+                                            </div>
+                                            {backendVersion ? (
+                                                <>
+                                                    <div className="flex justify-between items-center">
+                                                        <span className="text-muted-foreground">Backend:</span>
+                                                        <span className="font-mono font-medium">{backendVersion.backend_version}</span>
+                                                    </div>
+                                                    <div className="flex justify-between items-center pt-1 border-t">
+                                                        <span className="text-muted-foreground">Build:</span>
+                                                        <span className="font-mono text-[10px]">{backendVersion.build_time}</span>
+                                                    </div>
+                                                </>
+                                            ) : (
+                                                <div className="text-muted-foreground text-[10px] italic">
+                                                    Loading backend version...
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+                            </button>
                         </div>
                     </div>
+                    <div className="space-y-1">
+                        <SidebarLink href="/my-dashboard" icon={LayoutDashboard} label="My Dashboard" />
+                        <SidebarLink href="/chat" icon={MessageSquare} label="Chat" />
+                        <SidebarLink href="/models" icon={Activity} label="Models" />
+                        <SidebarLink href="/workbench" icon={Terminal} label="Workbench" />
+                        <SidebarLink href="/api-keys" icon={KeyRound} label="API Keys" />
+                    </div>
+                </div>
+                {/* Admin group - only visible if user is Owner/Admin/Manager in an organization */}
+                {!adminDashboardAccess.loading && adminDashboardAccess.canAccess && (
+                    <div className="px-3 py-2">
+                        <h2 className="mb-2 px-4 text-xs font-semibold tracking-tight text-muted-foreground uppercase">
+                            Admin
+                        </h2>
+                        <div className="space-y-1">
+                            {/* Admin Dashboard - double check: requires Owner/Admin/Manager role */}
+                            {adminDashboardAccess.canAccess && (
+                                <SidebarLink href="/admin-dashboard" icon={LayoutDashboard} label="Admin Dashboard" />
+                            )}
+                            {/* Instances - visible to Owner/Admin/Manager, but page will check Owner/Admin for actual access */}
+                            {adminDashboardAccess.canAccess && (
+                                <SidebarLink href="/instances" icon={Server} label="Instances" />
+                            )}
+                            {/* Observability - available to Owner/Admin/Manager */}
+                            {adminDashboardAccess.canAccess && (
+                                <SidebarLink href="/observability" icon={Cpu} label="Observability" />
+                            )}
+                            {/* Monitoring - available to Owner/Admin/Manager */}
+                            {adminDashboardAccess.canAccess && (
+                                <SidebarLink href="/monitoring" icon={BarChart3} label="Monitoring" />
+                            )}
+                            {/* Organizations - available to Owner/Admin/Manager */}
+                            {adminDashboardAccess.canAccess && (
+                                <SidebarLink href="/organizations" icon={Building2} label="Organizations" />
+                            )}
+                            {/* Users - requires system admin role AND organization access */}
+                            {isAdmin && adminDashboardAccess.canAccess && (
+                                <SidebarLink href="/users" icon={Users} label="Users" />
+                            )}
+                            {/* Settings - requires system admin role AND organization access */}
+                            {isAdmin && adminDashboardAccess.canAccess && (
+                                <SidebarLink href="/settings" icon={Settings} label="Settings" />
+                            )}
+                        </div>
+                    </div>
+                )}
+                {/* History group - only visible if user is Owner/Admin/Manager in an organization */}
+                {!adminDashboardAccess.loading && adminDashboardAccess.canAccess && (
+                    <div className="px-3 py-2">
+                        <h2 className="mb-2 px-4 text-xs font-semibold tracking-tight text-muted-foreground uppercase">
+                            History
+                        </h2>
+                        <div className="space-y-1">
+                            {/* Traces - double check: requires Owner/Admin/Manager role */}
+                            {adminDashboardAccess.canAccess && (
+                                <SidebarLink href="/traces" icon={Archive} label="Traces" />
+                            )}
+                        </div>
+                    </div>
+                )}
+            </div>
 
-                    <DialogFooter className="sm:justify-between">
-                        <Button variant="outline" onClick={() => setProfileOpen(false)}>
-                            {t("account.close")}
-                        </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
+            <AccountSection onMeChange={(m: Me | null) => setMeRole(m?.role ?? null)} />
         </div>
     );
 }

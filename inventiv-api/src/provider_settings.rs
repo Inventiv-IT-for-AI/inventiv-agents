@@ -57,7 +57,7 @@ pub struct UpdateProviderParamsRequest {
 
 fn validate_timeout_s(v: i64) -> bool {
     // Keep sane bounds: 30s .. 24h
-    v >= 30 && v <= 86_400
+    (30..=86_400).contains(&v)
 }
 
 #[utoipa::path(
@@ -271,17 +271,17 @@ pub async fn update_provider_params(
         }
     }
     if let Some(v) = req.worker_health_port {
-        if v < 1 || v > 65535 {
+        if !(1..=65535).contains(&v) {
             return StatusCode::BAD_REQUEST;
         }
     }
     if let Some(v) = req.worker_vllm_port {
-        if v < 1 || v > 65535 {
+        if !(1..=65535).contains(&v) {
             return StatusCode::BAD_REQUEST;
         }
     }
     if let Some(v) = req.worker_data_volume_gb_default {
-        if v < 50 || v > 5000 {
+        if !(50..=5000).contains(&v) {
             return StatusCode::BAD_REQUEST;
         }
     }
@@ -506,4 +506,98 @@ pub async fn update_provider_params(
     }
 
     StatusCode::OK
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ProviderConfigStatus {
+    pub provider_id: Uuid,
+    pub provider_code: String,
+    pub provider_name: String,
+    pub is_configured: bool,
+    pub missing_config: Vec<String>, // e.g., ["SCALEWAY_PROJECT_ID", "SCALEWAY_SECRET_KEY_ENC"]
+}
+
+#[utoipa::path(
+    get,
+    path = "/providers/config-status",
+    tag = "Settings",
+    responses((status = 200, description = "Provider configuration status", body = Vec<ProviderConfigStatus>))
+)]
+pub async fn list_provider_config_status(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<ProviderConfigStatus>> {
+    // Get all active providers
+    let providers: Vec<(Uuid, String, String)> =
+        sqlx::query_as("SELECT id, code, name FROM providers WHERE is_active = true ORDER BY name")
+            .fetch_all(&state.db)
+            .await
+            .unwrap_or_default();
+
+    let mut results = Vec::new();
+
+    for (provider_id, provider_code, provider_name) in providers {
+        let mut missing_config = Vec::new();
+        let mut is_configured = true;
+
+        // Check provider-specific required configuration
+        match provider_code.to_ascii_lowercase().as_str() {
+            "scaleway" => {
+                // Check for SCALEWAY_PROJECT_ID
+                let has_project_id: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM provider_settings WHERE provider_id = $1 AND key = 'SCALEWAY_PROJECT_ID' AND value_text IS NOT NULL)"
+                )
+                .bind(provider_id)
+                .fetch_one(&state.db)
+                .await
+                .unwrap_or(false);
+
+                // Check for SCALEWAY_SECRET_KEY_ENC
+                let has_secret_key: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM provider_settings WHERE provider_id = $1 AND key = 'SCALEWAY_SECRET_KEY_ENC' AND value_text IS NOT NULL)"
+                )
+                .bind(provider_id)
+                .fetch_one(&state.db)
+                .await
+                .unwrap_or(false);
+
+                if !has_project_id {
+                    missing_config.push("SCALEWAY_PROJECT_ID".to_string());
+                    is_configured = false;
+                }
+                if !has_secret_key {
+                    missing_config.push("SCALEWAY_SECRET_KEY_ENC".to_string());
+                    is_configured = false;
+                }
+            }
+            "mock" => {
+                // Mock provider doesn't need credentials
+                is_configured = true;
+            }
+            _ => {
+                // For other providers, we don't know the requirements yet
+                // Consider them as configured if they have any settings
+                let has_any_settings: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM provider_settings WHERE provider_id = $1)",
+                )
+                .bind(provider_id)
+                .fetch_one(&state.db)
+                .await
+                .unwrap_or(false);
+                if !has_any_settings {
+                    missing_config.push("Provider credentials".to_string());
+                    is_configured = false;
+                }
+            }
+        }
+
+        results.push(ProviderConfigStatus {
+            provider_id,
+            provider_code,
+            provider_name,
+            is_configured,
+            missing_config,
+        });
+    }
+
+    Json(results)
 }

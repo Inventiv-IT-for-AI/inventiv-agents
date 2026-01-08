@@ -1,0 +1,152 @@
+# ============================================================================
+# Agent Version Bump - Mise à jour automatique de la version de l'agent
+# ============================================================================
+# Description:
+#   Met à jour automatiquement la version et le checksum SHA256 de l'agent
+#   Python (inventiv-worker/agent.py). Crée une Pull Request avec les changements.
+#
+# Déclenchement:
+#   - Manuel uniquement: via workflow_dispatch depuis l'interface GitHub Actions
+#
+# Fonctionnalités:
+#   - Auto-increment: Incrémente automatiquement la version patch si non spécifiée
+#   - Checksum: Calcule le SHA256 de agent.py après modification
+#   - PR: Crée automatiquement une Pull Request avec les changements
+#
+# Usage:
+#   - Depuis GitHub Actions UI: "Run workflow"
+#   - Version: Laisser vide pour auto-increment, ou spécifier (ex: "1.0.1")
+#   - Build date: Laisser vide pour aujourd'hui, ou spécifier (ex: "2026-01-07")
+# ============================================================================
+
+name: Agent Version Bump
+
+# Déclencheurs du workflow
+on:
+  # Déclenchement manuel uniquement
+  workflow_dispatch:
+    inputs:
+      # Version à définir (vide = auto-increment patch)
+      version:
+        description: "New version (e.g., 1.0.1). Leave empty to auto-increment patch version."
+        required: false
+        type: string
+      # Date de build (vide = aujourd'hui)
+      build_date:
+        description: "Build date (YYYY-MM-DD). Leave empty to use today's date."
+        required: false
+        type: string
+
+# Permissions GitHub nécessaires
+permissions:
+  contents: write  # Écriture nécessaire pour créer la PR
+
+jobs:
+  # Job principal: Mise à jour de la version et création de la PR
+  bump-version:
+    name: Bump agent version
+    runs-on: ubuntu-latest
+    steps:
+      # Récupération du code source avec token pour pouvoir créer une PR
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Configuration Git pour les commits automatiques
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # Mise à jour de la version dans agent.py
+      # Si version fournie: utilise cette version, sinon auto-increment patch
+      - name: Bump agent version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            make agent-version-bump VERSION="${{ inputs.version }}" BUILD_DATE="${{ inputs.build_date }}"
+          else
+            make agent-version-auto-bump BUILD_DATE="${{ inputs.build_date }}"
+          fi
+
+      # Récupération du nouveau checksum SHA256 après modification
+      - name: Get new checksum
+        id: checksum
+        run: |
+          CHECKSUM=$(make agent-checksum 2>&1 | tail -1 | tr -d '\n\r' | xargs)
+          # Format delimiter pour GitHub Actions (gère les caractères spéciaux)
+          {
+            echo "checksum<<EOF"
+            echo "$CHECKSUM"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+          echo "📦 New SHA256 checksum: $CHECKSUM"
+
+      # Récupération de la nouvelle version
+      - name: Get new version
+        id: version
+        run: |
+          VERSION=$(make agent-version-get 2>&1 | tail -1 | tr -d '\n\r' | xargs)
+          # Format delimiter pour GitHub Actions
+          {
+            echo "version<<EOF"
+            echo "$VERSION"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+          echo "📝 New version: $VERSION"
+
+      # Vérification si agent.py a été modifié (peut être déjà à jour)
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet inventiv-worker/agent.py; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "ℹ️  No changes to commit"
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "✅ Changes detected, will commit"
+          fi
+
+      # Commit des changements si nécessaire
+      - name: Commit changes
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git add inventiv-worker/agent.py
+          git commit -m "chore(agent): bump version to ${{ steps.version.outputs.version }}
+
+          SHA256: ${{ steps.checksum.outputs.checksum }}
+          Build date: $(grep -m1 '^AGENT_BUILD_DATE' inventiv-worker/agent.py | sed -E 's/^[^"]*"([^"]+)".*/\1/')"
+
+      # Création automatique d'une Pull Request avec les changements
+      - name: Create Pull Request
+        if: steps.changes.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore(agent): bump version to ${{ steps.version.outputs.version }}"
+          title: "chore(agent): bump version to ${{ steps.version.outputs.version }}"
+          body: |
+            ## Agent Version Bump
+
+            - **Version**: ${{ steps.version.outputs.version }}
+            - **SHA256**: `${{ steps.checksum.outputs.checksum }}`
+            - **Build Date**: $(grep -m1 '^AGENT_BUILD_DATE' inventiv-worker/agent.py | sed -E 's/^[^"]*"([^"]+)".*/\1/')
+
+            ### Usage
+
+            After merging this PR, update your environment with:
+
+            ```bash
+            export WORKER_AGENT_SHA256="${{ steps.checksum.outputs.checksum }}"
+            ```
+
+            Or update provider settings:
+
+            ```sql
+            UPDATE provider_settings 
+            SET value_text = '${{ steps.checksum.outputs.checksum }}'
+            WHERE key = 'WORKER_AGENT_SHA256';
+            ```
+          branch: chore/agent-version-bump-${{ steps.version.outputs.version }}
+          delete-branch: true  # Supprime la branche après merge de la PR
+

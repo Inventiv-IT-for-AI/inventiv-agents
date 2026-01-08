@@ -3,10 +3,10 @@
 import { formatDistanceToNow, parseISO } from "date-fns";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { CopyButton } from "@/components/shared/CopyButton";
 import { Button } from "@/components/ui/button";
 import type { Instance } from "@/lib/types";
 import { displayOrDash, formatEur } from "@/lib/utils";
+import { IACopyButton } from "ia-widgets";
 
 type InstanceDetailsModalProps = {
   open: boolean;
@@ -97,7 +97,7 @@ export function InstanceDetailsModal({
               </h4>
               <div className="p-3 bg-muted rounded-md font-mono text-sm flex justify-between items-center">
                 <span>{instance.ip_address || "No Public IP"}</span>
-                {instance.ip_address && <CopyButton text={instance.ip_address} />}
+                {instance.ip_address && <IACopyButton text={instance.ip_address} />}
               </div>
             </div>
           </div>

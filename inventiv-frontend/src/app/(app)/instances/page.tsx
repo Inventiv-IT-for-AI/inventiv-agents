@@ -3,24 +3,39 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Plus, RefreshCcw } from "lucide-react";
+import { Plus, RefreshCcw, Settings, AlertCircle as AlertIcon } from "lucide-react";
 import { Instance } from "@/lib/types";
-import { apiUrl } from "@/lib/api";
 import { useInstances } from "@/hooks/useInstances";
 import { useRealtimeEvents } from "@/hooks/useRealtimeEvents";
 import { useCatalog } from "@/hooks/useCatalog";
-import { StatsCard } from "@/components/shared/StatsCard";
+import { useInstanceAccess } from "@/hooks/useInstanceAccess";
+import { IAStatCell } from "ia-widgets";
+import { IAAlert, IAAlertDescription, IAAlertTitle } from "ia-designsys";
+import { apiUrl } from "@/lib/api";
 import { CreateInstanceModal } from "@/components/instances/CreateInstanceModal";
 import { TerminateInstanceModal } from "@/components/instances/TerminateInstanceModal";
 import { ReinstallInstanceModal } from "@/components/instances/ReinstallInstanceModal";
 import { Server, Activity, AlertCircle, RefreshCcw as RefreshIcon } from "lucide-react";
 import { InstanceTable } from "@/components/instances/InstanceTable";
 import { InstanceTimelineModal } from "@/components/instances/InstanceTimelineModal";
+import { ArchiveInstanceModal } from "@/components/instances/ArchiveInstanceModal";
+import { WorkspaceBanner } from "@/components/shared/WorkspaceBanner";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 export default function InstancesPage() {
+    const router = useRouter();
     useRealtimeEvents();
     const { instances, refreshInstances } = useInstances();
     const catalog = useCatalog();
+    const accessCheck = useInstanceAccess();
+
+    // Redirect to dashboard if access is lost (e.g., workspace changed)
+    useEffect(() => {
+        if (!accessCheck.loading && !accessCheck.canAccess) {
+            router.push("/");
+        }
+    }, [accessCheck.loading, accessCheck.canAccess, router]);
 
     const [refreshSeq, setRefreshSeq] = useState(0);
     const refreshTimerRef = useRef<number | null>(null);
@@ -30,6 +45,8 @@ export default function InstancesPage() {
     const [instanceToTerminate, setInstanceToTerminate] = useState<string | null>(null);
     const [isReinstallOpen, setIsReinstallOpen] = useState(false);
     const [instanceToReinstall, setInstanceToReinstall] = useState<string | null>(null);
+    const [isArchiveOpen, setIsArchiveOpen] = useState(false);
+    const [instanceToArchive, setInstanceToArchive] = useState<string | null>(null);
     const [isTimelineOpen, setIsTimelineOpen] = useState(false);
     const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(null);
 
@@ -38,18 +55,24 @@ export default function InstancesPage() {
         setIsCreateOpen(true);
     };
 
-    const handleArchive = async (id: string) => {
-        try {
-            const res = await fetch(apiUrl(`instances/${id}/archive`), { method: "PUT" });
-            if (res.ok) {
+    const openArchiveModal = async (id: string) => {
+        // If the instance is already terminated, archive immediately (no confirmation modal).
+        const inst = instances.find((i) => i.id === id) ?? null;
+        if (inst?.status?.toLowerCase() === "terminated") {
+            try {
+                const res = await fetch(apiUrl(`instances/${id}/archive`), { method: "PUT" });
+                if (!res.ok) throw new Error(`archive failed (${res.status})`);
                 refreshInstances();
-            } else {
-                alert("Failed to archive");
+                // If no event fires (edge case), still bump the reload token.
+                setRefreshSeq((v) => v + 1);
+                return;
+            } catch (e) {
+                console.error("Failed to archive instance:", e);
+                // Fallback to modal so user can retry / see the action explicitly.
             }
-        } catch (e) {
-            console.error(e);
-            alert("Error archiving instance");
         }
+        setInstanceToArchive(id);
+        setIsArchiveOpen(true);
     };
 
     const openTerminateModal = (id: string) => {
@@ -87,6 +110,29 @@ export default function InstancesPage() {
         };
     }, []);
 
+    // If user doesn't have access, show loading while redirecting
+    if (!accessCheck.loading && !accessCheck.canAccess) {
+        return (
+            <div className="p-8 space-y-8">
+                <IAAlert variant="destructive">
+                    <IAAlertTitle>Redirection en cours...</IAAlertTitle>
+                    <IAAlertDescription>
+                        Vous n&apos;avez pas accès à cette page avec votre workspace actuel. Redirection vers le Dashboard...
+                    </IAAlertDescription>
+                </IAAlert>
+            </div>
+        );
+    }
+
+    // Show loading state while checking access
+    if (accessCheck.loading) {
+        return (
+            <div className="p-8 space-y-8">
+                <div className="text-muted-foreground">Vérification des permissions...</div>
+            </div>
+        );
+    }
+
     // Calculate stats
     const stats = {
         total: instances.length,
@@ -119,38 +165,71 @@ export default function InstancesPage() {
                     >
                         <RefreshCcw className="h-4 w-4" />
                     </Button>
-                    <Button onClick={openCreateModal}>
+                    <Button 
+                        onClick={openCreateModal}
+                        disabled={!accessCheck.canProvision || accessCheck.loading}
+                        title={!accessCheck.canProvision ? accessCheck.reasons.join("; ") : "Créer une instance"}
+                    >
                         <Plus className="mr-2 h-4 w-4" /> Create Instance
                     </Button>
                 </div>
             </div>
 
+            <WorkspaceBanner />
+
+            {/* Provisioning Check Alert */}
+            {!accessCheck.loading && accessCheck.canAccess && !accessCheck.canProvision && (
+                <IAAlert variant="warning">
+                    <IAAlertTitle>Provisionnement non disponible</IAAlertTitle>
+                    <IAAlertDescription>
+                        <ul className="list-disc list-inside space-y-1 mb-3">
+                            {accessCheck.reasons.map((reason, idx) => (
+                                <li key={idx}>{reason}</li>
+                            ))}
+                        </ul>
+                        {!accessCheck.hasConfiguredProviders && (
+                            <div className="mt-2">
+                                <Button variant="outline" size="sm" asChild>
+                                    <Link href="/settings">
+                                        <Settings className="mr-2 h-4 w-4" />
+                                        Configurer les providers
+                                    </Link>
+                                </Button>
+                            </div>
+                        )}
+                    </IAAlertDescription>
+                </IAAlert>
+            )}
+
             {/* Stats */}
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-                <StatsCard
+                <IAStatCell
                     title="Total Instances"
                     value={stats.total}
-                    description="All time managed"
+                    subtitle="All time managed"
                     icon={Server}
+                    accent="indigo"
                 />
-                <StatsCard
+                <IAStatCell
                     title="Active"
                     value={stats.active}
-                    description="Operational"
+                    subtitle="Operational"
                     icon={Activity}
-                    valueClassName="text-green-600"
+                    accent="green"
                 />
-                <StatsCard
+                <IAStatCell
                     title="Provisioning"
                     value={stats.provisioning}
+                    subtitle="Provisioning / booting"
                     icon={RefreshIcon}
-                    valueClassName="text-blue-600"
+                    accent="cyan"
                 />
-                <StatsCard
+                <IAStatCell
                     title="Failed/Terminated"
                     value={stats.failed}
+                    subtitle="Needs attention"
                     icon={AlertCircle}
-                    valueClassName="text-muted-foreground"
+                    accent={stats.failed > 0 ? "red" : "purple"}
                 />
             </div>
 
@@ -161,7 +240,7 @@ export default function InstancesPage() {
                         onViewDetails={openTimelineModal}
                         onTerminate={openTerminateModal}
                         onReinstall={openReinstallModal}
-                        onArchive={handleArchive}
+                        onArchive={openArchiveModal}
                         refreshKey={String(refreshSeq)}
                     />
                 </CardContent>
@@ -199,12 +278,26 @@ export default function InstancesPage() {
                 onSuccess={refreshInstances}
             />
 
+            <ArchiveInstanceModal
+                open={isArchiveOpen}
+                onClose={() => {
+                    setIsArchiveOpen(false);
+                    setInstanceToArchive(null);
+                }}
+                instanceId={instanceToArchive}
+                onSuccess={refreshInstances}
+            />
+
             {/* Instance Actions / Timeline Modal */}
             {selectedInstanceId ? (
                 <InstanceTimelineModal
                     open={isTimelineOpen}
                     onClose={() => setIsTimelineOpen(false)}
                     instanceId={selectedInstanceId}
+                    instances={instances}
+                    onInstanceChange={(newInstanceId) => {
+                        setSelectedInstanceId(newInstanceId);
+                    }}
                 />
             ) : null}
         </div>

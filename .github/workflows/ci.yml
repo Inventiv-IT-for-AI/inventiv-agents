@@ -1,0 +1,143 @@
+# ============================================================================
+# CI - Continuous Integration
+# ============================================================================
+# Description:
+#   Workflow de vérification continue du code (formatage, lint, tests).
+#   Vérifie la qualité du code Rust et Frontend avant chaque merge/commit.
+#
+# Déclenchement:
+#   - Automatique: sur chaque pull_request et push vers main
+#   - Réutilisable: peut être appelé par d'autres workflows (workflow_call)
+#
+# Jobs:
+#   - rust: Vérifie le formatage, clippy et exécute les tests Rust
+#   - frontend: Vérifie le lint et build le frontend Next.js
+# ============================================================================
+
+name: CI
+
+# Déclencheurs du workflow
+on:
+  # Permet à d'autres workflows d'appeler ce workflow (ex: deploy-staging)
+  workflow_call:
+  # Déclenché sur chaque Pull Request
+  pull_request:
+  # Déclenché sur chaque push vers main
+  push:
+    branches: ["main"]
+
+# Permissions GitHub nécessaires
+permissions:
+  contents: read  # Lecture du repository
+
+# Gestion de la concurrence: annule les runs précédents du même workflow
+concurrency:
+  group: ci-${{ github.ref }}  # Groupe par branche/ref
+  cancel-in-progress: true      # Annule les runs en cours si un nouveau démarre
+
+jobs:
+  # Job Rust: Vérification du code Rust
+  rust:
+    name: Rust (fmt/clippy/test)
+    runs-on: ubuntu-latest
+    steps:
+      # Récupération du code source
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Installation de la toolchain Rust (stable) avec rustfmt et clippy
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # Cache des dépendances Rust pour accélérer les builds
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-workspace
+
+      # Vérification de sécurité: détecte les clés privées accidentellement commitées
+      - name: Security check (no committed private keys)
+        run: make security-check
+
+      # Vérification du formatage du code (ne modifie pas, vérifie seulement)
+      - name: Format (check)
+        run: make fmt-check
+
+      # Linter Rust avec règles strictes (warnings = erreurs)
+      - name: Clippy
+        run: make clippy
+
+      # Exécution de tous les tests Rust
+      - name: Tests
+        run: make test
+
+      # Vérification que la version de l'agent a été mise à jour si agent.py a changé
+      - name: Agent version check
+        run: make agent-version-check
+
+  # Job Frontend: Vérification du code Next.js/TypeScript
+  frontend:
+    name: Frontend (lint/build)
+    runs-on: ubuntu-latest
+    steps:
+      # Récupération du code source
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Installation de Node.js 20 avec cache npm automatique
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"  # Cache automatique des node_modules
+
+      # Installation des dépendances npm (clean install, sans audit/fund)
+      # Note: npm ci installe les dépendances natives (lightningcss) correctement
+      - name: Install
+        run: |
+          npm ci --no-audit --no-fund
+          # Rebuild lightningcss pour s'assurer que le binaire natif est téléchargé
+          # (npm ci peut parfois ne pas télécharger les binaires natifs selon la plateforme)
+          cd inventiv-frontend
+          npm rebuild lightningcss --no-save || npm install lightningcss@latest --no-save --force || true
+          cd ..
+          # Vérifie que lightningcss est installé correctement
+          # Le binaire peut être dans différents emplacements selon la plateforme
+          LIGHTNING_PATHS=(
+            "inventiv-frontend/node_modules/lightningcss/lightningcss.linux-x64-gnu.node"
+            "inventiv-frontend/node_modules/@lightningcss/linux-x64-gnu/lightningcss.linux-x64-gnu.node"
+            "node_modules/lightningcss/lightningcss.linux-x64-gnu.node"
+          )
+          FOUND=false
+          for LIGHTNING_PATH in "${LIGHTNING_PATHS[@]}"; do
+            if [ -f "$LIGHTNING_PATH" ]; then
+              echo "✅ lightningcss binary found at $LIGHTNING_PATH"
+              FOUND=true
+              break
+            fi
+          done
+          if [ "$FOUND" = "false" ]; then
+            echo "⚠️  lightningcss binary not found in expected locations"
+            echo "Listing lightningcss files:"
+            find . -name "*lightningcss*.node" 2>/dev/null | head -10 || true
+            echo "Listing lightningcss directories:"
+            find . -type d -name "lightningcss" 2>/dev/null | head -5 || true
+            # Ne pas faire échouer le build si lightningcss n'est pas critique
+            echo "⚠️  Continuing despite missing lightningcss binary (may fail during build)"
+          fi
+        env:
+          # S'assure que les binaires natifs sont installés pour lightningcss
+          npm_config_build_from_source: false
+
+      # Linting ESLint du code frontend (détecte erreurs et warnings)
+      - name: Lint
+        run: npm run lint:ui
+
+      # Build de production du frontend (vérifie que le build fonctionne)
+      # Note: lightningcss nécessite des binaires natifs qui sont installés via npm ci
+      - name: Build
+        run: npm run build:ui
+
+

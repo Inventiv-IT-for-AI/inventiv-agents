@@ -1,0 +1,44 @@
+[package]
+name = "test-scaleway"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[[bin]]
+name = "test-scaleway"
+path = "src/main.rs"
+
+[[bin]]
+name = "analyze-instance"
+path = "analyze_working_instance.rs"
+
+[[bin]]
+name = "test-exact-config"
+path = "test_exact_console_config.rs"
+
+[[bin]]
+name = "test-simple"
+path = "test_simple_with_image.rs"
+
+[[bin]]
+name = "test-direct-attach"
+path = "test_with_volume_in_request.rs"
+
+[[bin]]
+name = "test-resize"
+path = "test_resize_volume.rs"
+
+[[bin]]
+name = "test-complete"
+path = "test_complete_validation.rs"
+
+[dependencies]
+anyhow = "1.0"
+reqwest = { version = "0.11", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1.0", features = ["v4"] }
+regex = "1.0"
+

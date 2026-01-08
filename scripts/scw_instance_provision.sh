@@ -146,6 +146,27 @@ api() {
 }
 
 api_get() { api GET "$1"; }
+# Non-fatal version for retry loops
+api_get_safe() {
+  local url="$1"
+  local resp status body
+  resp="$(curl -sS -X GET \
+    -H "X-Auth-Token: ${SCW_SECRET_KEY}" \
+    -H "Content-Type: application/json" \
+    -w "\n__HTTP_STATUS__:%{http_code}\n" \
+    "${url}")" || return 1
+  status="$(printf '%s' "${resp}" | tail -n 1 | sed -n 's/^__HTTP_STATUS__:\([0-9]\{3\}\)$/\1/p')"
+  body="$(printf '%s' "${resp}" | sed '$d')"
+  
+  if [[ -z "${status}" ]]; then
+    return 1
+  fi
+  if [[ "${status}" != 2* ]]; then
+    return 1
+  fi
+  
+  printf '%s' "${body}"
+}
 api_post() { api POST "$1" -d "$2"; }
 api_put_text() {
   local url="$1"; local body="$2"
@@ -158,7 +179,7 @@ api_patch() { api PATCH "$1" -d "$2"; }
 
 py() { python3 - "$@"; }
 
-echo "==> Ensuring Flexible IP exists: ${FLEX_IP_ADDR} (zone=${SCW_ZONE})"
+echo "==> Ensuring Flexible IP exists: ${FLEX_IP_ADDR} zone=${SCW_ZONE}"
 IPS_JSON="$(api_get "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/ips")"
 if [[ "${SCW_DEBUG:-0}" == "1" ]]; then
   echo "[debug] ips json bytes=$(printf '%s' "${IPS_JSON}" | wc -c | tr -d ' ')"
@@ -199,7 +220,7 @@ raise SystemExit(0)
 if [[ -z "${SERVER_ID}" ]]; then
   IMAGE_ID="${SCW_IMAGE_ID:-}"
   if [[ -z "${IMAGE_ID}" ]]; then
-    echo "==> Resolving an Ubuntu image id (zone=${SCW_ZONE})"
+    echo "==> Resolving an Ubuntu image id zone=${SCW_ZONE}"
     IMAGES_JSON="$(api_get "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/images")"
     IMAGE_ID="$(printf '%s' "${IMAGES_JSON}" | python3 -c '
 import json,sys
@@ -229,7 +250,15 @@ if best:
     exit 2
   fi
 
-  echo "==> Creating server '${SCW_SERVER_NAME}' (type=${SCW_COMMERCIAL_TYPE}, zone=${SCW_ZONE})"
+  echo "==> Creating server '${SCW_SERVER_NAME}' type=${SCW_COMMERCIAL_TYPE} zone=${SCW_ZONE}"
+  # Root volume size (optional, defaults to Scaleway default ~10GB for BASIC2 instances)
+  # NOTE: Scaleway API doesn't support root_volume.size in creation request for BASIC2 instances
+  # We'll create the server with default size and resize after creation if needed
+  ROOT_VOLUME_SIZE_GB="${SCW_ROOT_VOLUME_SIZE_GB:-}"
+  if [[ -n "${ROOT_VOLUME_SIZE_GB}" ]]; then
+    echo "==> Root volume size specified: ${ROOT_VOLUME_SIZE_GB}GB (will resize after creation)"
+  fi
+  
   CREATE_BODY="$(python3 -c '
 import json,sys
 name, ctype, project, image = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
@@ -250,55 +279,330 @@ data=json.load(sys.stdin)
 print(data["server"]["id"])
 ')"
   echo "==> Server created: ${SERVER_ID}"
+  
+  # If root volume size was specified but API doesn't support it, we'll need to resize after creation
+  # For BASIC2 instances, Scaleway creates a local volume (l_ssd) which can be resized via API
+  if [[ -n "${ROOT_VOLUME_SIZE_GB}" ]]; then
+    echo "==> Checking if root volume resize is needed (target: ${ROOT_VOLUME_SIZE_GB}GB)"
+    # Wait a bit for server to be fully created and volumes to be available
+    echo "==> Waiting for server volumes to be available..."
+    S_JSON=""
+    for wait_attempt in $(seq 1 15); do
+      sleep 2
+      S_JSON="$(api_get_safe "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/servers/${SERVER_ID}")" || S_JSON=""
+      # Check if volumes are available in the response
+      if [[ -n "${S_JSON}" ]]; then
+        if printf '%s' "${S_JSON}" | python3 -c "import json,sys; d=json.load(sys.stdin); v=d.get('server',{}).get('volumes',{}); print('found' if v else 'not_found')" 2>/dev/null | grep -q 'found'; then
+          echo "==> Volumes found in API response"
+          # Store S_JSON in a temp file to preserve it across potential variable scoping issues
+          TMP_JSON_FILE=$(mktemp)
+          printf '%s' "${S_JSON}" > "${TMP_JSON_FILE}"
+          break
+        fi
+      fi
+      if [[ "${wait_attempt}" -eq 15 ]]; then
+        echo "⚠️  Timeout waiting for volumes in API response" >&2
+      fi
+    done
+    
+    # Get server details to find root volume (use safe version or temp file)
+    if [[ -n "${TMP_JSON_FILE:-}" && -f "${TMP_JSON_FILE}" ]]; then
+      S_JSON="$(cat "${TMP_JSON_FILE}")"
+      rm -f "${TMP_JSON_FILE}"
+    elif [[ -z "${S_JSON}" ]]; then
+      S_JSON="$(api_get_safe "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/servers/${SERVER_ID}")" || S_JSON=""
+    fi
+    
+    # Debug: check if response is empty
+    if [[ -z "${S_JSON}" ]]; then
+      echo "⚠️  Empty response from API. Retrying after longer wait..." >&2
+      sleep 5
+      S_JSON="$(api_get "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/servers/${SERVER_ID}")" || true
+    fi
+    
+    # Debug: check response validity
+    if [[ -z "${S_JSON}" ]]; then
+      echo "⚠️  Still empty response from API. Cannot get volume info." >&2
+      ROOT_VOLUME_INFO=""
+    else
+      # Use temp file to avoid pipe issues with large JSON
+      TMP_JSON_PARSE=$(mktemp)
+      printf '%s' "${S_JSON}" > "${TMP_JSON_PARSE}"
+      S_JSON_LEN=$(wc -c < "${TMP_JSON_PARSE}" | tr -d ' ')
+      if [[ "${S_JSON_LEN}" -eq 0 ]]; then
+        echo "⚠️  S_JSON is empty (length=0). Cannot parse volumes." >&2
+        ROOT_VOLUME_INFO=""
+        rm -f "${TMP_JSON_PARSE}"
+      else
+        echo "==> Parsing volume info from API response (length=${S_JSON_LEN} bytes)"
+        ROOT_VOLUME_INFO=$(python3 << PYEOF
+import json,sys
+try:
+    with open('${TMP_JSON_PARSE}', 'r') as f:
+        raw_input = f.read()
+    if not raw_input or raw_input.strip() == '':
+        print('DEBUG: Empty JSON input', file=sys.stderr)
+        print('')
+        sys.exit(0)
+    data = json.loads(raw_input)
+    server = data.get('server', {})
+    volumes = server.get('volumes', {})
+    vol_id = ''
+    vol_type = ''
+    vol_size_gb = 0
+    if isinstance(volumes, dict):
+        if '0' in volumes:
+            vol = volumes['0']
+            vol_id = vol.get('id', '')
+            vol_type = vol.get('volume_type', '')
+            vol_size_bytes = vol.get('size', 0)
+            vol_size_gb = vol_size_bytes // 1_000_000_000 if vol_size_bytes > 0 else 0
+        elif 'id' in volumes:
+            vol_id = volumes.get('id', '')
+            vol_type = volumes.get('volume_type', '')
+            vol_size_bytes = volumes.get('size', 0)
+            vol_size_gb = vol_size_bytes // 1_000_000_000 if vol_size_bytes > 0 else 0
+        elif len(volumes) > 0:
+            first_key = list(volumes.keys())[0]
+            vol = volumes[first_key]
+            vol_id = vol.get('id', '')
+            vol_type = vol.get('volume_type', '')
+            vol_size_bytes = vol.get('size', 0)
+            vol_size_gb = vol_size_bytes // 1_000_000_000 if vol_size_bytes > 0 else 0
+    elif isinstance(volumes, list) and len(volumes) > 0:
+        vol = volumes[0]
+        vol_id = vol.get('id', '')
+        vol_type = vol.get('volume_type', '')
+        vol_size_bytes = vol.get('size', 0)
+        vol_size_gb = vol_size_bytes // 1_000_000_000 if vol_size_bytes > 0 else 0
+    if vol_id:
+        print(f'{vol_id}:{vol_type}:{vol_size_gb}')
+    else:
+        print(f'DEBUG: Could not find root volume. volumes type={type(volumes)}, value={volumes}', file=sys.stderr)
+        print(f'DEBUG: server keys={list(server.keys())}', file=sys.stderr)
+        print('')
+except Exception as e:
+    import traceback
+    print(f'DEBUG: Error parsing volumes: {e}', file=sys.stderr)
+    traceback.print_exc(file=sys.stderr)
+    print('')
+PYEOF
+)
+        rm -f "${TMP_JSON_PARSE}"
+      fi
+    fi
+    
+    # If volume type is Block Storage and size is 0, get real size from Block Storage API
+    if [[ -n "${ROOT_VOLUME_INFO}" ]]; then
+      VOL_ID="${ROOT_VOLUME_INFO%%:*}"
+      VOL_TYPE="${ROOT_VOLUME_INFO#*:}"
+      VOL_TYPE="${VOL_TYPE%%:*}"
+      CURRENT_SIZE_GB="${ROOT_VOLUME_INFO##*:}"
+      
+      if [[ "${VOL_TYPE}" == "sbs_volume" && "${CURRENT_SIZE_GB}" == "0" ]]; then
+        echo "==> Block Storage detected but size is 0GB, fetching real size from Block Storage API..."
+        BLOCK_VOL_JSON="$(curl -sS -X GET \
+          -H "X-Auth-Token: ${SCW_SECRET_KEY}" \
+          "https://api.scaleway.com/block/v1/zones/${SCW_ZONE}/volumes/${VOL_ID}" 2>&1 || true)"
+        
+        if [[ -n "${BLOCK_VOL_JSON}" ]]; then
+          REAL_SIZE_GB="$(printf '%s' "${BLOCK_VOL_JSON}" | python3 -c '
+import json,sys
+try:
+    data = json.load(sys.stdin)
+    size_bytes = data.get("size", 0)
+    size_gb = size_bytes // 1_000_000_000
+    print(size_gb)
+except:
+    print("0")
+' 2>/dev/null || echo "0")"
+          
+          if [[ "${REAL_SIZE_GB}" != "0" ]]; then
+            CURRENT_SIZE_GB="${REAL_SIZE_GB}"
+            echo "==> Real Block Storage size from API: ${CURRENT_SIZE_GB}GB"
+          fi
+        fi
+      fi
+      
+      ROOT_VOLUME_INFO="${VOL_ID}:${VOL_TYPE}:${CURRENT_SIZE_GB}"
+    fi
+    
+    if [[ -n "${ROOT_VOLUME_INFO}" ]]; then
+      VOL_ID="${ROOT_VOLUME_INFO%%:*}"
+      VOL_TYPE="${ROOT_VOLUME_INFO#*:}"
+      VOL_TYPE="${VOL_TYPE%%:*}"
+      CURRENT_SIZE_GB="${ROOT_VOLUME_INFO##*:}"
+      echo "==> Root volume found: ${VOL_ID} type: ${VOL_TYPE}, current size: ${CURRENT_SIZE_GB}GB"
+      
+      if [[ "${CURRENT_SIZE_GB}" -lt "${ROOT_VOLUME_SIZE_GB}" ]]; then
+        echo "==> Root volume needs resize: ${CURRENT_SIZE_GB}GB → ${ROOT_VOLUME_SIZE_GB}GB"
+        echo "==> Stopping server to resize root volume..."
+        curl -sS -X POST \
+          -H "X-Auth-Token: ${SCW_SECRET_KEY}" \
+          -H "Content-Type: application/json" \
+          "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/servers/${SERVER_ID}/action" \
+          -d '{"action":"poweroff"}' >/dev/null 2>&1 || true
+        
+        # Wait for server to stop
+        echo "==> Waiting for server to stop..."
+        SERVER_STOPPED=false
+        for wait_iter in $(seq 1 30); do
+          S_JSON="$(api_get_safe "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/servers/${SERVER_ID}")" || S_JSON=""
+          if [[ -n "${S_JSON}" ]]; then
+            STATE="$(printf '%s' "${S_JSON}" | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d.get("server") or {}).get("state",""))' 2>/dev/null || true)"
+            if [[ "${STATE}" == "stopped" || "${STATE}" == "stopped_in_place" ]]; then
+              echo "==> Server is stopped (state: ${STATE})"
+              SERVER_STOPPED=true
+              break
+            fi
+          fi
+          if [[ $((wait_iter % 5)) -eq 0 ]]; then
+            echo "==> Still waiting for server to stop... (attempt ${wait_iter}/30)"
+          fi
+          sleep 2
+        done
+        
+        if [[ "${SERVER_STOPPED}" != "true" ]]; then
+          echo "⚠️  Server did not stop within timeout. Attempting resize anyway..."
+        fi
+        
+        echo "==> Resizing root volume ${VOL_ID} type ${VOL_TYPE} to ${ROOT_VOLUME_SIZE_GB}GB..."
+        RESIZE_SIZE_BYTES=$((ROOT_VOLUME_SIZE_GB * 1000000000))
+        
+        if [[ "${VOL_TYPE}" == "sbs_volume" ]]; then
+          # Block Storage: Scaleway Block Storage can ONLY be resized via CLI (API doesn't support resize)
+          echo "==> Block Storage detected: using scw CLI"
+          
+          if ! command -v scw >/dev/null 2>&1; then
+            echo "❌ scw CLI not available. Block Storage resize requires scw CLI."
+            echo "   Install it from: https://github.com/scaleway/scaleway-cli"
+            echo "   Or resize manually via Scaleway console."
+            exit 2
+          fi
+          
+          # Get organization ID and access key (required by scw CLI)
+          # Read from env file first (already loaded via source "${ENV_FILE}"), then from secrets directory
+          SCW_ORG_ID="${SCALEWAY_ORGANIZATION_ID:-${SCW_DEFAULT_ORGANIZATION_ID:-}}"
+          SCW_ACCESS_KEY="${SCALEWAY_ACCESS_KEY:-${SCW_ACCESS_KEY:-}}"
+          
+          # Fallback: read from secrets directory (for SCALEWAY_ACCESS_KEY only, ORG_ID is in .env)
+          if [[ -z "${SCW_ACCESS_KEY}" && -f "./deploy/secrets/scaleway_access_key" ]]; then
+            SCW_ACCESS_KEY="$(cat ./deploy/secrets/scaleway_access_key | tr -d '\n\r ')"
+          fi
+          
+          if [[ -z "${SCW_ORG_ID}" ]]; then
+            echo "❌ SCALEWAY_ORGANIZATION_ID is required for Block Storage resize via CLI."
+            echo "   Set it in ${ENV_FILE} or .env"
+            exit 2
+          fi
+          if [[ -z "${SCW_ACCESS_KEY}" ]]; then
+            echo "❌ SCALEWAY_ACCESS_KEY is required for Block Storage resize via CLI."
+            echo "   Set it in ${ENV_FILE}, .env, or create ./deploy/secrets/scaleway_access_key"
+            exit 2
+          fi
+          
+          echo "==> Resizing Block Storage volume ${VOL_ID} to ${ROOT_VOLUME_SIZE_GB}GB via scw CLI..."
+          echo "==> Command: scw block volume update ${VOL_ID} zone=${SCW_ZONE} size=${ROOT_VOLUME_SIZE_GB}GB"
+          SCW_CLI_OUTPUT="$(SCW_ACCESS_KEY="${SCW_ACCESS_KEY}" \
+            SCW_SECRET_KEY="${SCW_SECRET_KEY}" \
+            SCW_DEFAULT_PROJECT_ID="${PROJECT_ID}" \
+            SCW_DEFAULT_ORGANIZATION_ID="${SCW_ORG_ID}" \
+            scw block volume update "${VOL_ID}" \
+            zone="${SCW_ZONE}" \
+            size="${ROOT_VOLUME_SIZE_GB}GB" 2>&1)"
+          SCW_CLI_EXIT_CODE=$?
+          
+          if [[ ${SCW_CLI_EXIT_CODE} -ne 0 ]]; then
+            echo "❌ CLI resize failed (exit code: ${SCW_CLI_EXIT_CODE}):"
+            echo "${SCW_CLI_OUTPUT}"
+            exit 2
+          fi
+          
+          echo "✅ Block Storage volume resize command executed successfully"
+          echo "==> CLI output:"
+          echo "${SCW_CLI_OUTPUT}"
+          
+          # Wait for resize to propagate and verify
+          echo "==> Waiting for resize to propagate and verify..."
+          VERIFY_ATTEMPTS=20
+          VERIFIED=false
+          for attempt in $(seq 1 ${VERIFY_ATTEMPTS}); do
+            sleep 5
+            VERIFY_JSON="$(curl -sS -X GET \
+              -H "X-Auth-Token: ${SCW_SECRET_KEY}" \
+              "https://api.scaleway.com/block/v1/zones/${SCW_ZONE}/volumes/${VOL_ID}" 2>&1 || true)"
+            
+            if [[ -n "${VERIFY_JSON}" ]]; then
+              VERIFY_SIZE_GB="$(printf '%s' "${VERIFY_JSON}" | python3 -c '
+import json,sys
+try:
+    data = json.load(sys.stdin)
+    size_bytes = data.get("size", 0)
+    size_gb = size_bytes // 1_000_000_000
+    print(size_gb)
+except:
+    print("0")
+' 2>/dev/null || echo "0")"
+              
+              echo "==> Verification attempt ${attempt}/${VERIFY_ATTEMPTS}: current size=${VERIFY_SIZE_GB}GB, target=${ROOT_VOLUME_SIZE_GB}GB"
+              
+              if [[ "${VERIFY_SIZE_GB}" -ge "${ROOT_VOLUME_SIZE_GB}" ]]; then
+                echo "✅ Verified resize: volume is now ${VERIFY_SIZE_GB}GB (target: ${ROOT_VOLUME_SIZE_GB}GB)"
+                VERIFIED=true
+                break
+              elif [[ ${attempt} -lt ${VERIFY_ATTEMPTS} ]]; then
+                echo "⏳ Resize in progress: ${VERIFY_SIZE_GB}GB (target: ${ROOT_VOLUME_SIZE_GB}GB), waiting 5 more seconds..."
+              else
+                echo "⚠️  Resize not complete after ${VERIFY_ATTEMPTS} attempts: ${VERIFY_SIZE_GB}GB (target: ${ROOT_VOLUME_SIZE_GB}GB)"
+                echo "   Scaleway resize operations can take several minutes. The resize command was executed successfully."
+                echo "   The volume will continue resizing in the background. Check the Scaleway console for status."
+              fi
+            else
+              echo "⚠️  Could not fetch volume info for verification (attempt ${attempt}/${VERIFY_ATTEMPTS})"
+            fi
+          done
+          
+          if [[ "${VERIFIED}" != "true" ]]; then
+            echo "⚠️  Could not verify resize completion after ${VERIFY_ATTEMPTS} attempts ($((VERIFY_ATTEMPTS * 5))s total wait)."
+            echo "   The resize command was executed successfully. Scaleway resize operations can take several minutes."
+            echo "   Please check the Scaleway console to verify the resize status."
+          fi
+        else
+          # Local volume (l_ssd): use Instance API
+          RESIZE_BODY="$(python3 -c '
+import json,sys
+size_bytes = int(sys.argv[1])
+print(json.dumps({"size": size_bytes}))
+' "${RESIZE_SIZE_BYTES}")"
+          
+          api PATCH "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/volumes/${VOL_ID}" -d "${RESIZE_BODY}" >/dev/null || {
+            echo "⚠️  Failed to resize local volume via API. You may need to resize manually via Scaleway console or CLI."
+          }
+        fi
+        
+        echo "==> Root volume resize requested. Waiting for resize to complete..."
+        sleep 5
+        
+        # Restart server after resize
+        echo "==> Starting server after root volume resize..."
+        curl -sS -X POST \
+          -H "X-Auth-Token: ${SCW_SECRET_KEY}" \
+          -H "Content-Type: application/json" \
+          "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/servers/${SERVER_ID}/action" \
+          -d '{"action":"poweron"}' >/dev/null 2>&1 || true
+      else
+        echo "==> Root volume size is already ${CURRENT_SIZE_GB}GB >= ${ROOT_VOLUME_SIZE_GB}GB target"
+      fi
+    else
+      echo "⚠️  Could not find root volume ID. Skipping resize."
+    fi
+  fi
 else
   echo "==> Reusing server: ${SERVER_ID}"
 fi
 
-echo "==> Setting cloud-init on server (SSH key + flex IP config)"
-if [[ -n "${SSH_PUBLIC_KEY_INLINE}" ]]; then
-  PUB_KEY="$(printf '%s' "${SSH_PUBLIC_KEY_INLINE}" | tr -d '\n')"
-else
-  PUB_KEY="$(cat "${SSH_PUB_FILE}" | tr -d '\n')"
-fi
-
-# For routed_ipv4 (manual), the OS must add the /32 address to an interface.
-# We do it at boot via cloud-init so SSH works on the Flexible IP immediately.
-CLOUD_INIT="#cloud-config
-ssh_authorized_keys:
-  - ${PUB_KEY}
-
-write_files:
-  - path: /usr/local/bin/inventiv-flexip.sh
-    permissions: '0755'
-    content: |
-      #!/usr/bin/env bash
-      set -euo pipefail
-      FLEX_IP='${FLEX_IP_ADDR}'
-      IFACE=\$(ip route show default | awk '{print \$5}' | head -n1 || true)
-      if [ -z \"\$IFACE\" ]; then
-        IFACE=\$(ip -o link show | awk -F': ' '\$2!=\"lo\"{print \$2; exit}')
-      fi
-      # Immediate config
-      ip addr add \"\${FLEX_IP}/32\" dev \"\$IFACE\" 2>/dev/null || true
-      sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1 || true
-      sysctl -w net.ipv4.conf.\"\\\$IFACE\".rp_filter=0 >/dev/null 2>&1 || true
-      # Persist on Ubuntu via netplan (keep DHCP enabled)
-      mkdir -p /etc/netplan
-      cat > /etc/netplan/99-inventiv-flexip.yaml <<EOF
-      network:
-        version: 2
-        ethernets:
-          \$IFACE:
-            dhcp4: true
-            addresses:
-              - \${FLEX_IP}/32
-      EOF
-      netplan apply || (netplan generate && netplan apply) || true
-
-runcmd:
-  - [ bash, -lc, /usr/local/bin/inventiv-flexip.sh ]
-"
-api_put_text "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/servers/${SERVER_ID}/user_data/cloud-init" "${CLOUD_INIT}" >/dev/null
+# Note: cloud-init configuration removed - SSH key and Flexible IP configuration
+# should be done manually after provisioning if needed.
 
 ensure_security_group() {
   # Ensure a security group exists and allows inbound SSH/HTTP/HTTPS.
@@ -390,15 +694,16 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 
-echo "==> Attaching Flexible IP ${FLEX_IP_ADDR} (id=${FLEX_IP_ID}) to server ${SERVER_ID}"
+echo "==> Attaching Flexible IP ${FLEX_IP_ADDR} id=${FLEX_IP_ID} to server ${SERVER_ID}"
 # Scaleway Instance API expects server id as a string (not an object).
-api_patch "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/ips/${FLEX_IP_ID}" "{\"server\":\"${SERVER_ID}\"}" >/dev/null
+PATCH_BODY=$(python3 -c "import json; print(json.dumps({'server': '${SERVER_ID}'}))")
+api_patch "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/ips/${FLEX_IP_ID}" "${PATCH_BODY}" >/dev/null
 
-echo "==> Waiting for SSH on ${FLEX_IP_ADDR}:22 (using ${SSH_KEY_FILE})"
+echo "==> Waiting for SSH on ${FLEX_IP_ADDR}:22 using ${SSH_KEY_FILE}"
 S_JSON="$(api_get "https://api.scaleway.com/instance/v1/zones/${SCW_ZONE}/servers/${SERVER_ID}")" || true
 DYN_IP="$(printf '%s' "${S_JSON}" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(((d.get("server") or {}).get("public_ip") or {}).get("address",""))' 2>/dev/null || true)"
 if [[ -n "${DYN_IP}" ]]; then
-  echo "==> Dynamic IP (fallback SSH): ${DYN_IP}"
+  echo "==> Dynamic IP - fallback SSH: ${DYN_IP}"
 fi
 
 forced_flexip=0
@@ -411,25 +716,8 @@ for i in $(seq 1 60); do
     exit 0
   fi
 
-  # If SSH doesn't come up on the Flexible IP quickly, force the in-guest config once via dynamic IP.
-  if [[ "${forced_flexip}" == "0" && -n "${DYN_IP}" && "${i}" -ge 6 ]]; then
-    if SSH_IDENTITY_FILE="${SSH_KEY_FILE}" ./scripts/ssh_detect_user.sh "${DYN_IP}" 22 >/dev/null 2>&1; then
-      USER_DYN="$(SSH_IDENTITY_FILE="${SSH_KEY_FILE}" ./scripts/ssh_detect_user.sh "${DYN_IP}" 22)"
-      echo "==> Forcing flex IP config via ${USER_DYN} (routed_ipv4/manual)"
-      ssh -i "${SSH_KEY_FILE}" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$(cd "$(dirname "$0")/.." && pwd)/deploy/known_hosts" \
-        "${USER_DYN}" \
-        "set -euo pipefail
-IFACE=\$(ip route show default | awk '{print \$5}' | head -n1 || true)
-if [ -z \"\$IFACE\" ]; then IFACE=\$(ip -o link show | awk -F': ' '\$2!=\"lo\"{print \$2; exit}'); fi
-sudo /usr/local/bin/inventiv-flexip.sh >/dev/null 2>&1 || true
-sudo ip addr add ${FLEX_IP_ADDR}/32 dev \"\$IFACE\" 2>/dev/null || true
-sudo sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1 || true
-sudo sysctl -w net.ipv4.conf.\"\\\$IFACE\".rp_filter=0 >/dev/null 2>&1 || true
-ip -o -4 addr show | grep -F \"${FLEX_IP_ADDR}\" >/dev/null && echo '[ok] flex ip present' || echo '[warn] flex ip missing'
-" >/dev/null 2>&1 || true
-      forced_flexip=1
-    fi
-  fi
+  # Note: Flexible IP configuration may need manual setup after provisioning.
+  # SSH keys are automatically added by Scaleway, so no cloud-init needed for that.
 
   sleep 5
 done
