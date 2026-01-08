@@ -2,13 +2,16 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LayoutDashboard, Settings, Activity, Archive, BarChart3, Server, Users, Terminal, KeyRound, Cpu } from "lucide-react";
+import { LayoutDashboard, Box, Settings, Activity, Archive, BarChart3, Server, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { apiUrl } from "@/lib/api";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useI18n } from "@/i18n/I18nProvider";
+import { LOCALE_LABELS, LocaleCode, normalizeLocale } from "@/i18n/i18n";
 
 interface SidebarLinkProps {
     href: string;
@@ -38,6 +41,7 @@ function SidebarLink({ href, icon: Icon, label, disabled }: SidebarLinkProps) {
 
 export function Sidebar() {
     const router = useRouter();
+    const { t, locale, setLocale } = useI18n();
     const [menuOpen, setMenuOpen] = useState(false);
     const [profileOpen, setProfileOpen] = useState(false);
     const [me, setMe] = useState<{
@@ -47,6 +51,7 @@ export function Sidebar() {
         role: string;
         first_name?: string | null;
         last_name?: string | null;
+        locale_code?: string | null;
     } | null>(null);
 
     const [profileForm, setProfileForm] = useState({
@@ -54,6 +59,7 @@ export function Sidebar() {
         email: "",
         first_name: "",
         last_name: "",
+        locale_code: "en-US" as LocaleCode,
     });
 
     const [pwdForm, setPwdForm] = useState({
@@ -67,6 +73,10 @@ export function Sidebar() {
     const [profileError, setProfileError] = useState<string | null>(null);
     const [pwdError, setPwdError] = useState<string | null>(null);
     const [pwdSuccess, setPwdSuccess] = useState<string | null>(null);
+
+    const [availableLocales, setAvailableLocales] = useState<
+        { code: string; name: string; native_name?: string | null; direction: string }[]
+    >([]);
 
     const displayName = useMemo(() => {
         if (!me) return "User";
@@ -94,17 +104,27 @@ export function Sidebar() {
         }
         const data = await res.json();
         setMe(data);
+        const nextLocale = normalizeLocale(data.locale_code);
+        setLocale(nextLocale);
         setProfileForm({
             username: data.username ?? (typeof data.email === "string" ? String(data.email).split("@")[0] : ""),
             email: data.email ?? "",
             first_name: data.first_name ?? "",
             last_name: data.last_name ?? "",
+            locale_code: nextLocale,
         });
-    }, [router]);
+    }, [router, setLocale]);
 
     useEffect(() => {
         void fetchMe().catch(() => null);
     }, [fetchMe]);
+
+    const fetchLocales = useCallback(async () => {
+        const res = await fetch(apiUrl("/locales"));
+        if (!res.ok) return;
+        const data = await res.json();
+        if (Array.isArray(data)) setAvailableLocales(data);
+    }, []);
 
     const logout = async () => {
         try {
@@ -126,6 +146,7 @@ export function Sidebar() {
                     email: profileForm.email,
                     first_name: profileForm.first_name || null,
                     last_name: profileForm.last_name || null,
+                    locale_code: profileForm.locale_code,
                 }),
             });
             if (!res.ok) {
@@ -137,18 +158,21 @@ export function Sidebar() {
                 const code = body?.error || body?.message;
                 setProfileError(
                     code === "conflict" || code === "username_or_email_already_exists"
-                        ? "Username ou email déjà utilisé"
+                        ? t("account.conflict")
                         : code === "session_invalid"
-                            ? "Session expirée, veuillez vous reconnecter"
-                            : "Erreur lors de la mise à jour"
+                            ? t("account.sessionExpired")
+                            : code === "invalid_locale" || code === "unknown_locale"
+                                ? "Locale invalide"
+                                : t("account.updateError")
                 );
                 return;
             }
             const data = await res.json();
             setMe(data);
+            setLocale(normalizeLocale(data.locale_code));
         } catch (e) {
             console.error(e);
-            setProfileError("Erreur réseau");
+            setProfileError(t("account.networkError"));
         } finally {
             setProfileSaving(false);
         }
@@ -158,11 +182,11 @@ export function Sidebar() {
         setPwdError(null);
         setPwdSuccess(null);
         if (!pwdForm.current_password.trim() || !pwdForm.new_password.trim()) {
-            setPwdError("Veuillez remplir tous les champs");
+            setPwdError(t("account.fillAllFields"));
             return;
         }
         if (pwdForm.new_password !== pwdForm.confirm_new_password) {
-            setPwdError("La confirmation ne correspond pas");
+            setPwdError(t("account.confirmMismatch"));
             return;
         }
         setPwdSaving(true);
@@ -186,16 +210,16 @@ export function Sidebar() {
                     code === "invalid_current_password" || code === "current_password_invalid"
                         ? "Mot de passe actuel incorrect"
                         : code === "session_invalid"
-                            ? "Session expirée, veuillez vous reconnecter"
+                            ? t("account.sessionExpired")
                             : "Erreur lors du changement de mot de passe"
                 );
                 return;
             }
             setPwdForm({ current_password: "", new_password: "", confirm_new_password: "" });
-            setPwdSuccess("Mot de passe mis à jour");
+            setPwdSuccess(t("account.passwordUpdated"));
         } catch (e) {
             console.error(e);
-            setPwdError("Erreur réseau");
+            setPwdError(t("account.networkError"));
         } finally {
             setPwdSaving(false);
         }
@@ -209,33 +233,30 @@ export function Sidebar() {
                         Inventiv Agents
                     </h2>
                     <div className="space-y-1">
-                        <SidebarLink href="/" icon={LayoutDashboard} label="Dashboard" />
-                        <SidebarLink href="/instances" icon={Server} label="Instances" />
-                        <SidebarLink href="/models" icon={Activity} label="Models" />
-                        <SidebarLink href="/gpu-activity" icon={Cpu} label="GPU Activity" />
-                        <SidebarLink href="/workbench" icon={Terminal} label="Workbench" />
-                        <SidebarLink href="/monitoring" icon={BarChart3} label="Monitoring" />
-                        <SidebarLink href="/api-keys" icon={KeyRound} label="API Keys" />
-                        {me?.role === "admin" ? <SidebarLink href="/settings" icon={Settings} label="Settings" /> : null}
-                        {me?.role === "admin" ? <SidebarLink href="/users" icon={Users} label="Users" /> : null}
+                        <SidebarLink href="/" icon={LayoutDashboard} label={t("nav.dashboard")} />
+                        <SidebarLink href="/instances" icon={Server} label={t("nav.instances")} />
+                        <SidebarLink href="/monitoring" icon={BarChart3} label={t("nav.monitoring")} />
+                        <SidebarLink href="/models" icon={Box} label={t("nav.models")} />
+                        <SidebarLink href="/settings" icon={Settings} label={t("nav.settings")} />
+                        <SidebarLink href="/users" icon={Users} label={t("nav.users")} />
                     </div>
                 </div>
                 <div className="px-3 py-2">
                     <h2 className="mb-2 px-4 text-xs font-semibold tracking-tight text-muted-foreground uppercase">
-                        History
+                        {t("nav.traces")}
                     </h2>
                     <div className="space-y-1">
-                        <SidebarLink href="/traces" icon={Archive} label="Traces" />
+                        <SidebarLink href="/traces" icon={Archive} label={t("nav.traces")} />
                     </div>
                 </div>
                 <div className="px-3 py-2">
                     <h2 className="mb-2 px-4 text-xs font-semibold tracking-tight text-muted-foreground uppercase">
-                        System
+                        {t("nav.system")}
                     </h2>
                     <div className="space-y-1">
                         <Button variant="ghost" className="w-full justify-start" disabled>
                             <Activity className="mr-2 h-4 w-4" />
-                            System Status
+                            {t("nav.systemStatus")}
                         </Button>
                     </div>
                 </div>
@@ -262,7 +283,7 @@ export function Sidebar() {
             <Dialog open={menuOpen} onOpenChange={setMenuOpen}>
                 <DialogContent showCloseButton={false} className="sm:max-w-[420px]">
                     <DialogHeader>
-                        <DialogTitle>Compte</DialogTitle>
+                        <DialogTitle>{t("account.title")}</DialogTitle>
                     </DialogHeader>
                     <div className="grid gap-2 py-2">
                         <Button
@@ -270,12 +291,13 @@ export function Sidebar() {
                             onClick={() => {
                                 setMenuOpen(false);
                                 setProfileOpen(true);
+                                void fetchLocales().catch(() => null);
                                 setPwdError(null);
                                 setPwdSuccess(null);
                                 setProfileError(null);
                             }}
                         >
-                            Mon profil
+                            {t("account.myProfile")}
                         </Button>
                         <Button
                             variant="destructive"
@@ -284,12 +306,12 @@ export function Sidebar() {
                                 await logout();
                             }}
                         >
-                            Se déconnecter
+                            {t("account.logout")}
                         </Button>
                     </div>
                     <DialogFooter>
                         <Button variant="outline" onClick={() => setMenuOpen(false)}>
-                            Fermer
+                            {t("account.close")}
                         </Button>
                     </DialogFooter>
                 </DialogContent>
@@ -300,12 +322,15 @@ export function Sidebar() {
                 open={profileOpen}
                 onOpenChange={(o) => {
                     setProfileOpen(o);
-                    if (o) void fetchMe().catch(() => null);
+                    if (o) {
+                        void fetchMe().catch(() => null);
+                        void fetchLocales().catch(() => null);
+                    }
                 }}
             >
                 <DialogContent showCloseButton={false} className="sm:max-w-[560px]">
                     <DialogHeader>
-                        <DialogTitle>Mon profil</DialogTitle>
+                        <DialogTitle>{t("account.profileTitle")}</DialogTitle>
                     </DialogHeader>
 
                     <div className="grid gap-6 py-2">
@@ -342,18 +367,43 @@ export function Sidebar() {
                                     onChange={(e) => setProfileForm((s) => ({ ...s, last_name: e.target.value }))}
                                 />
                             </div>
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <Label className="text-right">{t("account.locale")}</Label>
+                                <div className="col-span-3">
+                                    <Select
+                                        value={profileForm.locale_code}
+                                        onValueChange={(v) =>
+                                            setProfileForm((s) => ({ ...s, locale_code: normalizeLocale(v) }))
+                                        }
+                                    >
+                                        <SelectTrigger className="w-full">
+                                            <SelectValue placeholder={LOCALE_LABELS[locale]} />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {(availableLocales.length
+                                                ? (availableLocales.map((l) => l.code) as string[])
+                                                : (Object.keys(LOCALE_LABELS) as string[])
+                                            ).map((code) => (
+                                                <SelectItem key={code} value={code}>
+                                                    {LOCALE_LABELS[normalizeLocale(code)] ?? code}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            </div>
                             {profileError ? <div className="text-sm text-red-600">{profileError}</div> : null}
                             <div className="flex justify-end">
                                 <Button onClick={saveProfile} disabled={profileSaving}>
-                                    {profileSaving ? "Enregistrement..." : "Enregistrer"}
+                                    {profileSaving ? t("account.saving") : t("account.save")}
                                 </Button>
                             </div>
                         </div>
 
                         <div className="border-t pt-4 grid gap-3">
-                            <div className="text-sm font-medium">Changer le mot de passe</div>
+                            <div className="text-sm font-medium">{t("account.changePassword")}</div>
                             <div className="grid grid-cols-4 items-center gap-4">
-                                <Label className="text-right">Actuel</Label>
+                                <Label className="text-right">{t("account.currentPassword")}</Label>
                                 <Input
                                     className="col-span-3"
                                     type="password"
@@ -362,7 +412,7 @@ export function Sidebar() {
                                 />
                             </div>
                             <div className="grid grid-cols-4 items-center gap-4">
-                                <Label className="text-right">Nouveau</Label>
+                                <Label className="text-right">{t("account.newPassword")}</Label>
                                 <Input
                                     className="col-span-3"
                                     type="password"
@@ -371,7 +421,7 @@ export function Sidebar() {
                                 />
                             </div>
                             <div className="grid grid-cols-4 items-center gap-4">
-                                <Label className="text-right">Confirmer</Label>
+                                <Label className="text-right">{t("account.confirmPassword")}</Label>
                                 <Input
                                     className="col-span-3"
                                     type="password"
@@ -383,7 +433,7 @@ export function Sidebar() {
                             {pwdSuccess ? <div className="text-sm text-green-600">{pwdSuccess}</div> : null}
                             <div className="flex justify-end">
                                 <Button onClick={changePassword} disabled={pwdSaving}>
-                                    {pwdSaving ? "Mise à jour..." : "Mettre à jour"}
+                                    {pwdSaving ? t("account.updatingPassword") : t("account.updatePassword")}
                                 </Button>
                             </div>
                         </div>
@@ -391,7 +441,7 @@ export function Sidebar() {
 
                     <DialogFooter className="sm:justify-between">
                         <Button variant="outline" onClick={() => setProfileOpen(false)}>
-                            Fermer
+                            {t("account.close")}
                         </Button>
                     </DialogFooter>
                 </DialogContent>
