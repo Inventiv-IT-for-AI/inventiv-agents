@@ -351,6 +351,77 @@ export type ActionLog = {
     instance_status_after?: string | null;
 };
 
+/**
+ * Enhanced action log with progress and phase information (from /instances/{id}/export endpoint)
+ */
+export type EnhancedActionLog = {
+    id: string;
+    action_type: string;
+    component: string;
+    status: string;
+    provider_name?: string | null;
+    instance_type?: string | null;
+    error_code?: string | null;
+    error_message?: string | null;
+    instance_id?: string | null;
+    duration_ms?: number | null;
+    created_at: string;
+    completed_at?: string | null;
+    metadata?: Record<string, unknown> | null;
+    instance_status_before?: string | null;
+    instance_status_after?: string | null;
+    // Enhanced fields
+    progress_percent?: number | null;
+    phase?: string | null;
+    sub_phase?: string | null;
+    retry_count?: number | null;
+    is_state_transition: boolean;
+    is_valid_transition?: boolean | null;
+    elapsed_seconds_since_start?: number | null;
+    elapsed_seconds_since_start_completed?: number | null;
+};
+
+/**
+ * State transition history entry
+ */
+export type StateTransition = {
+    id: string;
+    from_status?: string | null;
+    to_status: string;
+    reason?: string | null;
+    metadata?: Record<string, unknown> | null;
+    created_at: string;
+    elapsed_seconds_since_start: number;
+};
+
+/**
+ * Phase summary with duration and action count
+ */
+export type PhaseSummary = {
+    phase: string;
+    start_time?: string | null;
+    end_time?: string | null;
+    duration_seconds?: number | null;
+    action_count: number;
+    success_count: number;
+    failed_count: number;
+    progress_start?: number | null;
+    progress_end?: number | null;
+};
+
+/**
+ * Export summary with analysis
+ */
+export type ExportSummary = {
+    total_actions: number;
+    total_state_transitions: number;
+    phases: PhaseSummary[];
+    total_duration_seconds?: number | null;
+    invalid_transitions: string[];
+    retry_count: number;
+    exported_at: string;
+};
+
 export type ActionType = {
     code: string;
     label: string;

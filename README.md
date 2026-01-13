@@ -2,7 +2,7 @@
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![GHCR (build + promote)](https://github.com/Inventiv-IT-for-AI/inventiv-agents/actions/workflows/ghcr.yml/badge.svg)](https://github.com/Inventiv-IT-for-AI/inventiv-agents/actions/workflows/ghcr.yml)
-[![Version](https://img.shields.io/badge/version-0.7.0-blue.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-0.7.2-blue.svg)](VERSION)
 
 **Control-plane + data-plane to run AI agents/instances** — Scalable, modular, and performant LLM inference infrastructure, written in **Rust**.
 
@@ -12,7 +12,7 @@
 
 **Why it's useful**: Enables standardized deployment and scaling of LLM models (vLLM), with integrated financial tracking and granular control over cloud resources.
 
-📘 **Detailed documentation**: [Architecture](docs/architecture.md) | [Domain Design & Data Model](docs/domain_design_and_data_model.md) | [General Specifications](docs/project_requirements.md) | [UI Design System](docs/ui_design_system.md) | [`ia-widgets`](docs/ia_widgets.md) | [Engineering Guidelines](docs/engineering_guidelines.md) | [State Machine & Progress](docs/STATE_MACHINE_AND_PROGRESS.md) | [Agent Version Management](docs/AGENT_VERSION_MANAGEMENT.md) | [Storage Management](docs/STORAGE_MANAGEMENT.md) | [Scaleway Provisioning](docs/SCALEWAY_PROVISIONING.md) | [CI/CD](docs/CI_CD.md) | [Documentation Index](docs/README.md)
+📘 **Detailed documentation**: [Architecture](docs/architecture.md) | [Domain Design & Data Model](docs/domain_design_and_data_model.md) | [General Specifications](docs/project_requirements.md) | [UI Design System](docs/ui_design_system.md) | [`ia-widgets`](docs/ia_widgets.md) | [Engineering Guidelines](docs/engineering_guidelines.md) | [State Machine & Progress](docs/STATE_MACHINE_AND_PROGRESS.md) | [Instance Export Enhanced](docs/INSTANCE_EXPORT_ENHANCED.md) | [Agent Version Management](docs/AGENT_VERSION_MANAGEMENT.md) | [Storage Management](docs/STORAGE_MANAGEMENT.md) | [Scaleway Provisioning](docs/SCALEWAY_PROVISIONING.md) | [CI/CD](docs/CI_CD.md) | [Documentation Index](docs/README.md)
 
 ## Key Features
 
@@ -22,6 +22,7 @@
 - ✅ **Orchestrator (jobs + state machine)**: Asynchronous lifecycle management (provisioning → booting → installing → starting → ready → terminating → terminated) with explicit state transitions and progress tracking (0-100%)
 - ✅ **Worker (agent runtime)**: Python agent deployed on GPU instances, heartbeat, readiness (`/readyz`), metrics, version management (`/info` endpoint)
 - ✅ **Progress Tracking**: Granular progress percentage (0-100%) based on completed actions (SSH install, vLLM ready, model loaded, etc.) with support for intermediate states (installing, starting)
+- ✅ **Instance Export**: Enhanced export endpoint with detailed action logs, progress tracking, phase analysis, state transition validation, and comprehensive summary
 - ✅ **Agent Version Management**: Versioning, SHA256 checksum verification, CI/CD automation, monitoring
 - ✅ **Storage Management**: Automatic volume discovery, tracking, and cleanup on termination
 - ✅ **FinOps (costs/forecast)**: Tracking of real and forecasted costs by instance/type/region/provider, time windows (minute/hour/day/30d/365d)
@@ -419,6 +420,7 @@ psql "postgresql://postgres:password@localhost:5432/llminfra" -f seeds/catalog_s
 - `GET /instances`: List (filter `archived`, scoped by current organization)
 - `GET /instances/:id`: Details
 - `GET /instances/:id/metrics`: Request and token metrics for an instance
+- `GET /instances/:id/export`: Enhanced export with progress, phases, state transitions, and summary
 - `DELETE /instances/:id`: Terminate (status `terminating` + event)
 - `PUT /instances/:id/archive`: Archive
 - **Access**: Requires Owner or Admin role in organization workspace

@@ -11,8 +11,12 @@ Le système utilise une **state machine explicite** pour gérer le cycle de vie 
 Les instances passent par les états suivants :
 
 ```
-provisioning → booting → ready → draining → terminating → terminated → archived
+provisioning → booting → installing → starting → ready → draining → terminating → terminated → archived
 ```
+
+**Phases intermédiaires** :
+- `installing` : Installation de Docker et du modèle via SSH (transition depuis `booting`)
+- `starting` : Démarrage des conteneurs, chargement du modèle, warmup, health checks (transition depuis `installing`)
 
 **États d'erreur** :
 - `provisioning_failed` : Échec lors de la création de l'instance chez le provider
@@ -69,18 +73,24 @@ Le système calcule automatiquement un **pourcentage de progression** (`progress
 - **20%** : `PROVIDER_CREATE` complété (instance créée chez le provider)
 - **25%** : `PROVIDER_VOLUME_RESIZE` complété (Block Storage agrandi, si applicable - Scaleway uniquement)
 
-#### Phase `booting` (25-100%)
-- **25%** : `PROVIDER_CREATE` complété (début du booting)
+#### Phase `booting` (25-50%)
 - **30%** : `PROVIDER_START` complété (instance démarrée/powered on)
 - **40%** : `PROVIDER_GET_IP` complété (adresse IP assignée)
 - **45%** : `PROVIDER_SECURITY_GROUP` complété (ports ouverts, si applicable - Scaleway uniquement)
 - **50%** : `WORKER_SSH_ACCESSIBLE` complété (SSH accessible sur port 22)
+
+#### Phase `installing` (50-60%)
+- **55%** : `WORKER_SSH_INSTALL` en cours (installation de Docker, dépendances, agent démarrée)
 - **60%** : `WORKER_SSH_INSTALL` complété (Docker, dépendances, agent installé)
+
+#### Phase `starting` (60-95%)
 - **70%** : `WORKER_VLLM_HTTP_OK` complété (endpoint HTTP vLLM répond)
 - **80%** : `WORKER_MODEL_LOADED` complété (modèle LLM chargé dans vLLM)
 - **90%** : `WORKER_VLLM_WARMUP` complété (modèle préchauffé, prêt pour l'inférence)
 - **95%** : `HEALTH_CHECK` success (endpoint health du worker confirme la readiness)
-- **100%** : `ready` (VM pleinement opérationnelle)
+
+#### Phase `ready` (100%)
+- **100%** : Instance pleinement opérationnelle
 
 ### Séquence spécifique Scaleway
 

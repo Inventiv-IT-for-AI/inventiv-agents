@@ -28,18 +28,24 @@ pub async fn enrich_instances_with_progress(
 ///   - 20%: PROVIDER_CREATE completed (instance created at provider)
 ///   - 25%: PROVIDER_VOLUME_RESIZE completed (Block Storage resized, if applicable - Scaleway only)
 ///
-/// **booting (25-100%)**:
-///   - 25%: PROVIDER_CREATE completed (beginning of booting phase)
+/// **booting (25-50%)**:
 ///   - 30%: PROVIDER_START completed (instance powered on)
 ///   - 40%: PROVIDER_GET_IP completed (IP address assigned)
 ///   - 45%: PROVIDER_SECURITY_GROUP completed (ports opened, if applicable - Scaleway only)
 ///   - 50%: WORKER_SSH_ACCESSIBLE completed (SSH accessible on port 22)
+///
+/// **installing (50-60%)**:
+///   - 55%: WORKER_SSH_INSTALL in progress (Docker, dependencies, agent installation started)
 ///   - 60%: WORKER_SSH_INSTALL completed (Docker, dependencies, agent installed)
+///
+/// **starting (60-95%)**:
 ///   - 70%: WORKER_VLLM_HTTP_OK completed (vLLM HTTP endpoint responding)
 ///   - 80%: WORKER_MODEL_LOADED completed (LLM model loaded in vLLM)
 ///   - 90%: WORKER_VLLM_WARMUP completed (model warmed up, ready for inference)
 ///   - 95%: HEALTH_CHECK success (worker health endpoint confirms readiness)
-///   - 100%: ready (VM fully operational)
+///
+/// **ready (100%)**:
+///   - 100%: Instance fully operational
 ///
 /// **Terminal states**:
 ///   - ready: 100%
@@ -150,10 +156,9 @@ pub async fn calculate_instance_progress(
         return calculate_booting_progress(db, instance_id).await;
     }
 
-    // Handle "installing" status (same logic as "booting" since installation happens during booting)
+    // Handle "installing" status (50-60%) - Docker and model installation via SSH
     if status_lower == "installing" {
-        // Use the same logic as "booting" - installation is part of the booting process
-        return calculate_booting_progress(db, instance_id).await;
+        return calculate_installing_progress(db, instance_id).await;
     }
 
     // Handle "starting" status (after SSH installation, containers are starting)
@@ -489,6 +494,74 @@ async fn calculate_booting_progress(
         Ok(95) // Almost ready, waiting for final transition to 'ready'
     } else {
         Ok(90) // Warmup completed, waiting for health checks
+    }
+}
+
+/// Calculate progress for "installing" status (50-60%) - Docker and model installation via SSH
+async fn calculate_installing_progress(
+    db: &Pool<Postgres>,
+    instance_id: Uuid,
+) -> Result<u8, sqlx::Error> {
+    // Prerequisites: SSH must be accessible (50%)
+    let has_ssh_accessible = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM action_logs
+            WHERE instance_id = $1
+              AND action_type = 'WORKER_SSH_ACCESSIBLE'
+              AND status = 'success'
+        )
+        "#,
+    )
+    .bind(instance_id)
+    .fetch_one(db)
+    .await?;
+
+    if !has_ssh_accessible {
+        // Should not be in "installing" status without SSH accessible
+        // But if we are, assume we're at least at 50%
+        return Ok(50);
+    }
+
+    // Check if SSH install is completed (60%)
+    let has_ssh_install = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM action_logs
+            WHERE instance_id = $1
+              AND action_type = 'WORKER_SSH_INSTALL'
+              AND status = 'success'
+        )
+        "#,
+    )
+    .bind(instance_id)
+    .fetch_one(db)
+    .await?;
+
+    if has_ssh_install {
+        // Installation complete, should transition to "starting" soon
+        return Ok(60);
+    }
+
+    // Check if SSH install is in progress (55%)
+    let ssh_in_progress = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM action_logs
+            WHERE instance_id = $1
+              AND action_type = 'WORKER_SSH_INSTALL'
+              AND status = 'in_progress'
+        )
+        "#,
+    )
+    .bind(instance_id)
+    .fetch_one(db)
+    .await?;
+
+    if ssh_in_progress {
+        Ok(55) // Installation in progress
+    } else {
+        Ok(50) // SSH accessible, waiting for installation to start
     }
 }
 

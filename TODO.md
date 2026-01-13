@@ -157,6 +157,15 @@ This file reflects the **actual** state of the repo (code + migrations + UI) and
   - ✅ **"installing" and "starting" statuses**: Added intermediate statuses for granular tracking
   - ✅ **Multi-status progress management**: Progress calculation fixed for "installing" and "starting"
   - ✅ **Multi-status health checks**: Health check job now checks "booting", "installing", and "starting"
+- ✅ **Instance Export Enhanced**: Comprehensive export endpoint with progress, phases, state transitions, and summary
+  - Implemented: `GET /instances/:id/export` endpoint with enriched action logs
+  - Implemented: Progress percentage per action (0-100%)
+  - Implemented: Phase detection (provisioning, booting, installing, starting, ready, terminating)
+  - Implemented: State transition validation against state machine
+  - Implemented: Retry tracking and phase duration analysis
+  - Implemented: Comprehensive summary with phase statistics and invalid transitions
+  - Implemented: Frontend hook `useInstanceExport` and integration in `InstanceTimelineModal`
+  - Implemented: Synchronized between Instances and Monitoring modules
 - ✅ **Agent Version Management**: Versioning and SHA256 checksum for `agent.py`
   - Implemented: `AGENT_VERSION` and `AGENT_BUILD_DATE` constants in agent.py
   - Implemented: `/info` endpoint to expose version/checksum
@@ -317,10 +326,12 @@ This file reflects the **actual** state of the repo (code + migrations + UI) and
 
 ### Progress Tracking
 - ✅ **Scaleway E2E Test**: Validated with script `test-scaleway/test_complete_validation.rs` - all steps work
+- ✅ **Instance Export Enhanced**: Endpoint `/instances/:id/export` with progress, phases, transitions, and summary
 - [ ] **Unit test**: Verify progress calculation for each step
 - [ ] **Mock E2E test**: Validate simulated progress for Mock instances
 - [ ] **UI test**: Verify progress column display in table
 - [ ] **SSE test**: Verify real-time progress update
+- [ ] **Export test**: Validate export endpoint returns correct enriched data
 
 ### Agent Version Management
 - [ ] **Checksum test**: Verify checksum is calculated correctly

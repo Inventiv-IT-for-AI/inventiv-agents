@@ -11,7 +11,7 @@ if (typeof process !== "undefined" && process.env.NEXT_PUBLIC_APP_VERSION) {
   frontendVersion = process.env.NEXT_PUBLIC_APP_VERSION;
 } else {
   // Fallback: default version (will be replaced at build time)
-  frontendVersion = "0.5.0";
+  frontendVersion = "0.7.2";
 }
 
 export const FRONTEND_VERSION = frontendVersion;

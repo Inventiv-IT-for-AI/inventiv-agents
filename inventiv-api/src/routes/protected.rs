@@ -2,7 +2,7 @@
 use crate::app::AppState;
 use crate::auth;
 use axum::middleware;
-use axum::routing::{get, post, put};
+use axum::routing::{get, patch, post, put};
 use axum::Router;
 use std::sync::Arc;
 
@@ -18,12 +18,17 @@ use crate::provider_settings;
 use crate::settings;
 use crate::users_endpoint;
 
+use crate::handlers::admin_models::{
+    admin_create_model, admin_list_models, admin_toggle_model_active,
+    admin_update_model, admin_update_model_access_policy, admin_update_model_visibility,
+};
 use crate::handlers::commands::list_action_logs;
 use crate::handlers::commands::list_action_types;
 use crate::handlers::commands::manual_catalog_sync_trigger;
 use crate::handlers::commands::manual_reconcile_trigger;
 use crate::handlers::deployments::create_deployment;
 use crate::handlers::events::events_stream;
+use crate::handlers::instance_export::export_instance;
 use crate::handlers::instances::archive_instance;
 use crate::handlers::instances::get_instance;
 use crate::handlers::instances::list_instances;
@@ -122,6 +127,21 @@ pub fn create_protected_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/models/{id}/recommended-data-volume",
             get(get_recommended_data_volume),
         )
+        // Admin Models (require Owner/Admin role)
+        .route("/admin/models", get(admin_list_models).post(admin_create_model))
+        .route("/admin/models/{id}", put(admin_update_model))
+        .route(
+            "/admin/models/{id}/visibility",
+            patch(admin_update_model_visibility),
+        )
+        .route(
+            "/admin/models/{id}/access-policy",
+            patch(admin_update_model_access_policy),
+        )
+        .route(
+            "/admin/models/{id}/activate",
+            patch(admin_toggle_model_active),
+        )
         // Instances
         .route("/instances", get(list_instances))
         .route("/instances/search", get(search_instances))
@@ -134,6 +154,7 @@ pub fn create_protected_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/instances/{id}",
             get(get_instance).delete(terminate_instance),
         )
+        .route("/instances/{id}/export", get(export_instance))
         .route("/instances/{id}/reinstall", post(reinstall_instance))
         // Action logs
         .route("/action_logs", get(list_action_logs))
@@ -173,6 +194,10 @@ pub fn create_protected_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route(
             "/providers/config-status",
             get(provider_settings::list_provider_config_status),
+        )
+        .route(
+            "/providers/{id}/credentials-status",
+            get(provider_settings::get_provider_credentials_status),
         )
         .route(
             "/regions",

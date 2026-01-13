@@ -13,6 +13,7 @@ import { IACopyButton, IADataTable, type IADataTableColumn } from "ia-widgets";
 import { displayOrDash } from "@/lib/utils";
 import { useRealtimeEvents } from "@/hooks/useRealtimeEvents";
 import { InstanceVolumesHistory } from "./InstanceVolumesHistory";
+import { useInstanceExport } from "@/hooks/useInstanceExport";
 
 interface InstanceTimelineModalProps {
   open: boolean;
@@ -326,74 +327,30 @@ export function InstanceTimelineModal({
     ];
   }, [formatActionLabel, getCategoryDotClass]);
 
-  const fetchAllActions = useCallback(async (): Promise<ActionLog[]> => {
-    const allActions: ActionLog[] = [];
-    let offset = 0;
-    const limit = 1000; // Utiliser une limite élevée pour récupérer toutes les actions en une fois
-    let hasMore = true;
-
-    while (hasMore) {
-      const params = new URLSearchParams();
-      params.set("offset", String(offset));
-      params.set("limit", String(limit));
-      params.set("instance_id", instanceId);
-
-      const res = await fetch(apiUrl(`action_logs/search?${params.toString()}`));
-      const data: ActionLogsSearchResponse = await res.json();
-
-      allActions.push(...data.rows);
-
-      if (data.rows.length < limit || offset + data.rows.length >= data.filtered_count) {
-        hasMore = false;
-      } else {
-        offset += limit;
-      }
-    }
-
-    return allActions;
-  }, [instanceId]);
+  // Use the new export hook for enhanced export with progress and phase information
+  const { copyExportToClipboard, exporting: exportLoading } = useInstanceExport();
 
   const copyAllActionsToClipboard = useCallback(async () => {
-    if (copyingActions) return;
+    if (copyingActions || exportLoading) return;
 
     setCopyingActions(true);
     try {
-      const allActions = await fetchAllActions();
+      const success = await copyExportToClipboard(instanceId);
       
-      // Créer un objet avec les informations de l'instance et toutes les actions
-      const dataToCopy = {
-        instance: {
-          // Include all known instance fields (including new ones like storages).
-          ...(instance ?? { id: instanceId }),
-          // Explicitly include compute fields from instance types (for schema stability in exports).
-          cpu_count: instance?.cpu_count ?? null,
-          ram_gb: instance?.ram_gb ?? null,
-          // Derived / computed fields shown in header.
-          vllm_mode: vllmMode,
-          readiness,
-          last_ping: lastPing,
-        },
-        // Keep full action objects so any newly added fields are automatically included.
-        actions: allActions,
-        summary: {
-          total_actions: allActions.length,
-          exported_at: new Date().toISOString(),
-        },
-      };
-
-      const jsonString = JSON.stringify(dataToCopy, null, 2);
-      await navigator.clipboard.writeText(jsonString);
-      
-      setCopiedActions(true);
-      setTimeout(() => {
-        setCopiedActions(false);
-      }, 2000);
+      if (success) {
+        setCopiedActions(true);
+        setTimeout(() => {
+          setCopiedActions(false);
+        }, 2000);
+      } else {
+        console.error("Failed to export instance");
+      }
     } catch (error) {
       console.error("Failed to copy actions to clipboard:", error);
     } finally {
       setCopyingActions(false);
     }
-  }, [copyingActions, fetchAllActions, instanceId, instance, lastPing, readiness, vllmMode]);
+  }, [copyingActions, exportLoading, copyExportToClipboard, instanceId]);
 
   // Navigation entre instances
   const currentInstanceIndex = useMemo(() => {
